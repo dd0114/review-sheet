@@ -24,15 +24,19 @@ const CH = new URLSearchParams(location.search).get('c') || '';
 const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const t = iso => new Date(iso).toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'});
 const linkify = s => e(s).replace(/(https?:\/\/[^\s<]+)/g, u => '<a href="' + u + '" target="_blank" rel="noopener">' + u + '</a>').replace(/\n/g, '<br>');
-let meta = null, lastKey = '';
+let meta = null, lastKey = '', first = true;
 const log = document.getElementById('c-log'), upd = document.getElementById('c-upd');
+// 로그가 자체 스크롤이면 로그를, 아니면(페이지가 늘어나는 레이아웃) 창을 맨 아래로
+const pageEl = document.scrollingElement || document.documentElement;
+const nearBottom = () => (log.scrollHeight - log.scrollTop - log.clientHeight < 40) && (pageEl.scrollHeight - pageEl.scrollTop - window.innerHeight < 80);
+const toBottom = () => { log.scrollTop = log.scrollHeight; window.scrollTo(0, pageEl.scrollHeight); };
 const render = (m, msgs) => {
   meta = m;
   document.title = m.title; document.getElementById('c-title').textContent = m.title;
   document.getElementById('c-lede').textContent = m.owner + ' 와 직접 대화 · 세션은 "chat wait" 로 받고 답한다';
   const key = msgs.length + ':' + (msgs.length ? msgs[msgs.length - 1].id : '') + ':' + (m.seenAt || '');
   if (key === lastKey) return; lastKey = key;
-  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  const atBottom = nearBottom();
   let h = '', day = '';
   for (const x of msgs) {
     const d = new Date(x.ts).toLocaleDateString('ko-KR'); if (d !== day) { day = d; h += '<div class="c-day">' + e(d) + '</div>'; }
@@ -41,7 +45,7 @@ const render = (m, msgs) => {
       '<div class="c-bubble">' + linkify(x.text) + '</div><div class="c-meta">' + t(x.ts) + (mine && m.seenAt && x.ts <= m.seenAt ? ' · 읽음' : '') + '</div></div>';
   }
   log.innerHTML = h || '<div class="c-day">아직 대화 없음 — 아래에 적어 보내면 세션이 받는다</div>';
-  if (atBottom || !lastKey) log.scrollTop = log.scrollHeight;
+  if (atBottom || first) { first = false; toBottom(); requestAnimationFrame(toBottom); }
 };
 const load = async (seen) => {
   try {
@@ -59,7 +63,7 @@ const submit = async () => {
   try {
     const r = await fetch('/__chat?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    input.value = ''; input.style.height = ''; await load(false); log.scrollTop = log.scrollHeight;
+    input.value = ''; input.style.height = ''; await load(false); toBottom();
   } catch (err) { upd.textContent = '✗ 전송 실패(' + err.message + ')'; }
   finally { sendBtn.disabled = false; input.focus(); }
 };
