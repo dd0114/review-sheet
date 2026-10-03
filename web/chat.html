@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>채널</title>
+<link rel="stylesheet" href="/sheet.css">
+<!-- review-sheet 상시 채널: hero ↔ 한 세션의 메신저. GET /api/chat?c=<ch>, POST /__chat?c=<ch> {text} (항상 hero 로 기록).
+     세션 쪽은 `review-sheet chat wait <ch>` 로 받고 `chat say <ch> <text>` 로 답한다. meta.seenAt 이 "세션이 여기까지 읽음". -->
+</head>
+<body class="rs-page rs-chat">
+<main id="app">
+  <div class="eyebrow"><a href="/" class="rs-back">← 받은편지함</a> <button type="button" class="rs-refresh" id="rs-refresh">↻ 새로고침</button> <span id="c-upd"></span></div>
+  <h1 id="c-title">…</h1>
+  <p class="lede" id="c-lede"></p>
+  <div class="c-log" id="c-log"></div>
+  <form class="c-bar" id="c-form">
+    <textarea id="c-in" rows="1" placeholder="메시지 (Enter = 보내기, Shift+Enter = 줄바꿈)"></textarea>
+    <button type="submit" class="save" id="c-send">보내기</button>
+  </form>
+</main>
+<script>
+const CH = new URLSearchParams(location.search).get('c') || '';
+const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const t = iso => new Date(iso).toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'});
+const linkify = s => e(s).replace(/(https?:\/\/[^\s<]+)/g, u => '<a href="' + u + '" target="_blank" rel="noopener">' + u + '</a>').replace(/\n/g, '<br>');
+let meta = null, lastKey = '';
+const log = document.getElementById('c-log'), upd = document.getElementById('c-upd');
+const render = (m, msgs) => {
+  meta = m;
+  document.title = m.title; document.getElementById('c-title').textContent = m.title;
+  document.getElementById('c-lede').textContent = m.owner + ' 와 직접 대화 · 세션은 "chat wait" 로 받고 답한다';
+  const key = msgs.length + ':' + (msgs.length ? msgs[msgs.length - 1].id : '') + ':' + (m.seenAt || '');
+  if (key === lastKey) return; lastKey = key;
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  let h = '', day = '';
+  for (const x of msgs) {
+    const d = new Date(x.ts).toLocaleDateString('ko-KR'); if (d !== day) { day = d; h += '<div class="c-day">' + e(d) + '</div>'; }
+    const mine = x.from === 'hero';
+    h += '<div class="c-msg ' + (mine ? 'me' : 'them') + '">' + (mine ? '' : '<div class="c-who">' + e(x.from) + '</div>') +
+      '<div class="c-bubble">' + linkify(x.text) + '</div><div class="c-meta">' + t(x.ts) + (mine && m.seenAt && x.ts <= m.seenAt ? ' · 읽음' : '') + '</div></div>';
+  }
+  log.innerHTML = h || '<div class="c-day">아직 대화 없음 — 아래에 적어 보내면 세션이 받는다</div>';
+  if (atBottom || !lastKey) log.scrollTop = log.scrollHeight;
+};
+const load = async (seen) => {
+  try {
+    if (seen) await fetch('/__chat?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const r = await fetch('/api/chat?c=' + encodeURIComponent(CH), { cache: 'no-store' });
+    if (!r.ok) { log.innerHTML = '<div class="c-day">채널 없음: ' + e(CH) + '</div>'; return; }
+    const j = await r.json(); render(j.meta, j.messages);
+    upd.textContent = '갱신 ' + new Date().toLocaleTimeString('ko-KR');
+  } catch (_) { upd.textContent = '갱신 실패 — 서버 확인'; }
+};
+const input = document.getElementById('c-in'), sendBtn = document.getElementById('c-send');
+const submit = async () => {
+  const text = input.value.trim(); if (!text) return;
+  sendBtn.disabled = true;
+  try {
+    const r = await fetch('/__chat?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    input.value = ''; input.style.height = ''; await load(false); log.scrollTop = log.scrollHeight;
+  } catch (err) { upd.textContent = '✗ 전송 실패(' + err.message + ')'; }
+  finally { sendBtn.disabled = false; input.focus(); }
+};
+document.getElementById('c-form').addEventListener('submit', ev => { ev.preventDefault(); submit(); });
+input.addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); submit(); } });
+input.addEventListener('input', () => { input.style.height = ''; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; });
+document.getElementById('rs-refresh').addEventListener('click', () => load(true));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(true); });
+load(true); setInterval(() => load(false), 3000);
+</script>
+</body>
+</html>

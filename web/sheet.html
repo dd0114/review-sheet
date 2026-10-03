@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>답변 시트</title>
+<link rel="stylesheet" href="/sheet.css">
+</head>
+<body class="rs-page">
+<main id="app"></main>
+<script>
+/* review-sheet page. ?d=<name> loads /<name>-data.js (served from the sheet dir), which sets window.SHEET.
+   Answers POST to /__answers?sheet=<SHEET.id> (bin/review-sheet.mjs writes <dir>/answers/<id>.json)
+   and are kept in localStorage as a per-device draft.
+
+   SHEET = { id, title, eyebrow?, lede? (html), howto? (html), issueUrl? ('https://github.com/o/r/issues/'),
+             sections: [ { id, code, title, issue?, first?, ask?, askLabel?, now?, nowLabel?,
+                           links?: [[label, url]], images?: [[src, caption]], html?, table?: { head, rows, note? }, flow?: [..],
+                           questions: [ { k, q, sit?, decide?, effect?, images?: [[src, caption]], links?: [[label, url]], opts: [[label, example?, img?], …], rec?, why? } | [k, q, opts, rec, why] ] } ] }
+                           (images/links on a QUESTION render right under that question — hero 2026-10-02: one picture per question, not a pile on top)
+   The reviewer must understand each question without the issue open: plain language, one example per option. */
+(function(){
+  const d = (new URLSearchParams(location.search).get('d') || '').replace(/[^a-z0-9-]/g, '');
+  if(!d){ document.getElementById('app').innerHTML = '<p>?d=&lt;name&gt; 가 필요하다 — <a href="/">목록</a></p>'; return; }
+  const tag = document.createElement('script');
+  tag.src = '/' + d + '-data.js';
+  tag.onload = () => window.SHEET ? window.SHEET_RUN() : (document.getElementById('app').textContent = d + '-data.js 가 window.SHEET 를 만들지 않는다');
+  tag.onerror = () => { document.getElementById('app').innerHTML = d + '-data.js 가 없다 — <a href="/">목록</a>'; };
+  document.head.appendChild(tag);
+}());
+window.SHEET_RUN = function(){
+'use strict';
+const D = window.SHEET;
+const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const issueHref = v => /^https?:/.test(String(v)) ? String(v) : (D.issueUrl || '') + v;
+const issueText = v => /^https?:/.test(String(v)) ? '이슈' : '#' + v;
+const tbl = t => '<div class="g-wrap"><table class="g-t"><tr>' + t.head.map(x => '<th>' + e(x) + '</th>').join('') + '</tr>' +
+  t.rows.map(r => '<tr>' + r.map((v, i) => '<td' + (i === 0 ? ' class="def"' : '') + '>' + e(v) + '</td>').join('') + '</tr>').join('') + '</table></div>' +
+  (t.note ? '<p class="v-exnote">' + e(t.note) + '</p>' : '');
+const norm = qq => Array.isArray(qq) ? { k: qq[0], q: qq[1], opts: qq[2].map(x => Array.isArray(x) ? x : [x]), rec: qq[3] || '', why: qq[4] || '' }
+                                     : Object.assign({}, qq, { opts: (qq.opts || []).map(x => Array.isArray(x) ? x : [x]), rec: qq.rec || '', why: qq.why || '' });
+
+document.title = D.title || D.id;
+let h = '<div class="eyebrow"><a href="/" class="rs-back">← 받은편지함</a> <button type="button" class="rs-refresh" id="rs-refresh" title="이 시트 새로고침(제출된 답 다시 불러오기)">↻ 새로고침</button>' + (D.eyebrow ? ' · ' + e(D.eyebrow) : '') + (D.from ? ' · ' + e(D.from) : '') + '</div>' +
+  '<div class="rs-sub" id="rs-sub" hidden></div><h1>' + e(D.title || D.id) + '</h1>' +
+  (D.lede ? '<p class="lede">' + D.lede + '</p>' : '') +
+  '<div class="v-howto">' + (D.howto || '<b>답하는 법</b> — 선택지를 탭해 고르고(다시 탭 = 취소), 필요하면 메모. <b>빈 칸 = 추천</b> 은 안 고른 질문을 추천으로 채운다. 끝나면 <b>제출</b> — 위에 “✓ 제출됨” 띠가 뜨면 끝.') + '</div>';
+h += '<nav class="toc">' + D.sections.map(s => '<a href="#' + e(s.id || s.code) + '">' + e((s.code ? s.code + ' ' : '') + String(s.title || '').split(' — ')[0]) + '</a>').join('') + '</nav>';
+
+h += '<section class="box" id="summary"><h2>한눈에 — 추천</h2>' + D.sections.map((s, si) =>
+  '<div class="v-srow"><a href="#' + e(s.id || s.code) + '">' + e(s.code || (si + 1)) + '</a><div><div>' + e(s.title) + (s.first ? '<span class="v-first">먼저</span>' : '') +
+  '</div><div class="r">' + s.questions.map(norm).map(q => e(q.k) + '=' + e(q.rec || '—')).join(' · ') + '</div></div></div>').join('') + '</section>';
+
+/* links + images of a section or a question. Question-level ones sit right under the question text so the
+   reviewer never scrolls between a picture pile and the question it belongs to (hero 2026-10-02). */
+const media = o => {
+  let m = '';
+  if(o.links && o.links.length) m += '<div class="v-links">' + o.links.map(([t, u]) => '<button type="button" class="v-link" data-u="' + e(u) + '" data-t="' + e(t) + '">' + e(t) + ' ▾</button>').join('') + '</div>';
+  if(o.images && o.images.length) m += '<div class="rs-imgs">' + o.images.map(x => { const [src, cap] = Array.isArray(x) ? x : [x]; return '<figure><img class="rs-img" src="' + e(src) + '" alt="' + e(cap || '') + '">' + (cap ? '<figcaption>' + e(cap) + '</figcaption>' : '') + '</figure>'; }).join('') + '</div>';
+  return m;
+};
+for(const s of D.sections){
+  const sid = s.id || s.code;
+  h += '<section class="box" id="' + e(sid) + '"><div class="eyebrow">' + (s.code ? e(s.code) : '') +
+    (s.issue ? (s.code ? ' · ' : '') + '<a href="' + e(issueHref(s.issue)) + '" target="_blank" rel="noopener">' + e(issueText(s.issue)) + '</a>' : '') +
+    (s.first ? '<span class="v-first">먼저</span>' : '') + '</div>' +
+    '<h2>' + e(s.title) + '</h2>' +
+    (s.ask ? '<div class="v-ask">' + e(s.askLabel || 'hero') + ': “' + e(s.ask) + '”</div>' : '') +
+    (s.now ? '<p class="v-now"><b>' + e(s.nowLabel || '지금') + '</b> — ' + e(s.now) + '</p>' : '');
+  h += media(s);
+  if(s.html) h += '<div class="rs-html">' + s.html + '</div>';
+  if(s.flow) h += '<div class="v-flow">' + s.flow.map((f, i) => '<span class="s' + (i === 1 ? ' x' : '') + '">' + e(f) + '</span>').join('<span class="v-arrow">→</span>') + '</div>';
+  if(s.table) h += tbl(s.table);
+  h += s.questions.map(norm).map(o => {
+    const { k, q: t, opts, rec, why } = o;
+    const tok = String(rec).split(' ')[0];
+    const ctx = o.sit || o.decide || o.effect ? '<div class="v-ctx">' + (o.sit ? '<div><b>지금 상황</b>' + e(o.sit) + '</div>' : '') + (o.decide ? '<div><b>정하는 것</b>' + e(o.decide) + '</div>' : '') + (o.effect ? '<div><b>고르면 달라지는 것</b>' + e(o.effect) + '</div>' : '') + '</div>' : '';
+    return '<div class="v-q" data-q="' + e(s.code + '-' + k) + '"><div class="v-qh"><span class="n">' + e(k) + '</span><span>' + e(t) + '</span>' + (rec ? '<span class="v-rec">추천 ' + e(rec) + '</span>' : '') + '</div>' + ctx + media(o) + '<ul>' +
+      opts.map(([lb, ex, img], i) => '<li data-i="' + i + '" data-t="' + e(lb) + '"' + (opts.length > 1 && tok && String(lb).startsWith(tok + ' ') ? ' class="on"' : '') + '><span class="dot"></span><span>' + e(lb) +
+        (ex ? '<span class="ex">예: ' + e(ex) + '</span>' : '') + '</span>' + (img ? '<img src="' + e(img) + '" alt="">' : '') + '</li>').join('') + '</ul>' +
+      (why ? '<p class="v-why">' + e(why) + '</p>' : '') +
+      '<textarea class="v-memo" rows="1" placeholder="메모 · 다른 안 (선택 안 하고 여기만 써도 된다)"></textarea></div>';
+  }).join('') + '<div class="v-q" data-q="' + e(s.code + '-memo') + '"><div class="v-qh"><span>' + e(s.code) + ' 전체 메모</span></div><textarea class="v-memo" rows="2" placeholder="이 항목 전체에 대한 말"></textarea></div></section>';
+}
+h += '<div class="rs-pop" id="rs-pop" hidden><div class="rs-pop-bar"><b id="rs-pop-t"></b><a id="rs-pop-ext" href="#" target="_blank" rel="noopener">새 탭 ↗</a><button type="button" id="rs-pop-full" title="전체 화면">⤢</button><button type="button" id="rs-pop-x">닫기 ✕</button></div><iframe id="rs-pop-f" title="미리보기"></iframe></div>';
+h += '<div class="v-bar"><button class="all" type="button" id="v-all">빈 칸 = 추천</button><span class="st" id="v-st">고르고 · 적고 · 저장</span><button class="save" type="button" id="v-save">제출</button></div>';
+document.getElementById('app').innerHTML = h;
+
+/* links open INSIDE this page (hero 2026-10-01: no hopping between windows): an inline panel right under the
+   link row (same button again = close), with ⤢ for full screen and Esc to close. A site that refuses framing
+   (GitHub) shows blank — the "새 탭" link in the panel bar is the way out. */
+const pop = document.getElementById('rs-pop'), popF = document.getElementById('rs-pop-f'), popT = document.getElementById('rs-pop-t'), popX = document.getElementById('rs-pop-ext');
+let popBtn = null;
+const closePop = () => { pop.hidden = true; pop.classList.remove('full'); popF.src = 'about:blank'; if(popBtn) popBtn.classList.remove('open'); popBtn = null; document.body.classList.remove('rs-locked'); };
+const openPop = (anchor, title, url, btn) => {
+  if(popBtn) popBtn.classList.remove('open');
+  popBtn = btn || null; if(btn) btn.classList.add('open');
+  popT.textContent = title; popX.href = url; popF.src = url;
+  anchor.after(pop); pop.hidden = false;
+  pop.scrollIntoView({ block: 'nearest' });
+};
+document.getElementById('app').addEventListener('click', ev => {
+  const b = ev.target.closest('.v-link'); if(!b) return;
+  if(popBtn === b){ closePop(); return; }
+  openPop(b.closest('.v-links'), b.dataset.t, b.dataset.u, b);
+});
+document.getElementById('app').addEventListener('click', ev => {
+  const im = ev.target.closest('img.rs-img, .v-q li img'); if(!im) return;
+  const row = im.closest('.rs-imgs') || im.closest('.v-q ul');
+  openPop(row, im.alt || im.getAttribute('src'), im.src, null);
+});
+document.getElementById('rs-pop-x').addEventListener('click', closePop);
+document.getElementById('rs-pop-full').addEventListener('click', () => { const on = pop.classList.toggle('full'); document.body.classList.toggle('rs-locked', on); });
+document.addEventListener('keydown', ev => { if(ev.key === 'Escape' && !pop.hidden) closePop(); });
+
+/* answers: tap an option to pick (tap again to clear), memo per question. */
+const KEY = 'review-sheet-' + D.id;
+const st = document.getElementById('v-st');
+const collect = () => {
+  const out = { sheet: D.id, issues: D.sections.map(x => x.issue).filter(Boolean), answers: {} };
+  document.querySelectorAll('.v-q[data-q]').forEach(q => {
+    const li = q.querySelector('li.pick'), memo = q.querySelector('textarea').value.trim();
+    if(!li && !memo) return;
+    const a = {};
+    if(li) a.pick = li.dataset.t;
+    if(memo) a.memo = memo;
+    out.answers[q.dataset.q] = a;
+  });
+  return out;
+};
+const markSubmitted = savedAt => {
+  const b = document.getElementById('rs-sub');
+  if(!savedAt){ b.hidden = true; document.body.classList.remove('rs-submitted'); return; }
+  b.hidden = false; document.body.classList.add('rs-submitted');
+  b.innerHTML = '<b>✓ 제출됨</b> ' + new Date(savedAt).toLocaleString('ko-KR') + ' — 아래는 제출한 답이다. 고쳐서 <b>다시 제출</b>하면 덮어쓴다.';
+  document.title = '✓ ' + (D.title || D.id);
+  saveBtn.textContent = '수정해서 다시 제출';
+};
+const apply = saved => {
+  const A = (saved && saved.answers) || {};
+  document.querySelectorAll('.v-q[data-q]').forEach(q => {
+    const a = A[q.dataset.q]; if(!a) return;
+    if(a.pick) q.querySelectorAll('li').forEach(li => li.classList.toggle('pick', li.dataset.t === a.pick));
+    if(a.memo) q.querySelector('textarea').value = a.memo;
+  });
+};
+const saveBtn = document.getElementById('v-save');
+const count = () => { const n = document.querySelectorAll('li.pick').length, all = document.querySelectorAll('.v-q ul').length; return n + '/' + all + ' 고름'; };
+const draft = () => { try { localStorage.setItem(KEY, JSON.stringify(collect())); } catch(_){} st.className = 'st'; st.textContent = count() + ' · 제출 안 됨'; };
+document.getElementById('app').addEventListener('click', ev => {
+  const li = ev.target.closest('.v-q li'); if(!li || ev.target.closest('img')) return;
+  const on = li.classList.contains('pick');
+  li.parentNode.querySelectorAll('li').forEach(x => x.classList.remove('pick'));
+  if(!on) li.classList.add('pick');
+  draft();
+});
+document.getElementById('app').addEventListener('input', ev => { if(ev.target.matches('textarea')) draft(); });
+document.getElementById('v-all').addEventListener('click', () => {
+  document.querySelectorAll('.v-q ul').forEach(ul => { if(!ul.querySelector('li.pick')){ const r = ul.querySelector('li.on'); if(r) r.classList.add('pick'); } });
+  draft();
+});
+saveBtn.addEventListener('click', async () => {
+  const body = collect();
+  try { localStorage.setItem(KEY, JSON.stringify(body)); } catch(_){}
+  saveBtn.disabled = true; saveBtn.textContent = '저장 중…'; st.className = 'st'; st.textContent = '저장 중…';
+  try {
+    const r = await fetch('/__answers?sheet=' + encodeURIComponent(D.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    st.className = 'st ok';
+    st.textContent = '✓ 제출됨 ' + new Date(j.savedAt).toLocaleTimeString('ko-KR') + ' · ' + count();
+    saveBtn.textContent = '✓ 제출됨';
+    setTimeout(() => markSubmitted(j.savedAt), 2500);
+  } catch(err){
+    st.className = 'st bad';
+    st.textContent = '✗ 저장 실패(' + err.message + ') — 이 기기에는 남아 있다. 세션에 알려 줘';
+    saveBtn.textContent = '다시 저장';
+  } finally { saveBtn.disabled = false; }
+});
+(async () => {
+  let saved = null;
+  try { const r = await fetch('/__answers?sheet=' + encodeURIComponent(D.id), { cache: 'no-store' }); if(r.ok) saved = await r.json(); } catch(_){}
+  if(!saved || !saved.answers){ try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch(_){} }
+  apply(saved);
+  markSubmitted(saved && saved.savedAt);
+  st.textContent = count() + (saved && saved.savedAt ? ' · 제출 ' + new Date(saved.savedAt).toLocaleString('ko-KR') : ' · 아직 제출 안 함');
+})();
+document.getElementById('rs-refresh').addEventListener('click', () => location.reload());
+const go = new URLSearchParams(location.search).get('s') || location.hash.slice(1);
+if(go){ const t = document.getElementById(go); if(t) t.scrollIntoView(); }
+};
+</script>
+</body>
+</html>
