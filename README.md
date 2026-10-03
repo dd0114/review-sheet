@@ -16,7 +16,7 @@
 git clone https://github.com/dd0114/review-sheet ~/review-sheet
 mkdir -p ~/bin && ln -sf ~/review-sheet/bin/review-sheet.mjs ~/bin/review-sheet   # PATH 에 ~/bin
 mkdir -p ~/.claude/skills && ln -sf ~/review-sheet ~/.claude/skills/review-sheet   # Claude Code 스킬로 등록
-review-sheet install-inbox            # launchd 에 상주 서버 등록(부팅 시 자동, :5600, 기본 --lan)
+review-sheet install-inbox            # launchd plist 생성(:5600, 기본 --lan) → 출력된 launchctl bootstrap 명령 실행(부팅 시 자동)
 open http://127.0.0.1:5600/
 ```
 
@@ -49,7 +49,7 @@ node --test test/
 
 ## 처음 쓰는 사람에게
 
-[`SETUP-PROMPT.md`](SETUP-PROMPT.md) 의 프롬프트를 자기 Claude Code 세션에 붙여 넣으면 설치 → 메인 허브 채널 → 폰 접속 확인까지 진행하고, 여러 Claude 세션을 tmux 로 나누는 구조(허브 → 프로젝트 매니저 → 워커)를 제안해 준다.
+[`SETUP-PROMPT.md`](SETUP-PROMPT.md) 의 프롬프트를 자기 Claude Code 세션에 붙여 넣으면 설치 → 메인 허브 채널 → 폰 접속 확인까지 진행하고, 여러 Claude 세션을 나눠 쓰는 구조(허브 → 프로젝트 매니저 → 워커)는 참고 예시로만 보여 주고, 지금 쓰는 방식에 맞춰 가볍게 제안한다.
 
 ## License
 
