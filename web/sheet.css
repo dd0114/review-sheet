@@ -130,5 +130,7 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page ul.rs-index li.chat{border-left:5px solid #8A6D2E}
 .rs-page ul.rs-index li.chat .rs-badge{background:#8A6D2E;color:#fff}
 .rs-page ul.rs-index li.chat.new{background:#FBF4E4}
+.rs-page ul.rs-index li.chat.hub{border-left-width:8px;background:#FFF9EC}
+.rs-page ul.rs-index li.chat.hub b{font-size:1.08em}
 .rs-page ul.rs-index li.chat.new .rs-badge{background:#B2472F}
 .rs-page .rs-n-chat{background:#8A6D2E}

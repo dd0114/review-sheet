@@ -69,6 +69,19 @@ hero 쪽
   http://127.0.0.1:5600/chat.html?c=<ch>   (폰: tailnet 주소) — 받은편지함에서 채널을 누르면 열린다
 ```
 
+### 메인 허브 — 받은편지함을 열면 기본으로 연결되는 채널
+
+채널 중 하나가 **메인 허브**다 = hero 의 메인 세션(오케스트레이터)이 소유한 채널. 받은편지함 맨 위에 ★ 로 고정되고, `http://<주소>:5600/hub` 가 그 채널로 바로 열린다(폰 즐겨찾기는 이 주소 하나). 도메인 매니저·워커 채널은 그 아래에 붙는다.
+
+```
+review-sheet chat new main --title "메인 허브" --owner main --hub   # 메인 세션이 1회. 첫 채널은 --hub 없이도 허브가 된다
+review-sheet chat hub            # 지금 허브 보기
+review-sheet chat hub <ch>       # 허브 바꾸기(하나만)
+```
+
+- 허브 채널은 **메인 세션만** 소유한다. 다른 세션은 자기 채널을 만들되 `--hub` 를 쓰지 않는다.
+- hero 가 어디로 말할지 모르면 허브로 말한다 → 메인 세션이 해당 세션에 전달한다.
+
 규칙
 - 세션은 채널에 **항상 `wait` 를 걸어 둔다**(백그라운드 1개). 끝나면(hero 메시지 수신 / 타임아웃 exit 3) 답하고 즉시 다시 건다. 컴팩션·재기동 후에도 첫 할 일은 `chat read <ch>` → 답 → `wait` 재장전.
 - 답은 짧게, 대화창 말투 그대로. 긴 결정은 시트로 보내고 채널엔 링크만.
@@ -132,11 +145,12 @@ window.SHEET = {
 | `read [dir] <name|id> [--json]` | 제출된 답을 질문과 합쳐 마크다운(없으면 exit 4) |
 | `wait [dir] <name|id> [--timeout SEC]` | 제출될 때까지 블록(기본 1h, 타임아웃 exit 3) → 제출되면 `read` 와 같은 출력 |
 | `chat new <ch> [--title T] [--owner S]` | 상시 채널 생성(inbox 고정) |
+| `chat hub [<ch>]` | 메인 허브 채널 보기/지정 — 받은편지함 맨 위 ★, `/hub` 리다이렉트 |
 | `chat wait <ch> [--timeout SEC]` | hero 의 새 메시지까지 블록(exit 3 = 타임아웃) → 출력 + 읽음 처리 |
 | `chat say <ch> <text…\|->` | 소유자 이름으로 답 기록 (`-` = stdin) |
 | `chat read <ch> [--all] [--json]` · `chat ls` | 안 읽은 메시지 / 전부 · 채널 목록(미읽 수) |
 
-HTTP: `/api/inbox`(시트+채널), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text}`(페이지 = hero), 전부 CORS 열림.
+HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text}`(페이지 = hero), 전부 CORS 열림.
 
 의존성 없음, Node 18+. 테스트: `node --test <SKILL_DIR>/test/`.
 

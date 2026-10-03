@@ -123,3 +123,23 @@ test('chat: new → page posts as hero → owner reads/says → hero sees 읽음
     assert.ok(readChatLog(dir, 'root').length === 2 && appendChat);
   } finally { await close(); }
 });
+
+test('hub: first CLI channel becomes the hub, chat hub switches it, /hub redirects, hub listed first', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-hub-'));
+  const env = { ...process.env, REVIEW_SHEET_INBOX: dir };
+  const cli = (...a) => execFileSync('node', [BIN, ...a], { encoding: 'utf8', env });
+  cli('chat', 'new', 'main', '--title', '메인 허브', '--owner', 'main');
+  cli('chat', 'new', 'proj', '--owner', 'proj:main');
+  const { listChats } = await import('../bin/review-sheet.mjs');
+  assert.deepEqual(listChats(dir).map(c => [c.name, c.hub]), [['main', true], ['proj', false]]);
+  assert.match(cli('chat', 'hub'), /^main/);
+  cli('chat', 'hub', 'proj');
+  assert.deepEqual(listChats(dir).map(c => [c.name, c.hub]), [['proj', true], ['main', false]]);
+  assert.match(cli('chat', 'ls'), /^★proj\t/);
+  const { base, close } = await startServer(dir, 0);
+  try {
+    const r = await fetch(base + '/hub', { redirect: 'manual' });
+    assert.equal(r.status, 302); assert.equal(r.headers.get('location'), '/chat.html?c=proj');
+    assert.match(await (await fetch(base + '/')).text(), /메인 허브|★/);
+  } finally { await close(); }
+});

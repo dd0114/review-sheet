@@ -4,6 +4,7 @@
 
 - **결정 시트** — 세션이 질문·선택지·추천을 데이터 파일로 쓰면, 사람은 브라우저(폰 OK)에서 탭으로 고르고 메모한 뒤 저장. 답은 `answers/<id>.json` 으로 떨어지고 세션이 마크다운으로 읽어 간다. 대화창에서 "A/B 중 뭐요?" 를 여러 번 주고받는 대신 한 페이지로 보내고 한 번에 받는다.
 - **상시 채널(chat)** — 사람과 특정 세션 사이의 메신저 페이지(말풍선·Enter 전송·읽음 표시). 세션은 `chat wait` 를 백그라운드로 걸어 두고, 메시지가 오면 답하고 다시 건다.
+- **메인 허브** — 채널 하나를 메인 세션의 허브로 지정(`--hub`, 첫 채널은 자동). 받은편지함 맨 위에 ★ 고정, `/hub` 가 바로 그 채널. 프로젝트 매니저·워커 채널은 그 아래.
 - **받은편지함 하나, 서버 하나, 탭 하나** — 모든 세션이 `~/.review-sheet/inbox` 에 시트를 넣고, 상주 서버(`:5600`)가 큐처럼 보여 준다(답 기다리는 중 / 제출됨).
 - **폰에서** — [Tailscale](https://tailscale.com) 로 맥과 폰을 같은 tailnet 에 두면 밖에서도 `http://<맥 tailnet 주소>:5600/` 로 열린다.
 
@@ -30,7 +31,7 @@ review-sheet wait myproj-v1-rules     # 제출될 때까지 블록, 마크다운
 review-sheet read myproj-v1-rules [--json]
 review-sheet ls                       # 대기 / 제출됨
 
-review-sheet chat new main --title "메인 세션과 대화" --owner main
+review-sheet chat new main --title "메인 허브" --owner main --hub   # → http://127.0.0.1:5600/hub
 review-sheet chat wait main --timeout 14400   # 세션: 사람이 쓸 때까지 블록 → chat say main "…" 로 답 → 다시 wait
 review-sheet chat say main "답장"
 node --test test/
@@ -48,7 +49,7 @@ node --test test/
 
 ## 처음 쓰는 사람에게
 
-[`SETUP-PROMPT.md`](SETUP-PROMPT.md) 의 프롬프트를 자기 Claude Code 세션에 붙여 넣으면 설치부터 폰 접속 확인까지 진행해 준다.
+[`SETUP-PROMPT.md`](SETUP-PROMPT.md) 의 프롬프트를 자기 Claude Code 세션에 붙여 넣으면 설치 → 메인 허브 채널 → 폰 접속 확인까지 진행하고, 여러 Claude 세션을 tmux 로 나누는 구조(허브 → 프로젝트 매니저 → 워커)를 제안해 준다.
 
 ## License
 

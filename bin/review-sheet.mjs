@@ -51,7 +51,8 @@ function usage(code = 2) {
   review-sheet wait  [dir] <id> [--timeout SEC]
   review-sheet ls    [dir]
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
-  review-sheet chat new  <ch> [--title T] [--owner <session>]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저
+  review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
+  review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
   review-sheet chat ls | read <ch> [--all] [--json] | say <ch> <text…|-> | wait <ch> [--timeout SEC]
   [dir] omitted → inbox ${INBOX} (one folder for every session; served on :${INBOX_PORT})`);
   process.exit(code);
@@ -61,7 +62,7 @@ function parseArgs(argv) {
   const flags = {}, rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--lan' || a === '--json' || a === '--all') flags[a.slice(2)] = true;
+    if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub') flags[a.slice(2)] = true;
     else if (a === '--port' || a === '--timeout') flags[a.slice(2)] = Number(argv[++i]);
     else if (a === '--title' || a === '--owner') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
@@ -163,14 +164,21 @@ export function appendChat(root, ch, from, text) {
   fs.appendFileSync(chatLogFile(root, ch), JSON.stringify(msg) + '\n');
   return msg;
 }
-export function newChat(root, name, title, owner) {
+export function newChat(root, name, title, owner, hub) {
   if (!ID_RE.test(name)) throw new Error('채널 이름은 [a-z0-9-]');
   fs.mkdirSync(chatDir(root), { recursive: true });
   if (fs.existsSync(chatMetaFile(root, name))) throw new Error(`채널 ${name} 이미 있음`);
   const meta = { name, title: title || name, owner: owner || name, createdAt: new Date().toISOString(), seenAt: null, heroSeenAt: null };
   writeChatMeta(root, meta); fs.writeFileSync(chatLogFile(root, name), '');
-  return meta;
+  if (hub) setHub(root, name);
+  return readChatMeta(root, name);
 }
+/* the hub = the main session's channel: pinned on top of the inbox and the target of /hub (phone bookmark). One at a time. */
+export function setHub(root, name) {
+  if (!readChatMeta(root, name)) throw new Error(`채널 ${name} 없음`);
+  for (const c of listChats(root)) { const m = readChatMeta(root, c.name); const want = c.name === name; if (!!m.hub !== want) { m.hub = want; writeChatMeta(root, m); } }
+}
+export const hubChat = root => listChats(root).find(c => c.hub) || null;
 export function listChats(root) {
   let names = []; try { names = fs.readdirSync(chatDir(root)).filter(f => f.endsWith('.json')).map(f => f.slice(0, -5)).sort(); } catch { /* none */ }
   return names.map(n => {
@@ -178,8 +186,8 @@ export function listChats(root) {
     const log = readChatLog(root, n); const last = log[log.length - 1] || null;
     const unreadHero = log.filter(m => m.from !== 'hero' && (!meta.heroSeenAt || m.ts > meta.heroSeenAt)).length;   // for hero: session replies not yet seen
     const unreadOwner = log.filter(m => m.from === 'hero' && (!meta.seenAt || m.ts > meta.seenAt)).length;         // for the session: hero messages not yet read
-    return { ...meta, count: log.length, last, unreadHero, unreadOwner };
-  }).filter(Boolean);
+    return { ...meta, hub: !!meta.hub, count: log.length, last, unreadHero, unreadOwner };
+  }).filter(Boolean).sort((a, b) => b.hub - a.hub);
 }
 function markSeen(root, ch, who) {
   const meta = readChatMeta(root, ch); if (!meta) return null;
@@ -214,8 +222,8 @@ const row = s => s.error
     '<span class="rs-badge">' + (s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
     '<small>' + (s.from ? esc(s.from) + ' · ' : '') + s.picked + '/' + s.total + ' 답함' +
     (s.submitted ? ' · 제출 ' + when(s.savedAt) : (s.createdAt ? ' · 보냄 ' + when(s.createdAt) : '')) + '</small></a></li>';
-const chatRow = c => '<li class="chat' + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
-  '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : '💬 채널') + '</span><b>' + esc(c.title) + '</b>' +
+const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : '') + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
+  '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : c.hub ? '★ 메인 허브' : '💬 채널') + '</span><b>' + esc(c.title) + '</b>' +
   '<small>' + esc(c.owner) + (c.last ? ' · ' + esc(c.last.from === 'hero' ? '나' : c.last.from) + ': ' + esc(c.last.text.slice(0, 60)) + (c.last.text.length > 60 ? '…' : '') + ' · ' + when(c.last.ts) : ' · 아직 대화 없음') + '</small></a></li>';
 const render = d => {
   const wait = d.sheets.filter(s => s.error || !s.submitted), done = d.sheets.filter(s => !s.error && s.submitted);
@@ -272,6 +280,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     const cors = { 'access-control-allow-origin': '*' };
     if (url.pathname === '/api/sheets') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root) }), cors);
     if (url.pathname === '/api/inbox') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root), chats: listChats(root) }), cors);
+    if (url.pathname === '/hub') { const h = hubChat(root); return h ? send(res, 302, 'text/plain', '', { location: '/chat.html?c=' + encodeURIComponent(h.name) }) : send(res, 302, 'text/plain', '', { location: '/' }); }
     if (url.pathname === '/api/chats') return send(res, 200, TYPES['.json'], JSON.stringify({ chats: listChats(root) }), cors);
     if (url.pathname === '/api/chat') {
       const ch = url.searchParams.get('c') || '';
@@ -346,8 +355,9 @@ async function main() {
     const [, sub, ch, ...words] = rest;
     const root = INBOX; fs.mkdirSync(chatDir(root), { recursive: true });
     const fmt = m => `${m.ts.replace('T', ' ').slice(0, 16)}  ${m.from === 'hero' ? 'hero' : m.from}: ${m.text}`;
-    if (sub === 'new') { const m = newChat(root, ch, flags.title, flags.owner); console.log(`${chatLogFile(root, m.name)}\n  → http://127.0.0.1:${INBOX_PORT}/chat.html?c=${m.name}`); return; }
-    if (sub === 'ls') { for (const c of listChats(root)) console.log(`${c.name}\t${c.owner}\t${c.count}건\thero 미읽 ${c.unreadHero}\t세션 미읽 ${c.unreadOwner}\t${c.title}`); return; }
+    if (sub === 'hub') { if (!ch) { const h = hubChat(root); console.log(h ? h.name : '(허브 없음 — chat hub <ch>)'); return; } setHub(root, ch); console.log(`허브 = ${ch}  → http://127.0.0.1:${INBOX_PORT}/hub`); return; }
+    if (sub === 'new') { const m = newChat(root, ch, flags.title, flags.owner, flags.hub || !listChats(root).length); console.log(`${chatLogFile(root, m.name)}\n  → http://127.0.0.1:${INBOX_PORT}/chat.html?c=${m.name}`); return; }
+    if (sub === 'ls') { for (const c of listChats(root)) console.log(`${c.hub ? '★' : ''}${c.name}\t${c.owner}\t${c.count}건\thero 미읽 ${c.unreadHero}\t세션 미읽 ${c.unreadOwner}\t${c.title}`); return; }
     if (!ch || !readChatMeta(root, ch)) { console.error(`채널 ${ch || '?'} 없음 — chat new <ch>`); process.exit(1); }
     if (sub === 'say') {
       const text = words[0] === '-' || !words.length ? fs.readFileSync(0, 'utf8').trim() : words.join(' ');
