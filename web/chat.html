@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>채널</title>
 <link rel="stylesheet" href="/sheet.css">
-<!-- review-sheet 상시 채널: hero ↔ 한 세션의 메신저. GET /api/chat?c=<ch>, POST /__chat?c=<ch> {text} (항상 hero 로 기록).
+<!-- review-sheet 상시 채널: hero ↔ 한 세션의 메신저. GET /api/chat?c=<ch>, POST /__chat?c=<ch> {text, files} (항상 hero 로 기록).
+     이미지: 📎·붙여넣기·끌어놓기 → POST /__chat/file?c=<ch> (raw body) → {name} → 메시지 files 에 실어 보냄.
      세션 쪽은 `review-sheet chat wait <ch>` 로 받고 `chat say <ch> <text>` 로 답한다. meta.seenAt 이 "세션이 여기까지 읽음". -->
 </head>
 <body class="rs-page rs-chat">
@@ -15,6 +16,8 @@
   <p class="lede" id="c-lede"></p>
   <div class="c-log" id="c-log"></div>
   <form class="c-bar" id="c-form">
+    <div class="c-att" id="c-att" hidden></div>
+    <label class="c-clip" title="이미지 첨부 (붙여넣기·끌어놓기도 됨)">📎<input type="file" id="c-file" accept="image/*" multiple hidden></label>
     <textarea id="c-in" rows="1" placeholder="메시지 (Enter = 보내기, Shift+Enter = 줄바꿈)"></textarea>
     <button type="submit" class="save" id="c-send">보내기</button>
   </form>
@@ -42,7 +45,7 @@ const render = (m, msgs) => {
     const d = new Date(x.ts).toLocaleDateString('ko-KR'); if (d !== day) { day = d; h += '<div class="c-day">' + e(d) + '</div>'; }
     const mine = x.from === 'hero';
     h += '<div class="c-msg ' + (mine ? 'me' : 'them') + '">' + (mine ? '' : '<div class="c-who">' + e(x.from) + '</div>') +
-      '<div class="c-bubble">' + linkify(x.text) + '</div><div class="c-meta">' + t(x.ts) + (mine && m.seenAt && x.ts <= m.seenAt ? ' · 읽음' : '') + '</div></div>';
+      '<div class="c-bubble">' + (x.files || []).map(f => { const u = '/chat/' + encodeURIComponent(CH) + '.files/' + encodeURIComponent(f); return '<a href="' + u + '" target="_blank" rel="noopener"><img class="c-img" src="' + u + '" alt="" loading="lazy"></a>'; }).join('') + linkify(x.text) + '</div><div class="c-meta">' + t(x.ts) + (mine && m.seenAt && x.ts <= m.seenAt ? ' · 읽음' : '') + '</div></div>';
   }
   log.innerHTML = h || '<div class="c-day">아직 대화 없음 — 아래에 적어 보내면 세션이 받는다</div>';
   if (atBottom || first) { first = false; toBottom(); requestAnimationFrame(toBottom); }
@@ -56,14 +59,43 @@ const load = async (seen) => {
     upd.textContent = '갱신 ' + new Date().toLocaleTimeString('ko-KR');
   } catch (_) { upd.textContent = '갱신 실패 — 서버 확인'; }
 };
-const input = document.getElementById('c-in'), sendBtn = document.getElementById('c-send');
+const input = document.getElementById('c-in'), sendBtn = document.getElementById('c-send'), att = document.getElementById('c-att');
+if (matchMedia('(pointer: coarse)').matches) input.placeholder = '메시지';   // 폰: 긴 안내문이 두 줄로 접혀 칸이 커지지 않게
+// 첨부 대기열: 고른 이미지는 보내기 전까지 미리보기로만 들고 있다. 큰 사진은 긴 변 2048px JPEG 로 줄여 올린다
+let pending = [];
+const shrink = f => new Promise(res => {
+  if (f.size < 1.5e6 || !/^image\/(png|jpeg|webp)$/.test(f.type)) return res(f);
+  const img = new Image(), u = URL.createObjectURL(f);
+  img.onload = () => { const k = Math.min(1, 2048 / Math.max(img.width, img.height)); const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(u); c.toBlob(b => res(b && b.size < f.size ? b : f), 'image/jpeg', 0.88); };
+  img.onerror = () => { URL.revokeObjectURL(u); res(f); }; img.src = u;
+});
+const drawAtt = () => {
+  att.hidden = !pending.length;
+  att.innerHTML = pending.map((p, i) => '<span class="c-thumb"><img src="' + p.url + '" alt=""><button type="button" data-i="' + i + '" aria-label="빼기">✕</button></span>').join('');
+};
+const addFiles = list => { for (const f of list) if (f && /^image\//.test(f.type)) pending.push({ file: f, url: URL.createObjectURL(f) }); drawAtt(); };
+att.addEventListener('click', ev => { const b = ev.target.closest('button[data-i]'); if (!b) return; const [p] = pending.splice(+b.dataset.i, 1); URL.revokeObjectURL(p.url); drawAtt(); });
+document.getElementById('c-file').addEventListener('change', ev => { addFiles(ev.target.files); ev.target.value = ''; });
+document.addEventListener('paste', ev => { const fs = [...(ev.clipboardData ? ev.clipboardData.files : [])].filter(f => /^image\//.test(f.type)); if (fs.length) { ev.preventDefault(); addFiles(fs); } });
+document.addEventListener('dragover', ev => { if ([...ev.dataTransfer.types].includes('Files')) ev.preventDefault(); });
+document.addEventListener('drop', ev => { if (ev.dataTransfer.files.length) { ev.preventDefault(); addFiles(ev.dataTransfer.files); } });
 const submit = async () => {
-  const text = input.value.trim(); if (!text) return;
+  const text = input.value.trim(); if (!text && !pending.length) return;
   sendBtn.disabled = true;
   try {
-    const r = await fetch('/__chat?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+    const files = [];
+    for (const p of pending) {
+      upd.textContent = '이미지 올리는 중 ' + (files.length + 1) + '/' + pending.length + '…';
+      const b = await shrink(p.file);
+      const r = await fetch('/__chat/file?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': b.type || 'application/octet-stream' }, body: b });
+      if (!r.ok) throw new Error('이미지 ' + (await r.text()));
+      files.push((await r.json()).name);
+    }
+    const r = await fetch('/__chat?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, files }) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    input.value = ''; input.style.height = ''; setTimeout(() => { if (/^\s*$/.test(input.value)) input.value = ''; }, 0); await load(false); toBottom();
+    for (const p of pending) URL.revokeObjectURL(p.url); pending = []; drawAtt();
+    input.value = ''; fit(); setTimeout(() => { if (/^\s*$/.test(input.value)) { input.value = ''; fit(); } }, 0); await load(false); toBottom();
   } catch (err) { upd.textContent = '✗ 전송 실패(' + err.message + ')'; }
   finally { sendBtn.disabled = false; input.focus(); }
 };
@@ -78,7 +110,9 @@ input.addEventListener('keydown', ev => {
   if (ev.isComposing || composing || ev.keyCode === 229) { sendAfterCompose = true; return; }
   submit();
 });
-input.addEventListener('input', () => { input.style.height = ''; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; });
+// 높이 맞춤: border-box 라 scrollHeight 에 테두리를 더해야 한 줄이 칸 안에 딱 맞는다(안 더하면 1~2px 넘쳐 내용이 위로 밀리고 커서가 글자 밑에 보임)
+function fit() { input.style.height = ''; if (!input.value) return; input.style.height = Math.min(input.scrollHeight + input.offsetHeight - input.clientHeight, 160) + 'px'; }
+input.addEventListener('input', fit);
 document.getElementById('rs-refresh').addEventListener('click', () => load(true));
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(true); });
 load(true); setInterval(() => load(false), 3000);

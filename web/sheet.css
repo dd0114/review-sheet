@@ -123,9 +123,16 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .c-msg.them .c-bubble{border-bottom-left-radius:4px}
 .rs-page .c-bubble a{color:inherit;text-decoration:underline}
 .rs-page .c-meta{font-size:11px;color:#888;margin:2px 6px 0}
-.rs-page .c-bar{position:sticky;bottom:0;display:flex;gap:8px;align-items:flex-end;padding:10px 0 0;background:#E9E7E2;border-top:1px solid #CFCBC2;margin-top:8px}
-.rs-page .c-bar textarea{flex:1;resize:none;min-height:44px;max-height:160px;padding:11px 12px;border:1px solid #CFCBC2;border-radius:12px;font:15px/1.4 system-ui,sans-serif;background:#FFFDF8;box-sizing:border-box}
-.rs-page .c-bar .save{min-height:44px;padding:0 16px;border-radius:12px;border:0;background:#1F6B3A;color:#fff;font:800 15px system-ui,sans-serif}
+.rs-page .c-bar{position:sticky;bottom:0;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;padding:10px 0 0;background:#E9E7E2;border-top:1px solid #CFCBC2;margin-top:8px}
+.rs-page .c-bar textarea{flex:1;min-width:0;resize:none;height:46px;min-height:46px;max-height:160px;padding:11px 12px;border:1px solid #CFCBC2;border-radius:12px;font:16px/22px system-ui,sans-serif;background:#FFFDF8;box-sizing:border-box;overflow-y:auto}
+.rs-page .c-bar .c-clip{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:44px;height:46px;border-radius:12px;border:1px solid #CFCBC2;background:#FFFDF8;font-size:20px;cursor:pointer;box-sizing:border-box}
+.rs-page .c-att{flex:0 0 100%;display:flex;flex-wrap:wrap;gap:8px;padding:2px 0 4px}
+.rs-page .c-att[hidden]{display:none}
+.rs-page .c-thumb{position:relative;display:block}
+.rs-page .c-thumb img{display:block;width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid #CFCBC2}
+.rs-page .c-thumb button{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:0;background:#2B2A27;color:#fff;font-size:12px;line-height:22px;padding:0;cursor:pointer}
+.rs-page .c-img{display:block;max-width:100%;max-height:320px;border-radius:10px;margin:2px 0 6px}
+.rs-page .c-bar .save{min-height:46px;padding:0 16px;border-radius:12px;border:0;background:#1F6B3A;color:#fff;font:800 15px system-ui,sans-serif}
 .rs-page .c-bar .save:disabled{opacity:.6}
 .rs-page ul.rs-index li.chat{border-left:5px solid #8A6D2E}
 .rs-page ul.rs-index li.chat .rs-badge{background:#8A6D2E;color:#fff}

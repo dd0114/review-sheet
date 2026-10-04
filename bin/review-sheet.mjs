@@ -36,7 +36,7 @@ const TYPES = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.heic': 'image/heic',
   '.woff2': 'font/woff2', '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
 };
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -144,11 +144,22 @@ function listSheets(dir) {
 
 /* ── 상시 채널 (chat) ───────────────────────────────────────────────────────────
    inbox/chat/<ch>.json   meta  { name, title, owner, createdAt, seenAt (owner read up to), heroSeenAt }
-   inbox/chat/<ch>.jsonl  one message per line { id, ts, from: 'hero'|<owner>, text }
+   inbox/chat/<ch>.jsonl  one message per line { id, ts, from: 'hero'|<owner>, text, files?: [name] }
+   inbox/chat/<ch>.files/ attached images (page: 📎·paste·drop → POST /__chat/file), served at /chat/<ch>.files/<name>
    The page always posts as 'hero'; the owning session answers with `chat say` and listens with `chat wait`. */
 const chatDir = root => path.join(root, 'chat');
 const chatMetaFile = (root, ch) => path.join(chatDir(root), ch + '.json');
 const chatLogFile = (root, ch) => path.join(chatDir(root), ch + '.jsonl');
+const chatFilesDir = (root, ch) => path.join(chatDir(root), ch + '.files');
+export const chatFilePath = (root, ch, name) => path.join(chatFilesDir(root, ch), name);
+const FILE_RE = /^[a-z0-9]{6,32}\.(png|jpe?g|gif|webp|heic)$/;
+const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic' };
+export function saveChatFile(root, ch, type, buf) {
+  const ext = IMG_EXT[String(type).split(';')[0].trim().toLowerCase()]; if (!ext) throw new Error('이미지(png/jpeg/gif/webp/heic)만');
+  fs.mkdirSync(chatFilesDir(root, ch), { recursive: true });
+  const name = Date.now().toString(36) + Math.random().toString(36).slice(2, 8) + '.' + ext;
+  fs.writeFileSync(chatFilePath(root, ch, name), buf); return name;
+}
 export function readChatMeta(root, ch) { try { return JSON.parse(fs.readFileSync(chatMetaFile(root, ch), 'utf8')); } catch { return null; } }
 function writeChatMeta(root, meta) {
   const f = chatMetaFile(root, meta.name);
@@ -158,9 +169,10 @@ export function readChatLog(root, ch) {
   try { return fs.readFileSync(chatLogFile(root, ch), 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); }
   catch { return []; }
 }
-export function appendChat(root, ch, from, text) {
+export function appendChat(root, ch, from, text, files) {
   const meta = readChatMeta(root, ch); if (!meta) throw new Error(`채널 ${ch} 없음`);
   const msg = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: new Date().toISOString(), from, text: String(text) };
+  if (files && files.length) msg.files = files;
   fs.appendFileSync(chatLogFile(root, ch), JSON.stringify(msg) + '\n');
   return msg;
 }
@@ -288,6 +300,18 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       const meta = readChatMeta(root, ch); if (!meta) return send(res, 404, 'text/plain', 'no such channel');
       return send(res, 200, TYPES['.json'], JSON.stringify({ meta, messages: readChatLog(root, ch) }), cors);
     }
+    if (url.pathname === '/__chat/file' && req.method === 'POST') {   // raw image body → inbox/chat/<ch>.files/<name>
+      const ch = url.searchParams.get('c') || '';
+      if (!ID_RE.test(ch) || !readChatMeta(root, ch)) return send(res, 404, 'text/plain', 'no such channel');
+      const chunks = []; let n = 0, big = false;
+      req.on('data', c => { n += c.length; if (n > 20e6) { big = true; req.destroy(); } else chunks.push(c); });
+      req.on('end', () => {
+        if (big) return;
+        try { send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, name: saveChatFile(root, ch, req.headers['content-type'], Buffer.concat(chunks)) })); }
+        catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
+      });
+      return;
+    }
     if (url.pathname === '/__chat' && req.method === 'POST') {
       const ch = url.searchParams.get('c') || '';
       if (!ID_RE.test(ch) || !readChatMeta(root, ch)) return send(res, 404, 'text/plain', 'no such channel');
@@ -297,7 +321,9 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
         try {
           const j = JSON.parse(body || '{}');
           let msg = null;
-          if (typeof j.text === 'string' && j.text.trim()) msg = appendChat(root, ch, 'hero', j.text.trim());   // the page is always hero
+          const files = (Array.isArray(j.files) ? j.files : []).filter(f => typeof f === 'string' && FILE_RE.test(f) && fs.existsSync(chatFilePath(root, ch, f)));
+          const text = typeof j.text === 'string' ? j.text.trim() : '';
+          if (text || files.length) msg = appendChat(root, ch, 'hero', text, files);   // the page is always hero
           const meta = markSeen(root, ch, 'hero');
           send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, msg, meta }));
         } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
@@ -354,7 +380,8 @@ async function main() {
   if (cmd === 'chat') {
     const [, sub, ch, ...words] = rest;
     const root = INBOX; fs.mkdirSync(chatDir(root), { recursive: true });
-    const fmt = m => `${m.ts.replace('T', ' ').slice(0, 16)}  ${m.from === 'hero' ? 'hero' : m.from}: ${m.text}`;
+    const fmt = m => `${m.ts.replace('T', ' ').slice(0, 16)}  ${m.from === 'hero' ? 'hero' : m.from}: ${m.text}` +
+      (m.files || []).map(f => `\n  [이미지] ${chatFilePath(root, ch, f)}`).join('');
     if (sub === 'hub') { if (!ch) { const h = hubChat(root); console.log(h ? h.name : '(허브 없음 — chat hub <ch>)'); return; } setHub(root, ch); console.log(`허브 = ${ch}  → http://127.0.0.1:${INBOX_PORT}/hub`); return; }
     if (sub === 'new') { const m = newChat(root, ch, flags.title, flags.owner, flags.hub || !listChats(root).length); console.log(`${chatLogFile(root, m.name)}\n  → http://127.0.0.1:${INBOX_PORT}/chat.html?c=${m.name}`); return; }
     if (sub === 'ls') { for (const c of listChats(root)) console.log(`${c.hub ? '★' : ''}${c.name}\t${c.owner}\t${c.count}건\thero 미읽 ${c.unreadHero}\t세션 미읽 ${c.unreadOwner}\t${c.title}`); return; }

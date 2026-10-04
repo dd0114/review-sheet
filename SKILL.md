@@ -150,7 +150,7 @@ window.SHEET = {
 | `wait [dir] <name|id> [--timeout SEC]` | 제출될 때까지 블록(기본 1h, 타임아웃 exit 3) → 제출되면 `read` 와 같은 출력 |
 | `chat new <ch> [--title T] [--owner S]` | 상시 채널 생성(inbox 고정) |
 | `chat hub [<ch>]` | 메인 허브 채널 보기/지정 — 받은편지함 맨 위 ★, `/hub` 리다이렉트 |
-| `chat wait <ch> [--timeout SEC]` | hero 의 새 메시지까지 블록(exit 3 = 타임아웃) → 출력 + 읽음 처리 |
+| `chat wait <ch> [--timeout SEC]` | hero 의 새 메시지까지 블록(exit 3 = 타임아웃) → 출력 + 읽음 처리. 첨부 이미지는 `[이미지] <절대경로>` 줄로 나온다 → Read 로 열어 본다 |
 | `chat say <ch> <text…\|->` | 소유자 이름으로 답 기록 (`-` = stdin) |
 | `chat read <ch> [--all] [--json]` · `chat ls` | 안 읽은 메시지 / 전부 · 채널 목록(미읽 수) |
 
