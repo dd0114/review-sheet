@@ -63,12 +63,21 @@ const submit = async () => {
   try {
     const r = await fetch('/__chat?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    input.value = ''; input.style.height = ''; await load(false); toBottom();
+    input.value = ''; input.style.height = ''; setTimeout(() => { if (/^\s*$/.test(input.value)) input.value = ''; }, 0); await load(false); toBottom();
   } catch (err) { upd.textContent = '✗ 전송 실패(' + err.message + ')'; }
   finally { sendBtn.disabled = false; input.focus(); }
 };
 document.getElementById('c-form').addEventListener('submit', ev => { ev.preventDefault(); submit(); });
-input.addEventListener('keydown', ev => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); submit(); } });
+// 한글 IME: 조합 중 Enter 는 줄바꿈을 넣지 않고(preventDefault) 조합이 끝난 뒤 보낸다 — 커서가 아랫줄로 내려가던 버그
+let composing = false, sendAfterCompose = false;
+input.addEventListener('compositionstart', () => { composing = true; });
+input.addEventListener('compositionend', () => { composing = false; if (sendAfterCompose) { sendAfterCompose = false; setTimeout(submit, 0); } });
+input.addEventListener('keydown', ev => {
+  if (ev.key !== 'Enter' || ev.shiftKey) return;
+  ev.preventDefault();
+  if (ev.isComposing || composing || ev.keyCode === 229) { sendAfterCompose = true; return; }
+  submit();
+});
 input.addEventListener('input', () => { input.style.height = ''; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; });
 document.getElementById('rs-refresh').addEventListener('click', () => load(true));
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(true); });
