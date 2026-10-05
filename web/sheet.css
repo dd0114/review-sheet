@@ -78,6 +78,10 @@ body.rs-locked{overflow:hidden}
 .rs-page .v-bar .save{background:#1F6B3A;color:#fff}
 .rs-page .v-bar .save:disabled{opacity:.6}
 .rs-page .v-bar .all{background:#fff;color:#1F6B3A;border:1px solid #1F6B3A}
+/* 받은편지함 가기 — 아래 띠에 늘 붙어 있어 스크롤해도 보인다. 제출하고 나면 초록으로 눈에 띄게 */
+.rs-page .v-bar .inbox{flex:0 0 auto;display:flex;align-items:center;min-height:44px;padding:0 12px;border-radius:10px;border:1px solid #CFCBC2;background:#fff;color:#2B2A27;font:800 15px system-ui,sans-serif;text-decoration:none;white-space:nowrap;box-sizing:border-box}
+.rs-submitted .rs-page .v-bar .inbox,.rs-page.rs-submitted .v-bar .inbox{background:#1F6B3A;border-color:#1F6B3A;color:#fff}
+@media (max-width:420px){.rs-page .v-bar{flex-wrap:wrap;gap:6px 8px;padding:8px 10px}.rs-page .v-bar .st{flex:0 0 100%;order:-1;font-size:12px}.rs-page .v-bar button{white-space:nowrap;padding:0 12px}.rs-page .v-bar .save{flex:1}}
 .rs-page .v-bar .st{font-size:12.5px;color:#555;flex:1}
 .rs-page .v-bar .st.ok{color:#1F6B3A;font-weight:800}
 .rs-page .v-bar .st.bad{color:#B2472F;font-weight:800}
