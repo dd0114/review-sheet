@@ -118,7 +118,11 @@ export function renderMarkdown(sheet, saved) {
   out.push(`${picked}/${n} 선택됨`);
   return out.join('\n');
 }
-const cell = s => String(s == null ? '' : s).replace(/\|/g, '\\|').replace(/\n/g, '<br>');
+/* Table cell: the small markup set the page tolerates (<b> <i> <code> <br>) becomes markdown, so a sheet written with
+   "<b>문제</b>…<br>" reads cleanly in the SoT too; "|" is escaped and newlines become <br> (markdown tables are one line). */
+const cell = s => String(s == null ? '' : s)
+  .replace(/<\s*\/?\s*(b|strong)\s*>/gi, '**').replace(/<\s*\/?\s*(i|em)\s*>/gi, '_').replace(/<\s*\/?\s*code\s*>/gi, '`')
+  .replace(/<br\s*\/?>/gi, '<br>').replace(/\|/g, '\\|').replace(/\n/g, '<br>');
 
 function listSheets(dir) {
   return fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).sort().map(f => {

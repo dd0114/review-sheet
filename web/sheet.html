@@ -32,11 +32,15 @@ window.SHEET_RUN = function(){
 'use strict';
 const D = window.SHEET;
 const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+/* Text fields (ask/now/sit/decide/effect/why/question/table) are escaped, then a small markup set comes back:
+   <b> <i> <u> <s> <code> <strong> <em> <br> and "\n". Sessions kept writing "<b>문제</b>…<br>" into `now` and hero
+   saw the raw tags (2026-10-05) — tolerate that set instead of tag soup; anything else stays visible text. */
+const m = s => e(s).replace(/&lt;(\/?)(b|i|u|s|code|strong|em)&gt;/g, '<$1$2>').replace(/&lt;br\s*\/?&gt;/g, '<br>').replace(/\n/g, '<br>');
 const issueHref = v => /^https?:/.test(String(v)) ? String(v) : (D.issueUrl || '') + v;
 const issueText = v => /^https?:/.test(String(v)) ? '이슈' : '#' + v;
 const tbl = t => '<div class="g-wrap"><table class="g-t"><tr>' + t.head.map(x => '<th>' + e(x) + '</th>').join('') + '</tr>' +
-  t.rows.map(r => '<tr>' + r.map((v, i) => '<td' + (i === 0 ? ' class="def"' : '') + '>' + e(v) + '</td>').join('') + '</tr>').join('') + '</table></div>' +
-  (t.note ? '<p class="v-exnote">' + e(t.note) + '</p>' : '');
+  t.rows.map(r => '<tr>' + r.map((v, i) => '<td' + (i === 0 ? ' class="def"' : '') + '>' + m(v) + '</td>').join('') + '</tr>').join('') + '</table></div>' +
+  (t.note ? '<p class="v-exnote">' + m(t.note) + '</p>' : '');
 const norm = qq => Array.isArray(qq) ? { k: qq[0], q: qq[1], opts: qq[2].map(x => Array.isArray(x) ? x : [x]), rec: qq[3] || '', why: qq[4] || '' }
                                      : Object.assign({}, qq, { opts: (qq.opts || []).map(x => Array.isArray(x) ? x : [x]), rec: qq.rec || '', why: qq.why || '' });
 
@@ -65,8 +69,8 @@ for(const s of D.sections){
     (s.issue ? (s.code ? ' · ' : '') + '<a href="' + e(issueHref(s.issue)) + '" target="_blank" rel="noopener">' + e(issueText(s.issue)) + '</a>' : '') +
     (s.first ? '<span class="v-first">먼저</span>' : '') + '</div>' +
     '<h2>' + e(s.title) + '</h2>' +
-    (s.ask ? '<div class="v-ask">' + e(s.askLabel || 'hero') + ': “' + e(s.ask) + '”</div>' : '') +
-    (s.now ? '<p class="v-now"><b>' + e(s.nowLabel || '지금') + '</b> — ' + e(s.now) + '</p>' : '');
+    (s.ask ? '<div class="v-ask">' + e(s.askLabel || 'hero') + ': “' + m(s.ask) + '”</div>' : '') +
+    (s.now ? '<p class="v-now"><b>' + e(s.nowLabel || '지금') + '</b> — ' + m(s.now) + '</p>' : '');
   h += media(s);
   if(s.html) h += '<div class="rs-html">' + s.html + '</div>';
   if(s.flow) h += '<div class="v-flow">' + s.flow.map((f, i) => '<span class="s' + (i === 1 ? ' x' : '') + '">' + e(f) + '</span>').join('<span class="v-arrow">→</span>') + '</div>';
@@ -74,11 +78,11 @@ for(const s of D.sections){
   h += s.questions.map(norm).map(o => {
     const { k, q: t, opts, rec, why } = o;
     const tok = String(rec).split(' ')[0];
-    const ctx = o.sit || o.decide || o.effect ? '<div class="v-ctx">' + (o.sit ? '<div><b>지금 상황</b>' + e(o.sit) + '</div>' : '') + (o.decide ? '<div><b>정하는 것</b>' + e(o.decide) + '</div>' : '') + (o.effect ? '<div><b>고르면 달라지는 것</b>' + e(o.effect) + '</div>' : '') + '</div>' : '';
-    return '<div class="v-q" data-q="' + e(s.code + '-' + k) + '"><div class="v-qh"><span class="n">' + e(k) + '</span><span>' + e(t) + '</span>' + (rec ? '<span class="v-rec">추천 ' + e(rec) + '</span>' : '') + '</div>' + ctx + media(o) + '<ul>' +
-      opts.map(([lb, ex, img], i) => '<li data-i="' + i + '" data-t="' + e(lb) + '"' + (opts.length > 1 && tok && String(lb).startsWith(tok + ' ') ? ' class="on"' : '') + '><span class="dot"></span><span>' + e(lb) +
-        (ex ? '<span class="ex">예: ' + e(ex) + '</span>' : '') + '</span>' + (img ? '<img src="' + e(img) + '" alt="">' : '') + '</li>').join('') + '</ul>' +
-      (why ? '<p class="v-why">' + e(why) + '</p>' : '') +
+    const ctx = o.sit || o.decide || o.effect ? '<div class="v-ctx">' + (o.sit ? '<div><b>지금 상황</b>' + m(o.sit) + '</div>' : '') + (o.decide ? '<div><b>정하는 것</b>' + m(o.decide) + '</div>' : '') + (o.effect ? '<div><b>고르면 달라지는 것</b>' + m(o.effect) + '</div>' : '') + '</div>' : '';
+    return '<div class="v-q" data-q="' + e(s.code + '-' + k) + '"><div class="v-qh"><span class="n">' + e(k) + '</span><span>' + m(t) + '</span>' + (rec ? '<span class="v-rec">추천 ' + e(rec) + '</span>' : '') + '</div>' + ctx + media(o) + '<ul>' +
+      opts.map(([lb, ex, img], i) => '<li data-i="' + i + '" data-t="' + e(lb) + '"' + (opts.length > 1 && tok && String(lb).startsWith(tok + ' ') ? ' class="on"' : '') + '><span class="dot"></span><span>' + m(lb) +
+        (ex ? '<span class="ex">예: ' + m(ex) + '</span>' : '') + '</span>' + (img ? '<img src="' + e(img) + '" alt="">' : '') + '</li>').join('') + '</ul>' +
+      (why ? '<p class="v-why">' + m(why) + '</p>' : '') +
       '<textarea class="v-memo" rows="1" placeholder="메모 · 다른 안 (선택 안 하고 여기만 써도 된다)"></textarea></div>';
   }).join('') + '<div class="v-q" data-q="' + e(s.code + '-memo') + '"><div class="v-qh"><span>' + e(s.code) + ' 전체 메모</span></div><textarea class="v-memo" rows="2" placeholder="이 항목 전체에 대한 말"></textarea></div></section>';
 }

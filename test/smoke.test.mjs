@@ -151,3 +151,20 @@ test('hub: first CLI channel becomes the hub, chat hub switches it, /hub redirec
     assert.match(await (await fetch(base + '/')).text(), /메인 허브|★/);
   } finally { await close(); }
 });
+test('markup: <b>/<br> in text fields render as bold/line break on the page, other tags stay visible text, markdown export gets ** instead of tags (hero 2026-10-05)', () => {
+  // The page's e()/m() helpers, lifted out of sheet.html so this runs without a browser.
+  const src = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'sheet.html'), 'utf8');
+  const eLine = src.split('\n').find(l => l.startsWith('const e = ')), mLine = src.split('\n').find(l => l.startsWith('const m = '));
+  assert.ok(eLine && mLine, 'sheet.html defines const e and const m');
+  const m = new Function(eLine + '\n' + mLine + '\nreturn m;')();
+  assert.equal(m('<b>문제</b> 토큰 만료<br><b>한 것</b> 재배포'), '<b>문제</b> 토큰 만료<br><b>한 것</b> 재배포');
+  assert.equal(m('줄1\n줄2'), '줄1<br>줄2');
+  assert.equal(m('<script>x</script> & <img src=x>'), '&lt;script&gt;x&lt;/script&gt; &amp; &lt;img src=x&gt;');
+  // Every text slot goes through m(), not bare e() — the fields hero reads.
+  for (const f of ['s.ask', 's.now', 'o.sit', 'o.decide', 'o.effect', 'why', 'lb', 'ex', 't.note']) assert.ok(src.includes('m(' + f + ')'), f + ' rendered with m()');
+  // Markdown export: same markup → markdown, no tags leak into the SoT.
+  const sheet = { id: 'mk', title: 'mk', sections: [{ code: 'A', title: 'a', questions: [{ k: '1', q: '<b>문제</b> 만료<br>다음 | 줄', opts: [['① 예']], rec: '①' }] }] };
+  const md = renderMarkdown(sheet, { savedAt: 'now', answers: { 'A-1': { pick: '① 예' } } });
+  assert.match(md, /\| 1 \| \*\*문제\*\* 만료<br>다음 \\\| 줄 \| ① 예 \|/);
+  assert.doesNotMatch(md, /<b>/);
+});
