@@ -54,6 +54,7 @@ function usage(code = 2) {
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
   review-sheet chat ls | read <ch> [--all] [--json] | say <ch> <text…|-> | wait <ch> [--timeout SEC]
+  (메모장: http://127.0.0.1:${INBOX_PORT}/memo.html — hero 전용, CLI 없음·세션은 읽지 않는다)
   [dir] omitted → inbox ${INBOX} (one folder for every session; served on :${INBOX_PORT})`);
   process.exit(code);
 }
@@ -210,6 +211,42 @@ function markSeen(root, ch, who) {
   meta[who === 'hero' ? 'heroSeenAt' : 'seenAt'] = new Date().toISOString(); writeChatMeta(root, meta); return meta;
 }
 
+/* ── 메모장 (memo) — hero 의 자기 메모, 세션은 읽지 않는다 (hero 2026-10-06) ────────
+   inbox/memo/<name>.md            the text, as hero last saved it (atomic write)
+   inbox/memo/.history/<name>-<ts>.md   the previous text before each save (last MEMO_KEEP kept) — undo by hand
+   No owner, no unread counts, no `wait`: the page autosaves, the server only stores. Nothing here is a SoT. */
+const memoDir = root => path.join(root, 'memo');
+const memoFile = (root, name) => path.join(memoDir(root), name + '.md');
+const MEMO_KEEP = 30;
+export const MEMO_DEFAULT = 'hero';
+export function readMemo(root, name) {
+  try { const f = memoFile(root, name); return { name, text: fs.readFileSync(f, 'utf8'), savedAt: fs.statSync(f).mtime.toISOString() }; }
+  catch { return { name, text: '', savedAt: null }; }
+}
+/** Save; `base` is the savedAt the page loaded — if the file moved on since (another device), refuse with the current text. */
+export function writeMemo(root, name, text, base) {
+  const cur = readMemo(root, name);
+  if (base !== undefined && cur.savedAt && base !== cur.savedAt && cur.text !== text) return { conflict: true, ...cur };
+  if (cur.savedAt && cur.text === text) return { conflict: false, ...cur };
+  fs.mkdirSync(path.join(memoDir(root), '.history'), { recursive: true });
+  if (cur.savedAt) {
+    fs.writeFileSync(path.join(memoDir(root), '.history', `${name}-${cur.savedAt.replace(/[:.]/g, '')}.md`), cur.text);
+    const old = fs.readdirSync(path.join(memoDir(root), '.history')).filter(f => f.startsWith(name + '-')).sort();
+    for (const f of old.slice(0, Math.max(0, old.length - MEMO_KEEP))) fs.unlinkSync(path.join(memoDir(root), '.history', f));
+  }
+  const f = memoFile(root, name);
+  fs.writeFileSync(f + '.tmp', text); fs.renameSync(f + '.tmp', f);
+  return { conflict: false, ...readMemo(root, name) };
+}
+export function listMemos(root) {
+  let names = []; try { names = fs.readdirSync(memoDir(root)).filter(f => f.endsWith('.md')).map(f => f.slice(0, -3)); } catch { /* none */ }
+  if (!names.includes(MEMO_DEFAULT)) names.unshift(MEMO_DEFAULT);   // the pad always exists for hero, even before the first save
+  return names.sort((a, b) => a === MEMO_DEFAULT ? -1 : b === MEMO_DEFAULT ? 1 : a.localeCompare(b)).map(n => {
+    const m = readMemo(root, n); const first = m.text.split('\n').find(l => l.trim()) || '';
+    return { name: n, savedAt: m.savedAt, chars: m.text.length, first: first.trim().slice(0, 60) };
+  });
+}
+
 function send(res, code, type, body, extra = {}) {
   res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...extra });
   res.end(body);
@@ -223,7 +260,7 @@ function serveFile(res, file) {
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 function indexHtml(dir) {
-  const init = JSON.stringify({ dir, sheets: listSheets(dir), chats: listChats(path.resolve(dir)) }).replace(/</g, '\\u003c');
+  const init = JSON.stringify({ dir, sheets: listSheets(dir), chats: listChats(path.resolve(dir)), memos: listMemos(path.resolve(dir)) }).replace(/</g, '\\u003c');
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>review-sheet</title><link rel="stylesheet" href="/sheet.css">
 <body class="rs-page"><main><div class="eyebrow">REVIEW-SHEET · 받은편지함</div><h1>답변 시트</h1>
@@ -241,10 +278,14 @@ const row = s => s.error
 const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : '') + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
   '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : c.hub ? '★ 메인 허브' : '💬 채널') + '</span><b>' + esc(c.title) + '</b>' +
   '<small>' + esc(c.owner) + (c.last ? ' · ' + esc(c.last.from === 'hero' ? '나' : c.last.from) + ': ' + esc(c.last.text.slice(0, 60)) + (c.last.text.length > 60 ? '…' : '') + ' · ' + when(c.last.ts) : ' · 아직 대화 없음') + '</small></a></li>';
+const memoRow = m => '<li class="memo"><a href="/memo.html?m=' + encodeURIComponent(m.name) + '">' +
+  '<span class="rs-badge">📝 메모장</span><b>' + esc(m.name === 'hero' ? '내 메모' : m.name) + '</b>' +
+  '<small>' + (m.savedAt ? esc(m.first || '(빈 줄)') + ' · ' + m.chars + '자 · 저장 ' + when(m.savedAt) : '아직 비어 있음 — 나만 보는 메모, 세션은 읽지 않는다') + '</small></a></li>';
 const render = d => {
   const wait = d.sheets.filter(s => s.error || !s.submitted), done = d.sheets.filter(s => !s.error && s.submitted);
-  const chats = d.chats || [];
+  const chats = d.chats || [], memos = d.memos || [];
   document.getElementById('rs-list').innerHTML =
+    (memos.length ? '<ul class="rs-index rs-memos">' + memos.map(memoRow).join('') + '</ul>' : '') +
     (chats.length ? '<h2>상시 채널 <span class="rs-n rs-n-chat">' + chats.reduce((a, c) => a + c.unreadHero, 0) + '</span></h2><ul class="rs-index">' + chats.map(chatRow).join('') + '</ul>' : '') +
     '<h2>답 기다리는 중 <span class="rs-n">' + wait.length + '</span></h2><ul class="rs-index">' +
     (wait.map(row).join('') || '<li class="empty">기다리는 시트 없음</li>') + '</ul>' +
@@ -295,7 +336,27 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     const cors = { 'access-control-allow-origin': '*' };
     if (url.pathname === '/api/sheets') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root) }), cors);
-    if (url.pathname === '/api/inbox') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root), chats: listChats(root) }), cors);
+    if (url.pathname === '/api/inbox') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root), chats: listChats(root), memos: listMemos(root) }), cors);
+    if (url.pathname === '/api/memo') {   // no CORS: the pad is hero's own, other dashboards don't get to read it
+      const name = url.searchParams.get('m') || MEMO_DEFAULT;
+      if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'm=<name> ([a-z0-9-])');
+      return send(res, 200, TYPES['.json'], JSON.stringify(readMemo(root, name)));
+    }
+    if (url.pathname === '/__memo' && req.method === 'POST') {
+      const name = url.searchParams.get('m') || MEMO_DEFAULT;
+      if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'm=<name> ([a-z0-9-])');
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 4e6) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const j = JSON.parse(body || '{}');
+          if (typeof j.text !== 'string') throw new Error('text 필요');
+          const r = writeMemo(root, name, j.text, typeof j.base === 'string' || j.base === null ? j.base : undefined);
+          send(res, r.conflict ? 409 : 200, TYPES['.json'], JSON.stringify(r));
+        } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
+      });
+      return;
+    }
     if (url.pathname === '/hub') { const h = hubChat(root); return h ? send(res, 302, 'text/plain', '', { location: '/chat.html?c=' + encodeURIComponent(h.name) }) : send(res, 302, 'text/plain', '', { location: '/' }); }
     if (url.pathname === '/api/chats') return send(res, 200, TYPES['.json'], JSON.stringify({ chats: listChats(root) }), cors);
     if (url.pathname === '/api/chat') {
@@ -336,7 +397,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
-    if (rel === '/sheet.html' || rel === '/sheet.css' || rel === '/chat.html') return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (rel === '/sheet.html' || rel === '/sheet.css' || rel === '/chat.html' || rel === '/memo.html') return serveFile(res, path.join(WEB, rel.slice(1)));
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
     serveFile(res, file);

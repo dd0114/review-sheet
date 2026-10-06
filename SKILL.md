@@ -92,6 +92,12 @@ review-sheet chat hub <ch>       # 허브 바꾸기(하나만)
 - `wait` 는 소유 세션만 건다. 다른 세션 채널의 `say`/`read` 를 대신 하지 않는다(읽음 표시가 거짓이 된다).
 - 채널 메시지는 SoT 가 아니다 — 거기서 난 결정은 이슈/원장에 옮겨 적는다.
 
+## 메모장 (memo) — hero 의 자기 메모, 세션은 읽지 않는다
+
+받은편지함 맨 위 "📝 메모장" (`http://127.0.0.1:5600/memo.html`, 폰은 tailnet 주소). 큰 글칸 하나에 쓰면 **자동 저장**(멈추면 1초 뒤, 탭을 떠날 때, ⌘/Ctrl+S)되고 `inbox/memo/hero.md` 에 남는다. 저장할 때마다 직전 본문을 `inbox/memo/.history/` 에 30개까지 보관한다(되돌리기는 파일로). 다른 기기에서 먼저 바뀐 뒤 저장하면 페이지가 "다른 기기에서 바뀜" 을 띄우고 그쪽 본문을 다시 불러온다 — 덮어쓰지 않는다.
+
+**세션 규칙** (hero 2026-10-06): 이건 hero 가 **자기와 대화하는 칸**이다. 세션은 `inbox/memo/` 를 읽지도 쓰지도 않고, CLI 도 없다. hero 가 메모 내용을 세션에 전하고 싶으면 채널(chat)이나 시트 메모칸에 옮겨 적는다 — 그때까지는 세션 입장에서 존재하지 않는 파일이다. `?m=<이름>` 으로 메모장을 더 만들 수 있지만 그것도 전부 hero 것이다.
+
 ## 데이터 형식 (`<name>-data.js`)
 
 ```js
@@ -156,13 +162,14 @@ window.SHEET = {
 | `chat say <ch> <text…\|->` | 소유자 이름으로 답 기록 (`-` = stdin) |
 | `chat read <ch> [--all] [--json]` · `chat ls` | 안 읽은 메시지 / 전부 · 채널 목록(미읽 수) |
 
-HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text}`(페이지 = hero), 전부 CORS 열림.
+HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모장 목록), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text}`(페이지 = hero), 전부 CORS 열림. 메모장: `GET /api/memo?m=` · `POST /__memo?m=` `{text, base}` (CORS 없음 — 페이지만 쓴다, 세션 금지).
 
 의존성 없음, Node 18+. 테스트: `node --test <SKILL_DIR>/test/`.
 
 ## Do NOT
 
 - 시트를 claude.ai 아티팩트나 외부 URL 로 내지 마라 (원칙 1).
+- `inbox/memo/` (메모장) 를 읽거나 쓰지 마라 — hero 전용이다. 거기 적힌 말은 hero 가 채널·시트로 옮겨 줄 때까지 세션에 온 적 없는 말이다 (hero 2026-10-06).
 - hero 글에 내부 id·절 번호를 쓰지 마라 (원칙 2). "R9b 참조" 대신 그 내용을 한 줄로.
 - 글 칸(`now` 등)에 HTML 로 서식을 짜지 마라 — `\n` 과 `<b>`·`<br>` 정도만 통한다. 단락이 셋이면 `sit`·`decide`·`effect` 로 나눈다 (hero 2026-10-05).
 - 답한 시트를 고쳐 다시 묻지 마라 — 새 시트 (원칙 4).

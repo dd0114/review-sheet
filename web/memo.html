@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>메모장</title>
+<link rel="stylesheet" href="/sheet.css">
+<!-- 🎤 is only offered when /mic.js is actually served (the STT branch); otherwise the button stays hidden. -->
+<script src="/mic.js" defer onload="document.getElementById('m-mic').hidden = false"></script>
+<!-- review-sheet 메모장: hero 의 자기 메모. GET /api/memo?m=<name> → {text, savedAt}; POST /__memo?m=<name> {text, base}.
+     자동 저장(입력 멈춤 1초 · 탭 이탈 · ⌘/Ctrl+S). base = 불러온 savedAt — 다른 기기에서 먼저 바뀌었으면 409 로 그쪽 본문을 받아 다시 보여 준다.
+     세션은 이 파일(inbox/memo/<name>.md)을 읽지 않는다 (hero 2026-10-06). -->
+</head>
+<body class="rs-page rs-memo">
+<main id="app">
+  <div class="eyebrow"><a href="/" class="rs-back">← 받은편지함</a> <span id="m-upd"></span></div>
+  <h1 id="m-title">📝 내 메모</h1>
+  <p class="m-hist" id="m-hist">나만 보는 메모 — 세션은 읽지 않는다. 쓰면 저절로 저장된다.</p>
+  <textarea class="m-pad" id="m-pad" placeholder="여기에 적는다 — 생각, 할 일, 나와의 대화. 멈추면 1초 뒤 저장." spellcheck="false"></textarea>
+  <div class="m-bar">
+    <span class="st" id="m-st">불러오는 중…</span>
+    <button type="button" class="rs-mic" id="m-mic" data-for="m-pad" aria-label="음성 입력" hidden>🎤</button>
+    <button type="button" class="save" id="m-save">저장</button>
+  </div>
+</main>
+<script>
+(function(){
+'use strict';
+const NAME = ((new URLSearchParams(location.search).get('m') || 'hero').replace(/[^a-z0-9-]/g, '')) || 'hero';
+const pad = document.getElementById('m-pad'), st = document.getElementById('m-st'), upd = document.getElementById('m-upd'), saveBtn = document.getElementById('m-save');
+const LS = 'rs-memo-draft:' + NAME;            // per-device draft so a dead server never eats what was typed
+if (NAME !== 'hero') { document.title = '메모장 · ' + NAME; document.getElementById('m-title').textContent = '📝 ' + NAME; }
+const when = iso => iso ? new Date(iso).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+let base = null, lastSaved = '', dirty = false, timer = null, saving = false;
+const status = (msg, cls) => { st.textContent = msg; st.className = 'st' + (cls ? ' ' + cls : ''); };
+const draft = { get: () => { try { return localStorage.getItem(LS); } catch (_) { return null; } },
+                set: v => { try { v == null ? localStorage.removeItem(LS) : localStorage.setItem(LS, v); } catch (_) { /* private mode */ } } };
+
+const show = (j, note) => {   // server text wins the screen; caller decides when that is right
+  base = j.savedAt; lastSaved = j.text; pad.value = j.text; dirty = false; draft.set(null);
+  status(note || (j.savedAt ? '저장됨 ' + when(j.savedAt) : '빈 메모장'), note ? 'bad' : '');
+};
+const load = async () => {
+  try {
+    const r = await fetch('/api/memo?m=' + NAME, { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const d = draft.get();
+    if (d != null && d !== j.text) { base = j.savedAt; lastSaved = j.text; pad.value = d; dirty = true; status('보내지 못한 글이 남아 있다 — 저장 중…'); save(); }
+    else if (dirty) { /* typing right now — don't yank the caret */ }
+    else if (pad.value !== j.text || base !== j.savedAt) show(j, pad.value && pad.value !== j.text ? '다른 기기에서 바뀜 — 그쪽 글을 불러왔다' : '');
+    upd.textContent = '갱신 ' + new Date().toLocaleTimeString('ko-KR');
+  } catch (err) { upd.textContent = '서버 안 닿음 — 글은 이 기기에 임시 보관'; }
+};
+const save = async () => {
+  if (saving) { dirty = true; return; }
+  const text = pad.value; if (text === lastSaved) { dirty = false; status(base ? '저장됨 ' + when(base) : '빈 메모장'); return; }
+  saving = true; saveBtn.disabled = true; status('저장 중…');
+  try {
+    const r = await fetch('/__memo?m=' + NAME, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, base }) });
+    const j = await r.json();
+    if (r.status === 409) { draft.set(text); show(j, '다른 기기에서 먼저 바뀌었다 — 그쪽 글을 불러왔다. 방금 쓴 글은 이 기기에 임시 보관(새로고침하면 다시 합친다)'); return; }
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    base = j.savedAt; lastSaved = text; dirty = pad.value !== text; draft.set(dirty ? pad.value : null);
+    status('저장됨 ' + when(j.savedAt), 'ok');
+    if (dirty) schedule();
+  } catch (err) { draft.set(text); dirty = true; status('✗ 저장 실패(' + err.message + ') — 이 기기에 임시 보관, 다시 시도한다', 'bad'); setTimeout(save, 5000); }
+  finally { saving = false; saveBtn.disabled = false; }
+};
+const schedule = () => { clearTimeout(timer); timer = setTimeout(save, 1000); };
+pad.addEventListener('input', () => { dirty = true; draft.set(pad.value); status('쓰는 중…'); schedule(); });
+pad.addEventListener('blur', () => { if (dirty) { clearTimeout(timer); save(); } });
+saveBtn.addEventListener('click', () => { clearTimeout(timer); save(); });
+document.addEventListener('keydown', ev => { if ((ev.metaKey || ev.ctrlKey) && ev.key === 's') { ev.preventDefault(); clearTimeout(timer); save(); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { if (dirty) { clearTimeout(timer); save(); } } else load(); });
+window.addEventListener('pagehide', () => { if (dirty) { try { navigator.sendBeacon && navigator.sendBeacon('/__memo?m=' + NAME, new Blob([JSON.stringify({ text: pad.value, base })], { type: 'application/json' })); } catch (_) { /* draft stays */ } } });
+load(); setInterval(() => { if (!dirty && !saving) load(); }, 5000);
+}());
+</script>
+</body>
+</html>

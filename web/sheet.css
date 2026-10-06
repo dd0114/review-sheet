@@ -145,3 +145,20 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page ul.rs-index li.chat.hub b{font-size:1.08em}
 .rs-page ul.rs-index li.chat.new .rs-badge{background:#B2472F}
 .rs-page .rs-n-chat{background:#8A6D2E}
+
+/* ── 메모장 (memo.html) — hero 의 자기 메모. 화면 = 큰 글칸 하나, 자동 저장 ── */
+.rs-page ul.rs-index li.memo{border-left:5px solid #4A6FA5}
+.rs-page ul.rs-index li.memo .rs-badge{background:#4A6FA5;color:#fff}
+.rs-page ul.rs-memos{margin-bottom:14px}
+.rs-page.rs-memo main{display:flex;flex-direction:column;min-height:100dvh;padding-bottom:12px;box-sizing:border-box}
+.rs-page.rs-memo h1{font-size:20px}
+.rs-page .m-pad{flex:1;width:100%;box-sizing:border-box;min-height:60vh;padding:14px 16px;border:1px solid #CFCBC2;border-radius:12px;font:16px/1.6 ui-monospace,SFMono-Regular,Menlo,'Apple SD Gothic Neo',monospace;background:#FFFDF8;resize:none;outline:none;-webkit-text-size-adjust:100%}
+.rs-page .m-pad:focus{border-color:#4A6FA5;box-shadow:0 0 0 3px rgba(74,111,165,.15)}
+.rs-page .m-bar{position:sticky;bottom:0;display:flex;gap:8px;align-items:center;padding:10px 0 0;background:#E9E7E2;border-top:1px solid #CFCBC2;margin-top:8px}
+.rs-page .m-bar .st{flex:1;font-size:13px;color:#555}
+.rs-page .m-bar .st.ok{color:#1F6B3A;font-weight:800}
+.rs-page .m-bar .st.bad{color:#B2472F;font-weight:800}
+.rs-page .m-bar .save{min-height:44px;padding:0 16px;border-radius:12px;border:0;background:#4A6FA5;color:#fff;font:800 15px system-ui,sans-serif}
+.rs-page .m-bar .save:disabled{opacity:.6}
+.rs-page .m-bar .rs-mic{margin-top:0}
+.rs-page .m-hist{font-size:12px;color:#777;margin:0 0 8px}
