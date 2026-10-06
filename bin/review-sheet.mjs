@@ -250,6 +250,8 @@ export function listMemos(root) {
     const m = readMemo(root, n); const first = m.text.split('\n').find(l => l.trim()) || '';
     return { name: n, savedAt: m.savedAt, chars: m.text.length, first: first.trim().slice(0, 60) };
   });
+}
+
 /* ── 음성 입력 (STT, 로컬 whisper.cpp) ───────────────────────────────────────────
    launchd 의 PATH 는 /usr/bin:/bin 뿐이라 brew 경로를 직접 찾는다. 설정은 요청마다 env 에서 읽는다(테스트·교체용). */
 const STT_DIR = path.join(os.homedir(), '.review-sheet');
