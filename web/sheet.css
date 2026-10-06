@@ -162,3 +162,13 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .m-bar .save:disabled{opacity:.6}
 .rs-page .m-bar .rs-mic{margin-top:0}
 .rs-page .m-hist{font-size:12px;color:#777;margin:0 0 8px}
+
+/* 🎤 음성 입력 (web/mic.js) — 폰 엄지 크기 터치영역 */
+.rs-page .v-memo-row{display:flex;gap:6px;align-items:flex-start}
+.rs-page .v-memo-row textarea.v-memo{flex:1;min-height:48px}
+.rs-page .rs-mic{flex:none;min-width:48px;min-height:48px;margin-top:4px;padding:0 10px;border:1px solid #CFCBC2;border-radius:12px;background:#fff;font:700 20px/1 system-ui,sans-serif;color:#1F6B3A;touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer}
+.rs-page .c-bar .rs-mic{margin-top:0}
+.rs-page .rs-mic[data-state=rec]{background:#B2472F;border-color:#B2472F;color:#fff;font-size:15px;animation:rs-mic-pulse 1.2s ease-in-out infinite}
+.rs-page .rs-mic[data-state=busy]{background:#F3EFE6;color:#555;cursor:progress}
+@keyframes rs-mic-pulse{50%{box-shadow:0 0 0 6px rgba(178,71,47,.25)}}
+.rs-mic-toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);max-width:90vw;padding:10px 14px;border-radius:10px;background:#2B2A27;color:#fff;font:14px/1.4 system-ui,sans-serif;z-index:50;box-shadow:0 4px 16px rgba(0,0,0,.2)}

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>채널</title>
 <link rel="stylesheet" href="/sheet.css">
+<script src="/mic.js" defer></script>
 <!-- review-sheet 상시 채널: hero ↔ 한 세션의 메신저. GET /api/chat?c=<ch>, POST /__chat?c=<ch> {text, files} (항상 hero 로 기록).
      이미지: 📎·붙여넣기·끌어놓기 → POST /__chat/file?c=<ch> (raw body) → {name} → 메시지 files 에 실어 보냄.
      세션 쪽은 `review-sheet chat wait <ch>` 로 받고 `chat say <ch> <text>` 로 답한다. meta.seenAt 이 "세션이 여기까지 읽음". -->
@@ -19,6 +20,7 @@
     <div class="c-att" id="c-att" hidden></div>
     <label class="c-clip" title="이미지 첨부 (붙여넣기·끌어놓기도 됨)">📎<input type="file" id="c-file" accept="image/*" multiple hidden></label>
     <textarea id="c-in" rows="1" placeholder="메시지 (Enter = 보내기, Shift+Enter = 줄바꿈)"></textarea>
+    <button type="button" class="rs-mic" data-for="c-in" aria-label="음성 입력">🎤</button>
     <button type="submit" class="save" id="c-send">보내기</button>
   </form>
 </main>

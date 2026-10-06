@@ -18,6 +18,10 @@
  *   answers/<id>.json   what the reviewer saved: { sheet, answers:{ "<code>-<k>": { pick, memo } }, savedAt }
  *   anything else       images etc. the sheet references by relative path
  *
+ * 음성 입력: POST /api/stt (audio/* 바디) → ffmpeg → whisper.cpp(whisper-cli) 로 **로컬에서만** 전사해 { text } 를 돌려준다.
+ *   모델 ~/.review-sheet/models/ggml-large-v3-turbo.bin · 단어장 ~/.review-sheet/vocab.txt(한 줄 1단어 → --prompt).
+ *   env 로 교체: REVIEW_SHEET_WHISPER_BIN / _WHISPER_MODEL / _FFMPEG / _VOCAB / _STT_LANG(기본 ko). 오디오는 외부로 나가지 않는다.
+ *
  * No dependencies. Node 18+.
  */
 import http from 'node:http';
@@ -26,6 +30,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import os from 'node:os';
 import process from 'node:process';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -245,6 +250,58 @@ export function listMemos(root) {
     const m = readMemo(root, n); const first = m.text.split('\n').find(l => l.trim()) || '';
     return { name: n, savedAt: m.savedAt, chars: m.text.length, first: first.trim().slice(0, 60) };
   });
+/* ── 음성 입력 (STT, 로컬 whisper.cpp) ───────────────────────────────────────────
+   launchd 의 PATH 는 /usr/bin:/bin 뿐이라 brew 경로를 직접 찾는다. 설정은 요청마다 env 에서 읽는다(테스트·교체용). */
+const STT_DIR = path.join(os.homedir(), '.review-sheet');
+const STT_MAX_BYTES = 25 * 1024 * 1024;
+function which(name) {
+  const dirs = (process.env.PATH || '').split(':').concat(['/opt/homebrew/bin', '/usr/local/bin']);
+  for (const d of dirs) {
+    if (!d) continue;   // empty PATH entry = cwd (launchd: often /) — would match a directory like Cellar/ffmpeg
+    const f = path.join(d, name);
+    try { fs.accessSync(f, fs.constants.X_OK); if (fs.statSync(f).isFile()) return f; } catch { /* next */ }
+  }
+  return null;
+}
+export function sttConfig() {
+  const vocabFile = process.env.REVIEW_SHEET_VOCAB || path.join(STT_DIR, 'vocab.txt');
+  let vocab = [];
+  try { vocab = fs.readFileSync(vocabFile, 'utf8').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')); } catch { /* optional */ }
+  return {
+    whisper: process.env.REVIEW_SHEET_WHISPER_BIN || which('whisper-cli'),
+    ffmpeg: process.env.REVIEW_SHEET_FFMPEG || which('ffmpeg'),
+    model: process.env.REVIEW_SHEET_WHISPER_MODEL || path.join(STT_DIR, 'models', 'ggml-large-v3-turbo.bin'),
+    lang: process.env.REVIEW_SHEET_STT_LANG || 'ko',
+    vocabFile, vocab,
+  };
+}
+export function sttStatus(c = sttConfig()) {
+  const missing = [];
+  if (!c.whisper) missing.push('whisper-cli (brew install whisper-cpp)');
+  if (!c.ffmpeg) missing.push('ffmpeg (brew install ffmpeg)');
+  if (!fs.existsSync(c.model)) missing.push('model ' + c.model);
+  return { ready: !missing.length, missing, model: path.basename(c.model), lang: c.lang, vocab: c.vocab.length };
+}
+const run = (bin, args, timeout) => new Promise((resolve, reject) =>
+  execFile(bin, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) =>
+    err ? reject(new Error(`${path.basename(bin)}: ${String(stderr || err.message).trim().split('\n').slice(-3).join(' | ')}`)) : resolve(stdout)));
+let sttQueue = Promise.resolve();   // one transcription at a time — whisper already uses every core
+/** audio bytes (any ffmpeg-readable container: webm/opus, mp4/aac, wav…) → text. Local only. */
+export function transcribe(buf, c = sttConfig()) {
+  const job = sttQueue.then(async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-stt-'));
+    try {
+      const inp = path.join(tmp, 'in.bin'), wav = path.join(tmp, 'in.wav');
+      fs.writeFileSync(inp, buf);
+      await run(c.ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', inp, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], 60e3);
+      const args = ['-m', c.model, '-f', wav, '-l', c.lang, '-nt', '-np'];
+      if (c.vocab.length) args.push('--prompt', c.vocab.join(', '));
+      const out = await run(c.whisper, args, 300e3);
+      return out.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+  sttQueue = job.catch(() => {});
+  return job;
 }
 
 function send(res, code, type, body, extra = {}) {
@@ -334,6 +391,33 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       }
       return send(res, 405, 'text/plain', 'method');
     }
+    if (url.pathname === '/api/stt') {
+      if (req.method === 'GET') return send(res, 200, TYPES['.json'], JSON.stringify(sttStatus()));
+      if (req.method !== 'POST') return send(res, 405, 'text/plain', 'method');
+      // audio/* only: a cross-site page can't send that content-type without a preflight we never answer.
+      const ctype = String(req.headers['content-type'] || '');
+      if (!/^(audio|video)\//.test(ctype)) return send(res, 415, TYPES['.json'], JSON.stringify({ error: 'content-type audio/* 필요' }));
+      const c = sttConfig(), st = sttStatus(c);
+      if (!st.ready) return send(res, 503, TYPES['.json'], JSON.stringify({ error: 'STT 준비 안 됨: ' + st.missing.join(', ') }));
+      const chunks = []; let size = 0, over = false;
+      req.on('data', b => {
+        if (over) return;
+        size += b.length;
+        if (size <= STT_MAX_BYTES) return chunks.push(b);
+        over = true; chunks.length = 0;
+        send(res, 413, TYPES['.json'], JSON.stringify({ error: '오디오가 너무 크다 (25MB)' }), { connection: 'close' });
+      });
+      req.on('end', async () => {
+        if (over) return;
+        if (!size) return send(res, 400, TYPES['.json'], JSON.stringify({ error: '빈 오디오' }));
+        const t0 = Date.now();
+        try {
+          const text = await transcribe(Buffer.concat(chunks), c);
+          send(res, 200, TYPES['.json'], JSON.stringify({ text, ms: Date.now() - t0 }));
+        } catch (e) { send(res, 500, TYPES['.json'], JSON.stringify({ error: String(e.message || e) })); }
+      });
+      return;
+    }
     const cors = { 'access-control-allow-origin': '*' };
     if (url.pathname === '/api/sheets') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root) }), cors);
     if (url.pathname === '/api/inbox') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root), chats: listChats(root), memos: listMemos(root) }), cors);
@@ -397,7 +481,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
-    if (rel === '/sheet.html' || rel === '/sheet.css' || rel === '/chat.html' || rel === '/memo.html') return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (rel === '/sheet.html' || rel === '/sheet.css' || rel === '/chat.html' || rel === '/memo.html' || rel === '/mic.js') return serveFile(res, path.join(WEB, rel.slice(1)));
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
     serveFile(res, file);
@@ -478,7 +562,7 @@ async function main() {
     const port = flags.port || INBOX_PORT;
     fs.mkdirSync(path.join(INBOX, 'answers'), { recursive: true });
     const plist = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.review-sheet.inbox.plist');
-    fs.writeFileSync(plist, launchdPlist(port, flags.lan !== false));
+    fs.writeFileSync(plist, launchdPlist(port, flags.lan === true));   // 기본 127.0.0.1 — 폰은 tailscale serve(HTTPS)로
     console.log(`${plist}\n  → launchctl bootstrap gui/$(id -u) ${plist}   (재설치: bootout 후 bootstrap)\n  → http://127.0.0.1:${port}/`);
     return;
   }

@@ -144,6 +144,29 @@ window.SHEET = {
 
 `read` 는 이것을 질문과 합쳐 마크다운 표로 낸다 — 그대로 SoT 에 붙인다. `--json` 이면 원본.
 
+## 음성 입력 (🎤 STT) — 로컬 whisper.cpp
+
+채널 입력창 옆·시트 메모칸 옆 🎤: **탭 = 녹음 시작, 다시 탭 = 멈춤** → `POST /api/stt` → 커서 위치에 텍스트가 끼워진다(최대 120초). 전사는 **이 맥에서만**(whisper.cpp + `large-v3-turbo`, 한국어) — 오디오를 클라우드로 보내지 않는다.
+
+```
+brew install whisper-cpp ffmpeg                                   # 1회
+mkdir -p ~/.review-sheet/models && curl -L -o ~/.review-sheet/models/ggml-large-v3-turbo.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin   # 1.6GB, 1회
+~/.review-sheet/vocab.txt                                         # 단어장: 한 줄 1단어(# 주석) → whisper --prompt 로 주입. 고치면 다음 요청부터 반영
+curl -s http://127.0.0.1:5600/api/stt                             # {ready, missing, model, lang, vocab}
+```
+
+- env 교체: `REVIEW_SHEET_WHISPER_BIN` / `REVIEW_SHEET_WHISPER_MODEL` / `REVIEW_SHEET_FFMPEG` / `REVIEW_SHEET_VOCAB` / `REVIEW_SHEET_STT_LANG`(기본 `ko`). launchd PATH 에 brew 가 없어도 `/opt/homebrew/bin` 을 직접 찾는다.
+- `POST /api/stt` 는 `content-type: audio/*` 만 받는다(교차 사이트 단순 POST 차단), 25MB 상한, 한 번에 하나씩 직렬 처리.
+- **폰 마이크는 HTTPS 에서만 열린다.** 서버는 127.0.0.1 그대로 두고 `tailscale serve` 로 감싼다(tailnet 전용, funnel 아님):
+
+```
+bin/tailscale-serve.sh on       # https://bh-l175-personal.tail1f3f2b.ts.net/ → 127.0.0.1:5600 (personal tailscaled 소켓)
+bin/tailscale-serve.sh status | off
+```
+
+hero 체크리스트 (1회): Tailscale admin 콘솔 → **DNS → HTTPS Certificates → Enable** → `bin/tailscale-serve.sh on` → 폰(Tailscale 켠 상태)에서 https 주소 열고 🎤 허용. 미활성이면 스크립트가 멈추고 이 안내를 낸다.
+
 ## CLI
 
 `[dir]` 를 생략하면 inbox(`~/.review-sheet/inbox`). 명시하면 그 폴더(레포 안 `review/` 등).
@@ -151,7 +174,7 @@ window.SHEET = {
 | 명령 | 뜻 |
 |---|---|
 | `serve [dir] [--port N] [--lan]` | 폴더와 시트 페이지를 서브. `/` 는 큐(답 기다림 ↑ / 제출됨 ↓, 5초 자동 갱신), `/api/sheets` 는 같은 목록 JSON(CORS 열림 — 다른 대시보드 배지용). inbox 면 기본 :5600 |
-| `install-inbox [--port N]` | launchd 플리스트(`com.review-sheet.inbox`) 작성 — inbox 를 부팅 시 `--lan` 으로 서브. 출력된 `launchctl bootstrap` 을 실행 |
+| `install-inbox [--port N]` | launchd 플리스트(`com.review-sheet.inbox`) 작성 — inbox 를 부팅 시 **127.0.0.1** 로 서브(폰은 `tailscale-serve.sh`). 출력된 `launchctl bootstrap` 을 실행 |
 | `new [dir] <name>` | 템플릿 복사 → `<name>-data.js` (`from` = `$REVIEW_SHEET_FROM` / fleet sender / user@host, `createdAt` 자동) |
 | `ls [dir]` | 시트 목록 + 대기/제출됨 + 진행(답한 수/전체) + 제출 시각 |
 | `read [dir] <name|id> [--json]` | 제출된 답을 질문과 합쳐 마크다운(없으면 exit 4) |
@@ -162,11 +185,14 @@ window.SHEET = {
 | `chat say <ch> <text…\|->` | 소유자 이름으로 답 기록 (`-` = stdin) |
 | `chat read <ch> [--all] [--json]` · `chat ls` | 안 읽은 메시지 / 전부 · 채널 목록(미읽 수) |
 
-HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모장 목록), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text}`(페이지 = hero), 전부 CORS 열림. 메모장: `GET /api/memo?m=` · `POST /__memo?m=` `{text, base}` (CORS 없음 — 페이지만 쓴다, 세션 금지).
+HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모장 목록), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text}`(페이지 = hero), 전부 CORS 열림. 메모장: `GET /api/memo?m=` · `POST /__memo?m=` `{text, base}` (CORS 없음 — 페이지만 쓴다, 세션 금지). `GET/POST /api/stt`(음성 입력, CORS 없음).
 
 의존성 없음, Node 18+. 테스트: `node --test <SKILL_DIR>/test/`.
 
 ## Do NOT
+
+- 서버를 `--lan`/0.0.0.0 으로 띄우지 마라 — 127.0.0.1 고정, 폰은 `tailscale serve` HTTPS 로만. `tailscale funnel`(공개 인터넷) 금지.
+- STT 를 클라우드 API 로 바꾸지 마라 — 음성은 로컬 whisper.cpp 로만 전사한다.
 
 - 시트를 claude.ai 아티팩트나 외부 URL 로 내지 마라 (원칙 1).
 - `inbox/memo/` (메모장) 를 읽거나 쓰지 마라 — hero 전용이다. 거기 적힌 말은 hero 가 채널·시트로 옮겨 줄 때까지 세션에 온 적 없는 말이다 (hero 2026-10-06).

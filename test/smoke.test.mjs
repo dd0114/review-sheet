@@ -203,3 +203,49 @@ test('memo: hero pad — GET empty → POST saves → stale base is refused with
     assert.deepEqual(listMemos(dir).map(m => m.name), ['hero', 'ideas']);
   } finally { await close(); }
 });
+
+test('stt: /api/stt → ffmpeg → whisper-cli with vocab as --prompt (fake binaries, nothing leaves the box)', async () => {
+  const dir = tmpDir();
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-stt-bin-'));
+  const ff = path.join(bin, 'ffmpeg'), wh = path.join(bin, 'whisper-cli'), model = path.join(bin, 'model.bin'), vocab = path.join(bin, 'vocab.txt');
+  fs.writeFileSync(ff, '#!/bin/sh\nfor a; do last="$a"; done\nprintf wav > "$last"\n', { mode: 0o755 });   // ffmpeg … <out.wav>
+  fs.writeFileSync(wh, '#!/bin/sh\necho "  안녕하세요 $*"\necho\n', { mode: 0o755 });                       // echoes its args
+  fs.writeFileSync(model, 'x');
+  fs.writeFileSync(vocab, '# 주석\n스파이더\n\n리뷰시트\n');
+  const saved = { ...process.env };
+  const { base, close } = await startServer(dir, 0);
+  try {
+    // not ready → 503 (model missing)
+    Object.assign(process.env, { REVIEW_SHEET_WHISPER_BIN: wh, REVIEW_SHEET_FFMPEG: ff, REVIEW_SHEET_WHISPER_MODEL: path.join(bin, 'nope.bin'), REVIEW_SHEET_VOCAB: vocab });
+    assert.equal((await (await fetch(base + '/api/stt')).json()).ready, false);
+    assert.equal((await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: 'abc' })).status, 503);
+    process.env.REVIEW_SHEET_WHISPER_MODEL = model;
+    const st = await (await fetch(base + '/api/stt')).json();
+    assert.equal(st.ready, true); assert.equal(st.vocab, 2); assert.equal(st.lang, 'ko');
+    // wrong content-type (what a cross-site simple POST would send) → 415; empty → 400
+    assert.equal((await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'abc' })).status, 415);
+    assert.equal((await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: '' })).status, 400);
+    const r = await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: Buffer.from('fake-opus') });
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.match(j.text, /^안녕하세요 -m /);
+    assert.match(j.text, /-l ko -nt -np --prompt 스파이더, 리뷰시트$/);
+    assert.ok(!/\n/.test(j.text));
+    assert.equal((await fetch(base + '/mic.js')).status, 200);
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    await close();
+  }
+});
+
+test('stt: binary lookup skips a same-named directory on PATH (launchd PATH=/opt/homebrew/Cellar → Cellar/ffmpeg/)', async () => {
+  const { sttConfig } = await import('../bin/review-sheet.mjs');
+  const a = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-path-a-')), b = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-path-b-'));
+  fs.mkdirSync(path.join(a, 'ffmpeg'));
+  fs.writeFileSync(path.join(b, 'ffmpeg'), '#!/bin/sh\n', { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, FF: process.env.REVIEW_SHEET_FFMPEG };
+  try {
+    delete process.env.REVIEW_SHEET_FFMPEG; process.env.PATH = `${a}:${b}`;
+    assert.equal(sttConfig().ffmpeg, path.join(b, 'ffmpeg'));
+  } finally { process.env.PATH = saved.PATH; if (saved.FF !== undefined) process.env.REVIEW_SHEET_FFMPEG = saved.FF; }
+});
