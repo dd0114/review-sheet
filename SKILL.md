@@ -98,6 +98,40 @@ review-sheet chat hub <ch>       # 허브 바꾸기(하나만)
 
 **세션 규칙** (hero 2026-10-06): 이건 hero 가 **자기와 대화하는 칸**이다. 세션은 `inbox/memo/` 를 읽지도 쓰지도 않고, CLI 도 없다(`/api/inbox` 에도 건수·시각만 나가고 본문은 안 나간다). hero 가 메모 내용을 세션에 전하고 싶으면 채널(chat)이나 시트 메모칸에 옮겨 적는다 — 그때까지는 세션 입장에서 존재하지 않는 파일이다. `?m=<이름>` 으로 메모를 더 만들 수 있지만 그것도 전부 hero 것이다.
 
+## 일꾼 보드 (workers) — 지금 누가 무슨 일을 하는지
+
+받은편지함이 보여 줄 **일하는 세션 목록**. 리뷰시트는 tmux·claude·fleet 를 모른다 — 바깥 공급자가 아래 문서 하나를 주고, 서버는 그걸 그대로 `GET /api/workers` 로 낸다(CORS 없음 — 지시·답 문장이 들어 있다).
+
+공급 순서: `$REVIEW_SHEET_WORKERS=<url>` 이면 서버가 그 URL 을 프록시(3초 타임아웃) → 실패하거나 없으면 `inbox/workers.json` 파일 → 둘 다 없으면 빈 보드. 응답에 어디서 왔는지 `source`(`url`·`file`·`none`)를 붙이고, URL/파일이 깨졌으면 이유를 `error` 에 적는다(그래도 200).
+
+```json
+{ "generatedAt": "ISO",
+  "groups":  [{ "id": "sidekick", "name": "sidekick 방" }],
+  "workers": [{ "id": "sidekick:tfs/slackmsg", "group": "sidekick", "name": "슬랙메시지조사",
+                "state": "working|waiting_input|reply_ready|delegating|gone",
+                "stateSince": "ISO", "createdAt": "ISO",
+                "now": "'…' 하는 중", "ask": "마지막 지시 첫 줄", "said": "마지막 답 첫 줄",
+                "load": { "pct": 25, "zone": "ok|warn|hard" },
+                "detail": { "branch": "main", "dir": "~/…" }, "link": null }] }
+```
+
+| 키 | 뜻 |
+|---|---|
+| `groups[]` | 방(도메인). 보드는 방별로 묶고 방 안에서 상태순(`waiting_input` 먼저) |
+| `id` · `group` · `name` | 고유 id · 소속 방 id · 일꾼 이름표 |
+| `state` | 표준 상태 어휘 5개 — `working` 작업 중 · `waiting_input` 사람 입력 필요 · `reply_ready` 답 와있음(확인 대기) · `delegating` 부하(서브에이전트)에게 시키는 중 · `gone` 사라짐(공급자가 1시간쯤 남겼다 뺀다) |
+| `stateSince` · `createdAt` | 두 시계 — 이 상태로 얼마나 · 태어난 지 얼마나 |
+| `now` | 지금 하는 일 한 줄(공급자가 상태별로 조립, 120자 안팎) |
+| `ask` · `said` | 마지막 지시 첫 줄 · 마지막 답 첫 줄 |
+| `load` | 컨텍스트 피로도 `{pct, zone}` — `zone` 은 `ok·warn·hard`. 모르면 `null` |
+| `detail` · `link` | 브랜치@폴더 등 탭하면 보이는 것 · 열어 볼 링크(없으면 `null`) |
+
+**화면** (시안 c, hero 2026-10-06): 받은편지함 맨 위 한 줄 띠(`일꾼 N · 🔴 🟡 🟠 🟢` 개수) → 누르면 그 자리에서 방별 목록(1열, 방 안은 🔴 먼저)이 펼쳐지고 접힘 여부는 브라우저에 기억된다. `⤢ 크게 보기` = `/workers.html`(넓은 격자). 둘 다 5초 폴링. 일꾼을 탭하면 바텀시트 카드(상태·두 시계 · 지금 하는 일 · 마지막 지시/답 · 브랜치@폴더 · ctx%). `gone` 은 흐리게. 공급자가 없으면(`source: none` + 빈 목록) 띠 자체가 안 보인다. 모습은 `web/sprites/` 스프라이트시트(워커 id 해시로 종 고정 배정, 규격 `web/sprites/README.md`) — 없으면 종별 이모지.
+
+상주 서버에 붙이기: `REVIEW_SHEET_WORKERS=<url> review-sheet install-inbox` — 그 값이 launchd plist 의 `EnvironmentVariables` 로 들어간다(이후 bootstrap/kickstart).
+
+`id` 가 없는 항목은 버린다. 그 밖의 키는 손대지 않고 넘긴다. 가짜 보드(상태 5종 전부): `test/fixtures/workers.json` — `cp test/fixtures/workers.json ~/.review-sheet/inbox/` 로 화면을 볼 수 있다.
+
 ## 데이터 형식 (`<name>-data.js`)
 
 ```js
@@ -162,7 +196,7 @@ window.SHEET = {
 | `chat say <ch> <text…\|->` | 소유자 이름으로 답 기록 (`-` = stdin) |
 | `chat read <ch> [--all] [--json]` · `chat ls` | 안 읽은 메시지 / 전부 · 채널 목록(미읽 수) |
 
-HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모 건수), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text}`(페이지 = hero), 전부 CORS 열림. 메모: `GET /api/memo?m=` · `POST /__memo?m=` `{text}` 보냄 / `{del: id}` 지움 (CORS 없음 — 페이지만 쓴다, 세션 금지).
+HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모 건수), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text}`(페이지 = hero), 전부 CORS 열림. 메모: `GET /api/memo?m=` · `POST /__memo?m=` `{text}` 보냄 / `{del: id}` 지움 (CORS 없음 — 페이지만 쓴다, 세션 금지). 일꾼 보드: `GET /api/workers` (CORS 없음, §일꾼 보드).
 
 의존성 없음, Node 18+. 테스트: `node --test <SKILL_DIR>/test/`.
 
