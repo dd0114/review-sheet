@@ -15,7 +15,8 @@
  *
  * Layout of <dir> (the sheet dir, usually `review/` inside the repo):
  *   <name>-data.js      one sheet: `window.SHEET = { id, title, sections:[{ code, questions:[…] }] }`
- *   answers/<id>.json   what the reviewer saved: { sheet, answers:{ "<code>-<k>": { pick, memo } }, savedAt }
+ *   answers/<id>.json   what the reviewer saved: { sheet, answers:{ "<code>-<k>": { pick, memo, files:[{name,orig}] } }, savedAt }
+ *   answers/<id>.files/ files the reviewer attached to a question (page: 📎·paste·drop → POST /__answers/file), served at /answers/<id>.files/<name>
  *   anything else       images etc. the sheet references by relative path
  *
  * No dependencies. Node 18+.
@@ -84,6 +85,24 @@ export function loadSheet(dir, name) {
 }
 
 export function answersFile(dir, id) { return path.join(dir, 'answers', id + '.json'); }
+/* Sheet attachments: any file type (hero 2026-10-06 "리뷰 시트에도 파일 첨부"), stored under a random name so the
+   original name never reaches the disk path; the original is kept beside it in the answers JSON as `orig`. */
+export const sheetFilePath = (dir, id, name) => path.join(dir, 'answers', id + '.files', name);
+const SHEET_FILE_RE = /^[a-z0-9]{6,32}\.[a-z0-9]{1,8}$/;
+const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic', 'application/pdf': 'pdf', 'text/plain': 'txt' };
+export function saveSheetFile(dir, id, type, orig, buf) {
+  if (!buf.length) throw new Error('빈 파일');
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(String(orig || ''));
+  const ext = m ? m[1].toLowerCase() : (MIME_EXT[String(type || '').split(';')[0].trim().toLowerCase()] || 'bin');
+  fs.mkdirSync(path.dirname(sheetFilePath(dir, id, 'x')), { recursive: true });
+  const name = Date.now().toString(36) + Math.random().toString(36).slice(2, 8) + '.' + ext;
+  fs.writeFileSync(sheetFilePath(dir, id, name), buf); return name;
+}
+/* Keep only attachments that really exist under this sheet; trim the original name to something printable. */
+function cleanFiles(dir, id, files) {
+  return (Array.isArray(files) ? files : []).filter(f => f && typeof f.name === 'string' && SHEET_FILE_RE.test(f.name) && fs.existsSync(sheetFilePath(dir, id, f.name)))
+    .map(f => ({ name: f.name, orig: String(f.orig || f.name).replace(/[\u0000-\u001f/\\]/g, '_').slice(0, 120) }));
+}
 
 export function readAnswers(dir, id) {
   try { return JSON.parse(fs.readFileSync(answersFile(dir, id), 'utf8')); } catch { return null; }
@@ -96,7 +115,7 @@ export function normQ(q) {
 }
 
 /** Answers joined with the questions, as markdown the session pastes into the SoT. */
-export function renderMarkdown(sheet, saved) {
+export function renderMarkdown(sheet, saved, dir) {
   const A = (saved && saved.answers) || {};
   const out = [`## ${sheet.title || sheet.id} — 답변`, ''];
   out.push(saved && saved.savedAt ? `저장 ${saved.savedAt} · sheet \`${sheet.id}\`` : `(아직 저장된 답변 없음) · sheet \`${sheet.id}\``, '');
@@ -110,10 +129,12 @@ export function renderMarkdown(sheet, saved) {
       const a = A[`${s.code}-${q.k}`] || {};
       if (a.pick) picked++;
       const pick = a.pick ? a.pick : (a.memo ? '(메모만)' : '—');
-      out.push(`| ${q.k} | ${cell(q.q)} | ${cell(pick)} | ${cell(a.memo || '')} |`);
+      out.push(`| ${q.k} | ${cell(q.q)} | ${cell(pick)} | ${cell(a.memo || '')}${a.files && a.files.length ? ` 📎${a.files.length}` : ''} |`);
     }
     const m = A[`${s.code}-memo`];
     if (m && m.memo) out.push('', `> 전체 메모: ${m.memo.replace(/\n/g, ' ')}`);
+    const att = Object.keys(A).filter(k => k.startsWith(`${s.code}-`) && A[k].files && A[k].files.length);
+    if (att.length) out.push('', ...att.flatMap(k => A[k].files.map(f => `- 📎 ${k}: ${f.orig} → ${dir ? sheetFilePath(path.resolve(dir), sheet.id, f.name) : `answers/${sheet.id}.files/${f.name}`}`)));
     out.push('');
   }
   out.push(`${picked}/${n} 선택됨`);
@@ -132,7 +153,7 @@ function listSheets(dir) {
       const sheet = loadSheet(dir, name);
       const saved = readAnswers(dir, sheet.id);
       const qs = sheet.sections.flatMap(s => (s.questions || []).map(q => `${s.code}-${normQ(q).k}`));
-      const picked = qs.filter(k => saved && saved.answers && saved.answers[k] && (saved.answers[k].pick || saved.answers[k].memo)).length;
+      const picked = qs.filter(k => saved && saved.answers && saved.answers[k] && (saved.answers[k].pick || saved.answers[k].memo || (saved.answers[k].files || []).length)).length;
       let createdAt = sheet.createdAt || null;
       if (!createdAt) { try { createdAt = fs.statSync(path.join(dir, f)).mtime.toISOString(); } catch { /* ignore */ } }
       const savedAt = saved && saved.savedAt || null;
@@ -372,6 +393,29 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
   fs.mkdirSync(path.join(root, 'answers'), { recursive: true });
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
+    if (url.pathname === '/__answers/file' && req.method === 'POST') {   // raw body → answers/<id>.files/<name>, ?n=<original name>
+      const id = url.searchParams.get('sheet') || '';
+      if (!ID_RE.test(id)) return send(res, 400, 'text/plain', 'sheet=<id> required ([a-z0-9-])');
+      const chunks = []; let n = 0, big = false;
+      req.on('data', c => { n += c.length; if (n > 50e6) { big = true; send(res, 413, 'text/plain; charset=utf-8', '50MB 넘음'); req.destroy(); } else chunks.push(c); });
+      req.on('end', () => {
+        if (big) return;
+        try { send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, name: saveSheetFile(root, id, req.headers['content-type'], url.searchParams.get('n'), Buffer.concat(chunks)) })); }
+        catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
+      });
+      return;
+    }
+    {   // attachments: images/pdf/text show inline, anything else downloads (an attached .html must not run on this origin)
+      const m = /^\/answers\/([a-z0-9][a-z0-9-]{0,63})\.files\/([^/]+)$/.exec(url.pathname);
+      if (m && req.method === 'GET') {
+        if (!SHEET_FILE_RE.test(m[2])) return send(res, 404, 'text/plain', 'not found');
+        return fs.readFile(sheetFilePath(root, m[1], m[2]), (err, buf) => {
+          if (err) return send(res, 404, 'text/plain', 'not found');
+          const ext = path.extname(m[2]).toLowerCase(), inline = /^\.(png|jpe?g|gif|webp|heic|pdf|txt|md)$/.test(ext);
+          send(res, 200, inline ? (ext === '.pdf' ? 'application/pdf' : TYPES[ext]) : 'application/octet-stream', buf, inline ? {} : { 'content-disposition': 'attachment' });
+        });
+      }
+    }
     if (url.pathname === '/__answers') {
       const qid = url.searchParams.get('sheet') || '';
       if (req.method === 'GET') {
@@ -387,6 +431,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
             const id = qid || (typeof json.sheet === 'string' ? json.sheet : '');
             if (!ID_RE.test(id)) throw new Error('bad sheet id');
             json.sheet = id;
+            for (const a of Object.values(json.answers || {})) if (a && typeof a === 'object') { const f = cleanFiles(root, id, a.files); if (f.length) a.files = f; else delete a.files; }
             json.savedAt = new Date().toISOString();
             const file = answersFile(root, id);
             fs.writeFileSync(file + '.tmp', JSON.stringify(json, null, 2) + '\n');
@@ -603,7 +648,7 @@ async function main() {
     }
     const saved = readAnswers(dir, sheet.id);
     if (flags.json) console.log(JSON.stringify(saved, null, 2));
-    else console.log(renderMarkdown(sheet, saved));
+    else console.log(renderMarkdown(sheet, saved, dir));
     if (cmd === 'read' && !saved) process.exitCode = 4;
     return;
   }

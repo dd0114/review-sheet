@@ -178,6 +178,8 @@ window.SHEET = {
 
 `read` 는 이것을 질문과 합쳐 마크다운 표로 낸다 — 그대로 SoT 에 붙인다. `--json` 이면 원본.
 
+hero 가 질문마다 📎 로 파일을 붙일 수 있다(붙여넣기·끌어놓기도, 종류 무관 50MB까지) → 답에 `"files": [{ "name", "orig" }]`, 실물은 `answers/<id>.files/<name>`. `read` 는 항목마다 `- 📎 <질문>: <원래 이름> → <절대경로>` 줄을 낸다 → Read 로 열어 본다(표의 메모 칸엔 `📎N`).
+
 ## CLI
 
 `[dir]` 를 생략하면 inbox(`~/.review-sheet/inbox`). 명시하면 그 폴더(레포 안 `review/` 등).

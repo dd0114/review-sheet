@@ -261,3 +261,29 @@ test('workers view: inbox carries the hidden strip + board script, /workers.html
     assert.equal((await fetch(base + '/sprites/..%2fsheet.css')).status, 404);
   } finally { await close(); }
 });
+
+test('sheet attach: upload any file → answer keeps {name,orig} → bogus names dropped → images inline, others download → read prints the path (hero 2026-10-06)', async () => {
+  const dir = tmpDir(), sheet = loadSheet(dir, 'example');
+  const { base, close } = await startServer(dir, 0);
+  const up = (n, type, body) => fetch(base + '/__answers/file?sheet=' + sheet.id + '&n=' + encodeURIComponent(n), { method: 'POST', headers: { 'content-type': type }, body });
+  try {
+    assert.equal((await up('x.png', 'image/png', '')).status, 400);                 // empty
+    assert.equal((await fetch(base + '/__answers/file?sheet=../x', { method: 'POST', body: 'a' })).status, 400);
+    const png = (await (await up('스샷.png', 'image/png', Buffer.from([0x89, 0x50, 0x4e, 0x47]))).json()).name;
+    const html = (await (await up('page.html', 'text/html', '<script>alert(1)</script>')).json()).name;
+    assert.match(png, /^[a-z0-9]+\.png$/); assert.match(html, /^[a-z0-9]+\.html$/);
+    const r1 = await fetch(base + '/answers/' + sheet.id + '.files/' + png);
+    assert.equal(r1.headers.get('content-type'), 'image/png'); assert.equal(r1.headers.get('content-disposition'), null);
+    const r2 = await fetch(base + '/answers/' + sheet.id + '.files/' + html);
+    assert.equal(r2.headers.get('content-type'), 'application/octet-stream'); assert.equal(r2.headers.get('content-disposition'), 'attachment');
+    const q = sheet.sections[0].code + '-' + sheet.sections[0].questions[0].k;
+    const body = { answers: { [q]: { memo: 'm', files: [{ name: png, orig: '스샷.png' }, { name: '../../x.json', orig: 'evil' }, { name: 'zzzzzzzz.png', orig: 'gone' }] }, [sheet.sections[0].code + '-memo']: { files: [{ name: html, orig: 'page.html' }] } } };
+    assert.equal((await fetch(base + '/__answers?sheet=' + sheet.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 200);
+    const saved = readAnswers(dir, sheet.id);
+    assert.deepEqual(saved.answers[q].files, [{ name: png, orig: '스샷.png' }]);
+    const md = renderMarkdown(sheet, saved, dir);
+    assert.ok(md.includes('📎 ' + q + ': 스샷.png → ' + path.join(path.resolve(dir), 'answers', sheet.id + '.files', png)), md);
+    assert.ok(md.includes('page.html →'));
+    assert.match(md, /📎1 \|/);
+  } finally { await close(); }
+});
