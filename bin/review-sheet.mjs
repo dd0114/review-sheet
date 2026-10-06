@@ -492,7 +492,8 @@ function launchdPlist(port, lan) {
 <plist version="1.0"><dict>
   <key>Label</key><string>com.review-sheet.inbox</string>
   <key>ProgramArguments</key><array>${args.map(a => `<string>${esc(a)}</string>`).join('')}</array>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>${process.env.REVIEW_SHEET_WORKERS ? `
+  <key>EnvironmentVariables</key><dict><key>REVIEW_SHEET_WORKERS</key><string>${esc(process.env.REVIEW_SHEET_WORKERS)}</string></dict>` : ''}
   <key>StandardErrorPath</key><string>${esc(path.join(path.dirname(INBOX), 'inbox.err.log'))}</string>
 </dict></plist>
 `;
