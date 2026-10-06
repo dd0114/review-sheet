@@ -3,77 +3,121 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>메모장</title>
+<title>나와의 메시지</title>
 <link rel="stylesheet" href="/sheet.css">
 <!-- 🎤 is only offered when /mic.js is actually served (the STT branch); otherwise the button stays hidden. -->
 <script src="/mic.js" defer onload="document.getElementById('m-mic').hidden = false"></script>
-<!-- review-sheet 메모장: hero 의 자기 메모. GET /api/memo?m=<name> → {text, savedAt}; POST /__memo?m=<name> {text, base}.
-     자동 저장(입력 멈춤 1초 · 탭 이탈 · ⌘/Ctrl+S). base = 불러온 savedAt — 다른 기기에서 먼저 바뀌었으면 409 로 그쪽 본문을 받아 다시 보여 준다.
-     세션은 이 파일(inbox/memo/<name>.md)을 읽지 않는다 (hero 2026-10-06). -->
+<!-- review-sheet 메모: hero 가 자기한테 보내는 답장 없는 1대1 메시지 (hero 2026-10-06 "저장 개념 없이, 누르면 복사").
+     GET /api/memo?m=<name> → {messages:[{id,ts,text}]}; POST /__memo?m=<name> {text} 보냄 · {del:id} 지움.
+     말풍선 탭 = 본문 복사(클립보드). 세션은 inbox/memo/ 를 읽지 않는다. -->
 </head>
-<body class="rs-page rs-memo">
+<body class="rs-page rs-chat rs-memo">
 <main id="app">
   <div class="eyebrow"><a href="/" class="rs-back">← 받은편지함</a> <span id="m-upd"></span></div>
-  <h1 id="m-title">📝 내 메모</h1>
-  <p class="m-hist" id="m-hist">나만 보는 메모 — 세션은 읽지 않는다. 쓰면 저절로 저장된다.</p>
-  <textarea class="m-pad" id="m-pad" placeholder="여기에 적는다 — 생각, 할 일, 나와의 대화. 멈추면 1초 뒤 저장." spellcheck="false"></textarea>
-  <div class="m-bar">
-    <span class="st" id="m-st">불러오는 중…</span>
-    <button type="button" class="rs-mic" id="m-mic" data-for="m-pad" aria-label="음성 입력" hidden>🎤</button>
-    <button type="button" class="save" id="m-save">저장</button>
-  </div>
+  <h1 id="m-title">📝 나와의 메시지</h1>
+  <p class="lede">나한테 보내는 메시지 — 답장 없음, 세션은 읽지 않는다. <b>말풍선을 누르면 복사</b>된다.</p>
+  <div class="c-log" id="m-log"></div>
+  <form class="c-bar" id="m-form">
+    <textarea id="m-in" rows="1" placeholder="메시지 (Enter = 보내기, Shift+Enter = 줄바꿈)"></textarea>
+    <button type="button" class="rs-mic" id="m-mic" data-for="m-in" aria-label="음성 입력" hidden>🎤</button>
+    <button type="submit" class="save" id="m-send">보내기</button>
+  </form>
 </main>
 <script>
 (function(){
 'use strict';
 const NAME = ((new URLSearchParams(location.search).get('m') || 'hero').replace(/[^a-z0-9-]/g, '')) || 'hero';
-const pad = document.getElementById('m-pad'), st = document.getElementById('m-st'), upd = document.getElementById('m-upd'), saveBtn = document.getElementById('m-save');
-const LS = 'rs-memo-draft:' + NAME;            // per-device draft so a dead server never eats what was typed
-if (NAME !== 'hero') { document.title = '메모장 · ' + NAME; document.getElementById('m-title').textContent = '📝 ' + NAME; }
-const when = iso => iso ? new Date(iso).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-let base = null, lastSaved = '', dirty = false, timer = null, saving = false;
-const status = (msg, cls) => { st.textContent = msg; st.className = 'st' + (cls ? ' ' + cls : ''); };
-const draft = { get: () => { try { return localStorage.getItem(LS); } catch (_) { return null; } },
-                set: v => { try { v == null ? localStorage.removeItem(LS) : localStorage.setItem(LS, v); } catch (_) { /* private mode */ } } };
-
-const show = (j, note) => {   // server text wins the screen; caller decides when that is right
-  base = j.savedAt; lastSaved = j.text; pad.value = j.text; dirty = false; draft.set(null);
-  status(note || (j.savedAt ? '저장됨 ' + when(j.savedAt) : '빈 메모장'), note ? 'bad' : '');
+if (NAME !== 'hero') { document.title = '메모 · ' + NAME; document.getElementById('m-title').textContent = '📝 ' + NAME; }
+const LS = 'rs-memo-draft:' + NAME;   // only the unsent input survives a reload — nothing else is "saved" here
+const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const t = iso => new Date(iso).toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'});
+const linkify = s => e(s).replace(/(https?:\/\/[^\s<]+)/g, u => '<a href="' + u + '" target="_blank" rel="noopener">' + u + '</a>').replace(/\n/g, '<br>');
+const log = document.getElementById('m-log'), upd = document.getElementById('m-upd'), input = document.getElementById('m-in'), sendBtn = document.getElementById('m-send');
+if (matchMedia('(pointer: coarse)').matches) input.placeholder = '메시지';
+let msgs = [], lastKey = '', first = true;
+const pageEl = document.scrollingElement || document.documentElement;
+const nearBottom = () => (log.scrollHeight - log.scrollTop - log.clientHeight < 40) && (pageEl.scrollHeight - pageEl.scrollTop - window.innerHeight < 80);
+const toBottom = () => { log.scrollTop = log.scrollHeight; window.scrollTo(0, pageEl.scrollHeight); };
+const toast = msg => {
+  let el = document.getElementById('rs-toast');
+  if (!el) { el = document.createElement('div'); el.id = 'rs-toast'; el.className = 'rs-toast'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
+  el.textContent = msg; el.hidden = false; clearTimeout(el._t); el._t = setTimeout(() => { el.hidden = true; }, 1600);
+};
+const render = list => {
+  msgs = list;
+  const key = list.length + ':' + (list.length ? list[list.length - 1].id : '');
+  if (key === lastKey) return; lastKey = key;
+  const atBottom = nearBottom();
+  let h = '', day = '';
+  for (const x of list) {
+    const d = new Date(x.ts).toLocaleDateString('ko-KR'); if (d !== day) { day = d; h += '<div class="c-day">' + e(d) + '</div>'; }
+    h += '<div class="c-msg me" data-id="' + e(x.id) + '"><div class="c-bubble" role="button" tabindex="0" title="누르면 복사">' + linkify(x.text) + '</div>' +
+      '<div class="c-meta">' + t(x.ts) + ' · <button type="button" class="m-del" data-id="' + e(x.id) + '">지우기</button></div></div>';
+  }
+  log.innerHTML = h || '<div class="c-day">아직 없음 — 아래에 적어 보내면 여기 쌓인다. 말풍선을 누르면 복사된다</div>';
+  if (atBottom || first) { first = false; toBottom(); requestAnimationFrame(toBottom); }
 };
 const load = async () => {
   try {
     const r = await fetch('/api/memo?m=' + NAME, { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    const d = draft.get();
-    if (d != null && d !== j.text) { base = j.savedAt; lastSaved = j.text; pad.value = d; dirty = true; status('보내지 못한 글이 남아 있다 — 저장 중…'); save(); }
-    else if (dirty) { /* typing right now — don't yank the caret */ }
-    else if (pad.value !== j.text || base !== j.savedAt) show(j, pad.value && pad.value !== j.text ? '다른 기기에서 바뀜 — 그쪽 글을 불러왔다' : '');
+    render((await r.json()).messages || []);
     upd.textContent = '갱신 ' + new Date().toLocaleTimeString('ko-KR');
-  } catch (err) { upd.textContent = '서버 안 닿음 — 글은 이 기기에 임시 보관'; }
+  } catch (_) { upd.textContent = '서버 안 닿음'; }
 };
-const save = async () => {
-  if (saving) { dirty = true; return; }
-  const text = pad.value; if (text === lastSaved) { dirty = false; status(base ? '저장됨 ' + when(base) : '빈 메모장'); return; }
-  saving = true; saveBtn.disabled = true; status('저장 중…');
+// 말풍선 탭 = 복사 (링크를 누른 건 링크로 둔다)
+const copyText = async text => {
+  try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; } } catch (_) { /* fall through */ }
+  const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+  let ok = false; try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+  ta.remove(); return ok;
+};
+const copyBubble = async b => {
+  const m = msgs.find(x => x.id === b.parentElement.dataset.id); if (!m) return;
+  const ok = await copyText(m.text);
+  b.classList.add('copied'); setTimeout(() => b.classList.remove('copied'), 500);
+  toast(ok ? '복사됨' : '복사 실패 — 길게 눌러 직접 복사');
+};
+log.addEventListener('click', ev => {
+  if (ev.target.closest('a')) return;
+  const del = ev.target.closest('.m-del');
+  if (del) { if (confirm('이 메시지를 지울까?')) remove(del.dataset.id); return; }
+  const b = ev.target.closest('.c-bubble'); if (b) copyBubble(b);
+});
+log.addEventListener('keydown', ev => { const b = ev.target.closest && ev.target.closest('.c-bubble'); if (b && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); copyBubble(b); } });
+const remove = async id => {
+  try { const r = await fetch('/__memo?m=' + NAME, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ del: id }) }); if (!r.ok) throw new Error('HTTP ' + r.status); lastKey = ''; await load(); }
+  catch (err) { upd.textContent = '✗ 못 지움(' + err.message + ')'; }
+};
+const draft = { get: () => { try { return localStorage.getItem(LS); } catch (_) { return null; } },
+                set: v => { try { v ? localStorage.setItem(LS, v) : localStorage.removeItem(LS); } catch (_) { /* private mode */ } } };
+const submit = async () => {
+  const text = input.value.trim(); if (!text) return;
+  sendBtn.disabled = true;
   try {
-    const r = await fetch('/__memo?m=' + NAME, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, base }) });
-    const j = await r.json();
-    if (r.status === 409) { draft.set(text); show(j, '다른 기기에서 먼저 바뀌었다 — 그쪽 글을 불러왔다. 방금 쓴 글은 이 기기에 임시 보관(새로고침하면 다시 합친다)'); return; }
-    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    base = j.savedAt; lastSaved = text; dirty = pad.value !== text; draft.set(dirty ? pad.value : null);
-    status('저장됨 ' + when(j.savedAt), 'ok');
-    if (dirty) schedule();
-  } catch (err) { draft.set(text); dirty = true; status('✗ 저장 실패(' + err.message + ') — 이 기기에 임시 보관, 다시 시도한다', 'bad'); setTimeout(save, 5000); }
-  finally { saving = false; saveBtn.disabled = false; }
+    const r = await fetch('/__memo?m=' + NAME, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    input.value = ''; draft.set(''); fit(); setTimeout(() => { if (/^\s*$/.test(input.value)) { input.value = ''; fit(); } }, 0);
+    await load(); toBottom();
+  } catch (err) { upd.textContent = '✗ 전송 실패(' + err.message + ') — 글은 입력칸에 그대로'; }
+  finally { sendBtn.disabled = false; input.focus(); }
 };
-const schedule = () => { clearTimeout(timer); timer = setTimeout(save, 1000); };
-pad.addEventListener('input', () => { dirty = true; draft.set(pad.value); status('쓰는 중…'); schedule(); });
-pad.addEventListener('blur', () => { if (dirty) { clearTimeout(timer); save(); } });
-saveBtn.addEventListener('click', () => { clearTimeout(timer); save(); });
-document.addEventListener('keydown', ev => { if ((ev.metaKey || ev.ctrlKey) && ev.key === 's') { ev.preventDefault(); clearTimeout(timer); save(); } });
-document.addEventListener('visibilitychange', () => { if (document.hidden) { if (dirty) { clearTimeout(timer); save(); } } else load(); });
-window.addEventListener('pagehide', () => { if (dirty) { try { navigator.sendBeacon && navigator.sendBeacon('/__memo?m=' + NAME, new Blob([JSON.stringify({ text: pad.value, base })], { type: 'application/json' })); } catch (_) { /* draft stays */ } } });
-load(); setInterval(() => { if (!dirty && !saving) load(); }, 5000);
+document.getElementById('m-form').addEventListener('submit', ev => { ev.preventDefault(); submit(); });
+// 한글 IME: 조합 중 Enter 는 줄바꿈을 넣지 않고 조합이 끝난 뒤 보낸다
+let composing = false, sendAfterCompose = false;
+input.addEventListener('compositionstart', () => { composing = true; });
+input.addEventListener('compositionend', () => { composing = false; if (sendAfterCompose) { sendAfterCompose = false; setTimeout(submit, 0); } });
+input.addEventListener('keydown', ev => {
+  if (ev.key !== 'Enter' || ev.shiftKey) return;
+  ev.preventDefault();
+  if (ev.isComposing || composing || ev.keyCode === 229) { sendAfterCompose = true; return; }
+  submit();
+});
+function fit() { input.style.height = ''; if (!input.value) return; input.style.height = Math.min(input.scrollHeight + input.offsetHeight - input.clientHeight, 160) + 'px'; }
+input.addEventListener('input', () => { fit(); draft.set(input.value); });
+const d = draft.get(); if (d) { input.value = d; fit(); }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+load(); setInterval(load, 5000);
 }());
 </script>
 </body>
