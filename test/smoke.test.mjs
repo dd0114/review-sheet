@@ -248,3 +248,16 @@ test('workers: no source → empty board, inbox/workers.json → file, $REVIEW_S
     await close();
   }
 });
+
+test('workers view: inbox carries the hidden strip + board script, /workers.html·css·js served, sprites optional (missing → 404, emoji fallback)', async () => {
+  const dir = tmpDir();
+  const { base, close } = await startServer(dir, 0);
+  try {
+    const index = await (await fetch(base + '/')).text();
+    assert.match(index, /id="wb-strip"[^>]*hidden/);
+    assert.match(index, /<script src="\/workers\.js">/);
+    for (const f of ['/workers.html', '/workers.css', '/workers.js']) assert.equal((await fetch(base + f)).status, 200, f);
+    assert.equal((await fetch(base + '/sprites/index.json')).status, fs.existsSync(path.join(path.dirname(BIN), '..', 'web', 'sprites', 'index.json')) ? 200 : 404);
+    assert.equal((await fetch(base + '/sprites/..%2fsheet.css')).status, 404);
+  } finally { await close(); }
+});

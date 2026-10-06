@@ -126,6 +126,8 @@ review-sheet chat hub <ch>       # 허브 바꾸기(하나만)
 | `load` | 컨텍스트 피로도 `{pct, zone}` — `zone` 은 `ok·warn·hard`. 모르면 `null` |
 | `detail` · `link` | 브랜치@폴더 등 탭하면 보이는 것 · 열어 볼 링크(없으면 `null`) |
 
+**화면** (시안 c, hero 2026-10-06): 받은편지함 맨 위 한 줄 띠(`일꾼 N · 🔴 🟡 🟠 🟢` 개수) → 누르면 그 자리에서 방별 목록(1열, 방 안은 🔴 먼저)이 펼쳐지고 접힘 여부는 브라우저에 기억된다. `⤢ 크게 보기` = `/workers.html`(넓은 격자). 둘 다 5초 폴링. 일꾼을 탭하면 바텀시트 카드(상태·두 시계 · 지금 하는 일 · 마지막 지시/답 · 브랜치@폴더 · ctx%). `gone` 은 흐리게. 공급자가 없으면(`source: none` + 빈 목록) 띠 자체가 안 보인다. 모습은 `web/sprites/` 스프라이트시트(워커 id 해시로 종 고정 배정, 규격 `web/sprites/README.md`) — 없으면 종별 이모지.
+
 `id` 가 없는 항목은 버린다. 그 밖의 키는 손대지 않고 넘긴다. 가짜 보드(상태 5종 전부): `test/fixtures/workers.json` — `cp test/fixtures/workers.json ~/.review-sheet/inbox/` 로 화면을 볼 수 있다.
 
 ## 데이터 형식 (`<name>-data.js`)
