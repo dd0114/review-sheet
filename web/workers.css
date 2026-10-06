@@ -60,3 +60,4 @@
 .wk .fig .spr{width:44px;height:44px}
 .wb-card .hd .spr{width:40px;height:40px}
 .wk[data-state=working] .fig.has-spr,.wk[data-state=delegating] .fig.has-spr{animation:none}
+.wk .body{width:100%;min-width:0}
