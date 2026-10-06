@@ -258,6 +258,38 @@ export function listMemos(root) {
   });
 }
 
+/* Worker board — who is working on what, supplied from outside (review-sheet knows nothing of tmux/claude).
+ * $REVIEW_SHEET_WORKERS=<url> → the server proxies that URL; else inbox/workers.json; else an empty board.
+ * A dead URL falls back to the file and says why in `error`. Format: SKILL.md §일꾼 보드. */
+export const WORKER_STATES = ['working', 'waiting_input', 'reply_ready', 'delegating', 'gone'];
+export function workersFile(root) { return path.join(root, 'workers.json'); }
+function normWorkers(doc, source) {
+  const d = doc && typeof doc === 'object' ? doc : {};
+  const ok = x => x && typeof x === 'object' && typeof x.id === 'string';
+  return {
+    generatedAt: typeof d.generatedAt === 'string' ? d.generatedAt : null,
+    groups: Array.isArray(d.groups) ? d.groups.filter(ok) : [],
+    workers: Array.isArray(d.workers) ? d.workers.filter(ok) : [],
+    source,
+  };
+}
+export async function readWorkers(root, url = process.env.REVIEW_SHEET_WORKERS) {
+  const errs = [];
+  if (url) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(3000), headers: { accept: 'application/json' } });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return normWorkers(await r.json(), 'url');
+    } catch (e) { errs.push('url: ' + (e.message || e)); }
+  }
+  let board = null;
+  try { board = normWorkers(JSON.parse(fs.readFileSync(workersFile(root), 'utf8')), 'file'); }
+  catch (e) { if (e.code !== 'ENOENT') errs.push('file: ' + (e.message || e)); }
+  board = board || normWorkers(null, 'none');
+  if (errs.length) board.error = errs.join('; ');
+  return board;
+}
+
 function send(res, code, type, body, extra = {}) {
   res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...extra });
   res.end(body);
@@ -365,6 +397,10 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
           send(res, 200, TYPES['.json'], JSON.stringify(sendMemo(root, name, j.text)));
         } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
       });
+      return;
+    }
+    if (url.pathname === '/api/workers') {   // no CORS: the board carries what sessions were told and said
+      readWorkers(root).then(b => send(res, 200, TYPES['.json'], JSON.stringify(b)), e => send(res, 500, 'text/plain; charset=utf-8', String(e.message || e)));
       return;
     }
     if (url.pathname === '/hub') { const h = hubChat(root); return h ? send(res, 302, 'text/plain', '', { location: '/chat.html?c=' + encodeURIComponent(h.name) }) : send(res, 302, 'text/plain', '', { location: '/' }); }
