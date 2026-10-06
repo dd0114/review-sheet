@@ -6,9 +6,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { startServer, loadSheet, readAnswers, renderMarkdown } from '../bin/review-sheet.mjs';
+import { startServer, loadSheet, readAnswers, renderMarkdown, readWorkers, WORKER_STATES } from '../bin/review-sheet.mjs';
 
 const BIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'review-sheet.mjs');
+const WORKERS_FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'workers.json');
 const TEMPLATE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'example-data.js');
 
 function tmpDir() {
@@ -242,6 +243,46 @@ test('stt: /api/stt → ffmpeg → whisper-cli with vocab as --prompt (fake bina
   }
 });
 
+test('workers: no source → empty board, inbox/workers.json → file, $REVIEW_SHEET_WORKERS → proxied, dead URL → file + error', async () => {
+  const fixture = JSON.parse(fs.readFileSync(WORKERS_FIXTURE, 'utf8'));
+  const dir = tmpDir();
+  const upDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-upstream-'));   // stands in for the fleet queue server
+  fs.writeFileSync(path.join(upDir, 'board.json'), JSON.stringify({ ...fixture, workers: [{ ...fixture.workers[0], name: '프록시로 온 일꾼' }] }));
+  const saved = process.env.REVIEW_SHEET_WORKERS;
+  delete process.env.REVIEW_SHEET_WORKERS;
+  const { base, close } = await startServer(dir, 0);
+  const up = await startServer(upDir, 0);
+  try {
+    let b = await (await fetch(base + '/api/workers')).json();
+    assert.deepEqual(b, { generatedAt: null, groups: [], workers: [], source: 'none' });
+
+    fs.copyFileSync(WORKERS_FIXTURE, path.join(dir, 'workers.json'));
+    b = await (await fetch(base + '/api/workers')).json();
+    assert.equal(b.source, 'file');
+    assert.deepEqual(b.workers, fixture.workers);
+    assert.deepEqual(b.workers.map(w => w.state).sort(), [...WORKER_STATES].sort());
+    assert.equal(b.groups[1].name, 'shop 방');
+
+    process.env.REVIEW_SHEET_WORKERS = up.base + '/board.json';
+    b = await (await fetch(base + '/api/workers')).json();
+    assert.equal(b.source, 'url');
+    assert.deepEqual(b.workers.map(w => w.name), ['프록시로 온 일꾼']);
+
+    await up.close();   // upstream gone → the file again, with the reason
+    b = await (await fetch(base + '/api/workers')).json();
+    assert.equal(b.source, 'file');
+    assert.equal(b.workers.length, 5);
+    assert.match(b.error, /^url: /);
+
+    fs.writeFileSync(path.join(dir, 'workers.json'), '{ broken');
+    const bad = await readWorkers(dir, '');
+    assert.equal(bad.source, 'none'); assert.match(bad.error, /^file: /);
+  } finally {
+    if (saved === undefined) delete process.env.REVIEW_SHEET_WORKERS; else process.env.REVIEW_SHEET_WORKERS = saved;
+    await close();
+  }
+});
+
 test('stt: binary lookup skips a same-named directory on PATH (launchd PATH=/opt/homebrew/Cellar → Cellar/ffmpeg/)', async () => {
   const { sttConfig } = await import('../bin/review-sheet.mjs');
   const a = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-path-a-')), b = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-path-b-'));
@@ -252,4 +293,17 @@ test('stt: binary lookup skips a same-named directory on PATH (launchd PATH=/opt
     delete process.env.REVIEW_SHEET_FFMPEG; process.env.PATH = `${a}:${b}`;
     assert.equal(sttConfig().ffmpeg, path.join(b, 'ffmpeg'));
   } finally { process.env.PATH = saved.PATH; if (saved.FF !== undefined) process.env.REVIEW_SHEET_FFMPEG = saved.FF; }
+});
+
+test('workers view: inbox carries the hidden strip + board script, /workers.html·css·js served, sprites optional (missing → 404, emoji fallback)', async () => {
+  const dir = tmpDir();
+  const { base, close } = await startServer(dir, 0);
+  try {
+    const index = await (await fetch(base + '/')).text();
+    assert.match(index, /id="wb-strip"[^>]*hidden/);
+    assert.match(index, /<script src="\/workers\.js">/);
+    for (const f of ['/workers.html', '/workers.css', '/workers.js']) assert.equal((await fetch(base + f)).status, 200, f);
+    assert.equal((await fetch(base + '/sprites/index.json')).status, fs.existsSync(path.join(path.dirname(BIN), '..', 'web', 'sprites', 'index.json')) ? 200 : 404);
+    assert.equal((await fetch(base + '/sprites/..%2fsheet.css')).status, 404);
+  } finally { await close(); }
 });

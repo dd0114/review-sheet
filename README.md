@@ -7,6 +7,7 @@
 - **메인 허브** — 채널 하나를 메인 세션의 허브로 지정(`--hub`, 첫 채널은 자동). 받은편지함 맨 위에 ★ 고정, `/hub` 가 바로 그 채널. 프로젝트 매니저·워커 채널은 그 아래.
 - **🎤 음성 입력** — 채팅 입력칸·시트 메모칸·메모 옆 마이크(탭 = 녹음, 다시 탭 = 전사). 전사는 **이 맥에서만**(ffmpeg → whisper.cpp `large-v3-turbo`, 한국어, `~/.review-sheet/vocab.txt` 단어장). 폰 마이크는 HTTPS 가 필요해 `bin/tailscale-serve.sh on` 으로 tailnet 안에서만 감싼다.
 - **메모(memo)** — hero 가 자기한테 보내는 답장 없는 1대1 메시지(`/memo.html`). 채널 모양으로 쌓이고, **말풍선을 누르면 복사**된다. 저장·초안 개념 없음, `inbox/memo/hero.jsonl` 한 줄 = 한 메시지. **세션은 읽지도 쓰지도 않는다** — hero 가 자기와 대화하는 칸이다.
+- **일꾼 보드(workers)** — 지금 일하는 세션 목록(상태·지금 하는 일 한 줄·두 시계·피로도). 리뷰시트는 공급자를 모른다: `REVIEW_SHEET_WORKERS=<url>` 이면 서버가 프록시, 없으면 `inbox/workers.json` 파일 → `GET /api/workers`. 규격은 [`SKILL.md`](SKILL.md) §일꾼 보드, 가짜 보드 `test/fixtures/workers.json`.
 - **받은편지함 하나, 서버 하나, 탭 하나** — 모든 세션이 `~/.review-sheet/inbox` 에 시트를 넣고, 상주 서버(`:5600`)가 큐처럼 보여 준다(답 기다리는 중 / 제출됨).
 - **폰에서** — [Tailscale](https://tailscale.com) 로 맥과 폰을 같은 tailnet 에 두면 밖에서도 `http://<맥 tailnet 주소>:5600/` 로 열린다.
 
