@@ -169,37 +169,41 @@ test('markup: <b>/<br> in text fields render as bold/line break on the page, oth
   assert.doesNotMatch(md, /<b>/);
 });
 
-test('memo: hero pad — GET empty → POST saves → stale base is refused with the current text → history kept → inbox lists it (hero 2026-10-06)', async () => {
+test('memo: 나와의 메시지 — GET empty → POST sends → delete one → old one-page pad migrates per paragraph → inbox counts, never the text (hero 2026-10-06)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-memo-'));
   const { readMemo, listMemos } = await import('../bin/review-sheet.mjs');
   const { base, close } = await startServer(dir, 0);
   const post = (body, m = 'hero') => fetch(base + '/__memo?m=' + m, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   try {
     let j = await (await fetch(base + '/api/memo')).json();
-    assert.deepEqual(j, { name: 'hero', text: '', savedAt: null });
-    assert.equal(listMemos(dir)[0].name, 'hero');                       // listed before the first save, so hero can find it
-    let r = await post({ text: '첫 줄\n둘째', base: null }); assert.equal(r.status, 200);
-    j = await r.json(); assert.ok(j.savedAt && !j.conflict);
-    assert.equal(fs.readFileSync(path.join(dir, 'memo', 'hero.md'), 'utf8'), '첫 줄\n둘째');
-    const t1 = j.savedAt;
-    // another device saved first → a save with the old base is refused and gets the newer text back
-    await new Promise(res => setTimeout(res, 20));
-    r = await post({ text: '폰에서 고침', base: t1 }); assert.equal(r.status, 200); const t2 = (await r.json()).savedAt;
-    r = await post({ text: '랩탑에서 고침', base: t1 }); assert.equal(r.status, 409);
-    j = await r.json(); assert.equal(j.conflict, true); assert.equal(j.text, '폰에서 고침'); assert.equal(j.savedAt, t2);
-    assert.equal(readMemo(dir, 'hero').text, '폰에서 고침');
-    // same text again is a no-op (no new history), a real change keeps the previous text in .history
-    const hist = () => fs.readdirSync(path.join(dir, 'memo', '.history')).filter(f => f.startsWith('hero-'));
-    const n = hist().length; await post({ text: '폰에서 고침', base: t2 }); assert.equal(hist().length, n);
-    await post({ text: '셋째 판', base: t2 }); assert.equal(hist().length, n + 1);
-    assert.ok(hist().some(f => fs.readFileSync(path.join(dir, 'memo', '.history', f), 'utf8') === '폰에서 고침'));
-    // inbox + page + guards
+    assert.deepEqual(j, { name: 'hero', messages: [] });
+    assert.equal(listMemos(dir)[0].name, 'hero');                       // listed before the first message, so hero can find it
+    let r = await post({ text: '첫 메시지' }); assert.equal(r.status, 200);
+    const m1 = await r.json(); assert.ok(m1.id && m1.ts); assert.equal(m1.text, '첫 메시지');
+    const m2 = await (await post({ text: '둘째\n줄바꿈' })).json();
+    j = await (await fetch(base + '/api/memo')).json();
+    assert.deepEqual(j.messages.map(m => m.text), ['첫 메시지', '둘째\n줄바꿈']);
+    assert.equal(fs.readFileSync(path.join(dir, 'memo', 'hero.jsonl'), 'utf8').split('\n').filter(Boolean).length, 2);   // one line per message
+    // delete one, by id
+    r = await post({ del: m1.id }); assert.equal(r.status, 200);
+    assert.deepEqual(readMemo(dir, 'hero').messages.map(m => m.id), [m2.id]);
+    assert.equal((await post({ del: 'nope' })).status, 404);
+    // the inbox gets count + time only — the words stay hero's
     const inbox = await (await fetch(base + '/api/inbox')).json();
-    assert.equal(inbox.memos[0].first, '셋째 판');
+    assert.equal(inbox.memos[0].count, 1); assert.equal(inbox.memos[0].lastAt, m2.ts);
+    assert.ok(!JSON.stringify(inbox.memos).includes('둘째'));
+    // page + guards
     assert.equal((await fetch(base + '/memo.html')).status, 200);
     assert.equal((await fetch(base + '/api/memo?m=..')).status, 400);
+    assert.equal((await post({ text: '   ' })).status, 400);
     assert.equal((await post({ nope: 1 })).status, 400);
-    assert.equal((await post({ text: '다른 메모', base: null }, 'ideas')).status, 200);
-    assert.deepEqual(listMemos(dir).map(m => m.name), ['hero', 'ideas']);
+    // the pre-10-06 autosave pad (one .md) becomes messages, one per blank-line paragraph, in order; the file stays as .md.migrated
+    fs.writeFileSync(path.join(dir, 'memo', 'ideas.md'), '- 하나\n둘째 줄\n\n- 둘\n\n\n- 셋\n');
+    const ideas = readMemo(dir, 'ideas');
+    assert.deepEqual(ideas.messages.map(m => m.text), ['- 하나\n둘째 줄', '- 둘', '- 셋']);
+    assert.ok(ideas.messages[0].ts < ideas.messages[2].ts);
+    assert.ok(fs.existsSync(path.join(dir, 'memo', 'ideas.md.migrated')) && !fs.existsSync(path.join(dir, 'memo', 'ideas.md')));
+    assert.deepEqual(listMemos(dir).map(m => [m.name, m.count]), [['hero', 1], ['ideas', 3]]);
+    assert.equal(readMemo(dir, 'ideas').messages.length, 3);           // migration runs once
   } finally { await close(); }
 });

@@ -54,7 +54,7 @@ function usage(code = 2) {
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
   review-sheet chat ls | read <ch> [--all] [--json] | say <ch> <text…|-> | wait <ch> [--timeout SEC]
-  (메모장: http://127.0.0.1:${INBOX_PORT}/memo.html — hero 전용, CLI 없음·세션은 읽지 않는다)
+  (메모: http://127.0.0.1:${INBOX_PORT}/memo.html — hero 가 자기한테 보내는 메시지, CLI 없음·세션은 읽지 않는다)
   [dir] omitted → inbox ${INBOX} (one folder for every session; served on :${INBOX_PORT})`);
   process.exit(code);
 }
@@ -211,39 +211,50 @@ function markSeen(root, ch, who) {
   meta[who === 'hero' ? 'heroSeenAt' : 'seenAt'] = new Date().toISOString(); writeChatMeta(root, meta); return meta;
 }
 
-/* ── 메모장 (memo) — hero 의 자기 메모, 세션은 읽지 않는다 (hero 2026-10-06) ────────
-   inbox/memo/<name>.md            the text, as hero last saved it (atomic write)
-   inbox/memo/.history/<name>-<ts>.md   the previous text before each save (last MEMO_KEEP kept) — undo by hand
-   No owner, no unread counts, no `wait`: the page autosaves, the server only stores. Nothing here is a SoT. */
+/* ── 메모 (memo) — hero 가 자기한테 보내는 답장 없는 메시지, 세션은 읽지 않는다 (hero 2026-10-06) ──
+   inbox/memo/<name>.jsonl   one line per message {id, ts, text}. Send = append, delete = drop that line. No save/draft/conflict:
+   hero said "답장 없는 1대1 메시지처럼, 저장 개념 없이" — the page copies a bubble on tap, that is what it is for.
+   The pre-10-06 one-page pad (<name>.md) is split on blank lines into messages on first read and kept as <name>.md.migrated.
+   No owner, no unread counts, no `wait`, no CLI. Nothing here is a SoT. */
 const memoDir = root => path.join(root, 'memo');
-const memoFile = (root, name) => path.join(memoDir(root), name + '.md');
-const MEMO_KEEP = 30;
+const memoLog = (root, name) => path.join(memoDir(root), name + '.jsonl');
 export const MEMO_DEFAULT = 'hero';
+const memoId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+function migrateMemoPad(root, name) {   // old autosave pad → one message per paragraph, so each one copies on its own
+  const md = path.join(memoDir(root), name + '.md');
+  if (fs.existsSync(memoLog(root, name)) || !fs.existsSync(md)) return;
+  const text = fs.readFileSync(md, 'utf8'), t0 = fs.statSync(md).mtime.getTime();
+  const parts = text.split(/\n[ \t]*\n/).map(x => x.trim()).filter(Boolean);
+  fs.writeFileSync(memoLog(root, name), parts.map((t, i) => JSON.stringify({ id: memoId(), ts: new Date(t0 - (parts.length - 1 - i) * 1000).toISOString(), text: t }) + '\n').join(''));
+  fs.renameSync(md, md + '.migrated');
+}
 export function readMemo(root, name) {
-  try { const f = memoFile(root, name); return { name, text: fs.readFileSync(f, 'utf8'), savedAt: fs.statSync(f).mtime.toISOString() }; }
-  catch { return { name, text: '', savedAt: null }; }
+  migrateMemoPad(root, name);
+  let messages = [];
+  try { messages = fs.readFileSync(memoLog(root, name), 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { /* none yet */ }
+  return { name, messages };
 }
-/** Save; `base` is the savedAt the page loaded — if the file moved on since (another device), refuse with the current text. */
-export function writeMemo(root, name, text, base) {
-  const cur = readMemo(root, name);
-  if (base !== undefined && cur.savedAt && base !== cur.savedAt && cur.text !== text) return { conflict: true, ...cur };
-  if (cur.savedAt && cur.text === text) return { conflict: false, ...cur };
-  fs.mkdirSync(path.join(memoDir(root), '.history'), { recursive: true });
-  if (cur.savedAt) {
-    fs.writeFileSync(path.join(memoDir(root), '.history', `${name}-${cur.savedAt.replace(/[:.]/g, '')}.md`), cur.text);
-    const old = fs.readdirSync(path.join(memoDir(root), '.history')).filter(f => f.startsWith(name + '-')).sort();
-    for (const f of old.slice(0, Math.max(0, old.length - MEMO_KEEP))) fs.unlinkSync(path.join(memoDir(root), '.history', f));
-  }
-  const f = memoFile(root, name);
-  fs.writeFileSync(f + '.tmp', text); fs.renameSync(f + '.tmp', f);
-  return { conflict: false, ...readMemo(root, name) };
+export function sendMemo(root, name, text) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('text 필요');
+  fs.mkdirSync(memoDir(root), { recursive: true }); migrateMemoPad(root, name);
+  const msg = { id: memoId(), ts: new Date().toISOString(), text };
+  fs.appendFileSync(memoLog(root, name), JSON.stringify(msg) + '\n');
+  return msg;
 }
+export function deleteMemo(root, name, id) {
+  const { messages } = readMemo(root, name); const keep = messages.filter(m => m.id !== id);
+  if (keep.length === messages.length) return false;
+  const f = memoLog(root, name);
+  fs.writeFileSync(f + '.tmp', keep.map(m => JSON.stringify(m) + '\n').join('')); fs.renameSync(f + '.tmp', f);
+  return true;
+}
+/** For the inbox: name, count, last time — never the text (sessions can hit /api/inbox; the words stay hero's). */
 export function listMemos(root) {
-  let names = []; try { names = fs.readdirSync(memoDir(root)).filter(f => f.endsWith('.md')).map(f => f.slice(0, -3)); } catch { /* none */ }
-  if (!names.includes(MEMO_DEFAULT)) names.unshift(MEMO_DEFAULT);   // the pad always exists for hero, even before the first save
+  let names = []; try { names = [...new Set(fs.readdirSync(memoDir(root)).filter(f => /\.(jsonl|md)$/.test(f)).map(f => f.replace(/\.(jsonl|md)$/, '')))]; } catch { /* none */ }
+  if (!names.includes(MEMO_DEFAULT)) names.unshift(MEMO_DEFAULT);   // always there for hero, even before the first message
   return names.sort((a, b) => a === MEMO_DEFAULT ? -1 : b === MEMO_DEFAULT ? 1 : a.localeCompare(b)).map(n => {
-    const m = readMemo(root, n); const first = m.text.split('\n').find(l => l.trim()) || '';
-    return { name: n, savedAt: m.savedAt, chars: m.text.length, first: first.trim().slice(0, 60) };
+    const { messages } = readMemo(root, n); const last = messages[messages.length - 1];
+    return { name: n, count: messages.length, lastAt: last ? last.ts : null };
   });
 }
 
@@ -279,8 +290,8 @@ const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : '') + (c.unreadHero ?
   '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : c.hub ? '★ 메인 허브' : '💬 채널') + '</span><b>' + esc(c.title) + '</b>' +
   '<small>' + esc(c.owner) + (c.last ? ' · ' + esc(c.last.from === 'hero' ? '나' : c.last.from) + ': ' + esc(c.last.text.slice(0, 60)) + (c.last.text.length > 60 ? '…' : '') + ' · ' + when(c.last.ts) : ' · 아직 대화 없음') + '</small></a></li>';
 const memoRow = m => '<li class="memo"><a href="/memo.html?m=' + encodeURIComponent(m.name) + '">' +
-  '<span class="rs-badge">📝 메모장</span><b>' + esc(m.name === 'hero' ? '내 메모' : m.name) + '</b>' +
-  '<small>' + (m.savedAt ? esc(m.first || '(빈 줄)') + ' · ' + m.chars + '자 · 저장 ' + when(m.savedAt) : '아직 비어 있음 — 나만 보는 메모, 세션은 읽지 않는다') + '</small></a></li>';
+  '<span class="rs-badge">📝 메모</span><b>' + esc(m.name === 'hero' ? '나와의 메시지' : m.name) + '</b>' +
+  '<small>' + (m.count ? m.count + '건 · 마지막 ' + when(m.lastAt) + ' · 누르면 복사' : '아직 없음 — 나한테 보내는 메시지, 세션은 읽지 않는다') + '</small></a></li>';
 const render = d => {
   const wait = d.sheets.filter(s => s.error || !s.submitted), done = d.sheets.filter(s => !s.error && s.submitted);
   const chats = d.chats || [], memos = d.memos || [];
@@ -337,12 +348,12 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     const cors = { 'access-control-allow-origin': '*' };
     if (url.pathname === '/api/sheets') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root) }), cors);
     if (url.pathname === '/api/inbox') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root), chats: listChats(root), memos: listMemos(root) }), cors);
-    if (url.pathname === '/api/memo') {   // no CORS: the pad is hero's own, other dashboards don't get to read it
+    if (url.pathname === '/api/memo') {   // no CORS: hero's own, other dashboards don't get to read it
       const name = url.searchParams.get('m') || MEMO_DEFAULT;
       if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'm=<name> ([a-z0-9-])');
       return send(res, 200, TYPES['.json'], JSON.stringify(readMemo(root, name)));
     }
-    if (url.pathname === '/__memo' && req.method === 'POST') {
+    if (url.pathname === '/__memo' && req.method === 'POST') {   // {text} → send one; {del: id} → remove one
       const name = url.searchParams.get('m') || MEMO_DEFAULT;
       if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'm=<name> ([a-z0-9-])');
       let body = '';
@@ -350,9 +361,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       req.on('end', () => {
         try {
           const j = JSON.parse(body || '{}');
-          if (typeof j.text !== 'string') throw new Error('text 필요');
-          const r = writeMemo(root, name, j.text, typeof j.base === 'string' || j.base === null ? j.base : undefined);
-          send(res, r.conflict ? 409 : 200, TYPES['.json'], JSON.stringify(r));
+          if (typeof j.del === 'string') { const ok = deleteMemo(root, name, j.del); return send(res, ok ? 200 : 404, TYPES['.json'], JSON.stringify({ ok, del: j.del })); }
+          send(res, 200, TYPES['.json'], JSON.stringify(sendMemo(root, name, j.text)));
         } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
       });
       return;
