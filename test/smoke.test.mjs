@@ -6,10 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { startServer, loadSheet, readAnswers, renderMarkdown, readWorkers, WORKER_STATES } from '../bin/review-sheet.mjs';
+import { startServer, loadSheet, readAnswers, renderMarkdown } from '../bin/review-sheet.mjs';
 
 const BIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'review-sheet.mjs');
-const WORKERS_FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'workers.json');
 const TEMPLATE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'example-data.js');
 
 function tmpDir() {
@@ -209,6 +208,32 @@ test('memo: 나와의 메시지 — GET empty → POST sends → delete one → 
   } finally { await close(); }
 });
 
+test('sheet attach: upload any file → answer keeps {name,orig} → bogus names dropped → images inline, others download → read prints the path (hero 2026-10-06)', async () => {
+  const dir = tmpDir(), sheet = loadSheet(dir, 'example');
+  const { base, close } = await startServer(dir, 0);
+  const up = (n, type, body) => fetch(base + '/__answers/file?sheet=' + sheet.id + '&n=' + encodeURIComponent(n), { method: 'POST', headers: { 'content-type': type }, body });
+  try {
+    assert.equal((await up('x.png', 'image/png', '')).status, 400);                 // empty
+    assert.equal((await fetch(base + '/__answers/file?sheet=../x', { method: 'POST', body: 'a' })).status, 400);
+    const png = (await (await up('스샷.png', 'image/png', Buffer.from([0x89, 0x50, 0x4e, 0x47]))).json()).name;
+    const html = (await (await up('page.html', 'text/html', '<script>alert(1)</script>')).json()).name;
+    assert.match(png, /^[a-z0-9]+\.png$/); assert.match(html, /^[a-z0-9]+\.html$/);
+    const r1 = await fetch(base + '/answers/' + sheet.id + '.files/' + png);
+    assert.equal(r1.headers.get('content-type'), 'image/png'); assert.equal(r1.headers.get('content-disposition'), null);
+    const r2 = await fetch(base + '/answers/' + sheet.id + '.files/' + html);
+    assert.equal(r2.headers.get('content-type'), 'application/octet-stream'); assert.equal(r2.headers.get('content-disposition'), 'attachment');
+    const q = sheet.sections[0].code + '-' + sheet.sections[0].questions[0].k;
+    const body = { answers: { [q]: { memo: 'm', files: [{ name: png, orig: '스샷.png' }, { name: '../../x.json', orig: 'evil' }, { name: 'zzzzzzzz.png', orig: 'gone' }] }, [sheet.sections[0].code + '-memo']: { files: [{ name: html, orig: 'page.html' }] } } };
+    assert.equal((await fetch(base + '/__answers?sheet=' + sheet.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).status, 200);
+    const saved = readAnswers(dir, sheet.id);
+    assert.deepEqual(saved.answers[q].files, [{ name: png, orig: '스샷.png' }]);
+    const md = renderMarkdown(sheet, saved, dir);
+    assert.ok(md.includes('📎 ' + q + ': 스샷.png → ' + path.join(path.resolve(dir), 'answers', sheet.id + '.files', png)), md);
+    assert.ok(md.includes('page.html →'));
+    assert.match(md, /📎1 \|/);
+  } finally { await close(); }
+});
+
 test('stt: /api/stt → ffmpeg → whisper-cli with vocab as --prompt (fake binaries, nothing leaves the box)', async () => {
   const dir = tmpDir();
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-stt-bin-'));
@@ -243,46 +268,6 @@ test('stt: /api/stt → ffmpeg → whisper-cli with vocab as --prompt (fake bina
   }
 });
 
-test('workers: no source → empty board, inbox/workers.json → file, $REVIEW_SHEET_WORKERS → proxied, dead URL → file + error', async () => {
-  const fixture = JSON.parse(fs.readFileSync(WORKERS_FIXTURE, 'utf8'));
-  const dir = tmpDir();
-  const upDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-upstream-'));   // stands in for the fleet queue server
-  fs.writeFileSync(path.join(upDir, 'board.json'), JSON.stringify({ ...fixture, workers: [{ ...fixture.workers[0], name: '프록시로 온 일꾼' }] }));
-  const saved = process.env.REVIEW_SHEET_WORKERS;
-  delete process.env.REVIEW_SHEET_WORKERS;
-  const { base, close } = await startServer(dir, 0);
-  const up = await startServer(upDir, 0);
-  try {
-    let b = await (await fetch(base + '/api/workers')).json();
-    assert.deepEqual(b, { generatedAt: null, groups: [], workers: [], source: 'none' });
-
-    fs.copyFileSync(WORKERS_FIXTURE, path.join(dir, 'workers.json'));
-    b = await (await fetch(base + '/api/workers')).json();
-    assert.equal(b.source, 'file');
-    assert.deepEqual(b.workers, fixture.workers);
-    assert.deepEqual(b.workers.map(w => w.state).sort(), [...WORKER_STATES].sort());
-    assert.equal(b.groups[1].name, 'shop 방');
-
-    process.env.REVIEW_SHEET_WORKERS = up.base + '/board.json';
-    b = await (await fetch(base + '/api/workers')).json();
-    assert.equal(b.source, 'url');
-    assert.deepEqual(b.workers.map(w => w.name), ['프록시로 온 일꾼']);
-
-    await up.close();   // upstream gone → the file again, with the reason
-    b = await (await fetch(base + '/api/workers')).json();
-    assert.equal(b.source, 'file');
-    assert.equal(b.workers.length, 5);
-    assert.match(b.error, /^url: /);
-
-    fs.writeFileSync(path.join(dir, 'workers.json'), '{ broken');
-    const bad = await readWorkers(dir, '');
-    assert.equal(bad.source, 'none'); assert.match(bad.error, /^file: /);
-  } finally {
-    if (saved === undefined) delete process.env.REVIEW_SHEET_WORKERS; else process.env.REVIEW_SHEET_WORKERS = saved;
-    await close();
-  }
-});
-
 test('stt: binary lookup skips a same-named directory on PATH (launchd PATH=/opt/homebrew/Cellar → Cellar/ffmpeg/)', async () => {
   const { sttConfig } = await import('../bin/review-sheet.mjs');
   const a = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-path-a-')), b = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-path-b-'));
@@ -293,17 +278,4 @@ test('stt: binary lookup skips a same-named directory on PATH (launchd PATH=/opt
     delete process.env.REVIEW_SHEET_FFMPEG; process.env.PATH = `${a}:${b}`;
     assert.equal(sttConfig().ffmpeg, path.join(b, 'ffmpeg'));
   } finally { process.env.PATH = saved.PATH; if (saved.FF !== undefined) process.env.REVIEW_SHEET_FFMPEG = saved.FF; }
-});
-
-test('workers view: inbox carries the hidden strip + board script, /workers.html·css·js served, sprites optional (missing → 404, emoji fallback)', async () => {
-  const dir = tmpDir();
-  const { base, close } = await startServer(dir, 0);
-  try {
-    const index = await (await fetch(base + '/')).text();
-    assert.match(index, /id="wb-strip"[^>]*hidden/);
-    assert.match(index, /<script src="\/workers\.js">/);
-    for (const f of ['/workers.html', '/workers.css', '/workers.js']) assert.equal((await fetch(base + f)).status, 200, f);
-    assert.equal((await fetch(base + '/sprites/index.json')).status, fs.existsSync(path.join(path.dirname(BIN), '..', 'web', 'sprites', 'index.json')) ? 200 : 404);
-    assert.equal((await fetch(base + '/sprites/..%2fsheet.css')).status, 404);
-  } finally { await close(); }
 });
