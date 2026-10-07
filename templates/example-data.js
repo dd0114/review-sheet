@@ -17,7 +17,7 @@ window.SHEET = {
       now: '지금 상태를 한두 문장으로',                 // optional
       links: [['관련 화면 열기', 'http://127.0.0.1:5200/page.html']],   // optional
       // images: [['shots/overview.png', '전체 흐름']],   // optional, paths relative to the sheet dir — section-wide picture only
-      table: { head: ['안', '모양', '변수'], rows: [['A', '한 줄', '1'], ['B', '다른 줄', '3']], note: '숫자는 전부 임시' }, // optional
+      // table: DO NOT USE — hero reads on a phone; split columns are unreadable (hero 2026-10-07). List items in now/sit with \n + numbers.
       questions: [
         { k: '1', q: '질문 한 줄',
           sit: '지금 어떤 상황인지', decide: '무엇을 정하는지', effect: '고르면 뭐가 달라지는지',
