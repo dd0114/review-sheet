@@ -233,3 +233,16 @@ test('sheet attach: upload any file → answer keeps {name,orig} → bogus names
     assert.match(md, /📎1 \|/);
   } finally { await close(); }
 });
+
+test('double send: same text twice within 3s is stored once (chat + memo), a different text or a later repeat is kept (hero 2026-10-07)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-dup-'));
+  const { appendChat, newChat, readChatLog, sendMemo, readMemo } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'dup', 'dup', 'root');
+  const a = appendChat(dir, 'dup', 'hero', '같은 글'), b = appendChat(dir, 'dup', 'hero', '같은 글');
+  assert.equal(a.id, b.id); assert.equal(readChatLog(dir, 'dup').length, 1);
+  appendChat(dir, 'dup', 'root', '같은 글');             // another sender is not a double send
+  appendChat(dir, 'dup', 'hero', '다른 글');
+  assert.equal(readChatLog(dir, 'dup').length, 3);
+  const m1 = sendMemo(dir, 'hero', '메모'), m2 = sendMemo(dir, 'hero', '메모');
+  assert.equal(m1.id, m2.id); assert.equal(readMemo(dir, 'hero').messages.length, 1);
+});

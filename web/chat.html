@@ -80,9 +80,13 @@ document.getElementById('c-file').addEventListener('change', ev => { addFiles(ev
 document.addEventListener('paste', ev => { const fs = [...(ev.clipboardData ? ev.clipboardData.files : [])].filter(f => /^image\//.test(f.type)); if (fs.length) { ev.preventDefault(); addFiles(fs); } });
 document.addEventListener('dragover', ev => { if ([...ev.dataTransfer.types].includes('Files')) ev.preventDefault(); });
 document.addEventListener('drop', ev => { if (ev.dataTransfer.files.length) { ev.preventDefault(); addFiles(ev.dataTransfer.files); } });
+/* one send at a time: Korean IME on iOS fires compositionend (→ deferred submit) and then one more plain Enter keydown,
+   so submit() can run twice before the first fetch clears the input — the second would post the same text again. */
+let sending = false;
 const submit = async () => {
+  if (sending) return;
   const text = input.value.trim(); if (!text && !pending.length) return;
-  sendBtn.disabled = true;
+  sending = true; sendBtn.disabled = true;
   try {
     const files = [];
     for (const p of pending) {
@@ -97,7 +101,7 @@ const submit = async () => {
     for (const p of pending) URL.revokeObjectURL(p.url); pending = []; drawAtt();
     input.value = ''; fit(); setTimeout(() => { if (/^\s*$/.test(input.value)) { input.value = ''; fit(); } }, 0); await load(false); toBottom();
   } catch (err) { upd.textContent = '✗ 전송 실패(' + err.message + ')'; }
-  finally { sendBtn.disabled = false; input.focus(); }
+  finally { sending = false; sendBtn.disabled = false; input.focus(); }
 };
 document.getElementById('c-form').addEventListener('submit', ev => { ev.preventDefault(); submit(); });
 // 한글 IME: 조합 중 Enter 는 줄바꿈을 넣지 않고(preventDefault) 조합이 끝난 뒤 보낸다 — 커서가 아랫줄로 내려가던 버그

@@ -199,6 +199,8 @@ export function appendChat(root, ch, from, text, files) {
   const meta = readChatMeta(root, ch); if (!meta) throw new Error(`채널 ${ch} 없음`);
   const msg = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: new Date().toISOString(), from, text: String(text) };
   if (files && files.length) msg.files = files;
+  const last = readChatLog(root, ch).at(-1);   // same sender + same text + same files within 3s = a double send, keep the first
+  if (last && last.from === from && last.text === msg.text && JSON.stringify(last.files || []) === JSON.stringify(msg.files || []) && Date.now() - Date.parse(last.ts) < 3000) return last;
   fs.appendFileSync(chatLogFile(root, ch), JSON.stringify(msg) + '\n');
   return msg;
 }
@@ -259,6 +261,8 @@ export function sendMemo(root, name, text) {
   if (typeof text !== 'string' || !text.trim()) throw new Error('text 필요');
   fs.mkdirSync(memoDir(root), { recursive: true }); migrateMemoPad(root, name);
   const msg = { id: memoId(), ts: new Date().toISOString(), text };
+  const last = readMemo(root, name).messages.at(-1);   // same text within 3s = a double send
+  if (last && last.text === text && Date.now() - Date.parse(last.ts) < 3000) return last;
   fs.appendFileSync(memoLog(root, name), JSON.stringify(msg) + '\n');
   return msg;
 }
