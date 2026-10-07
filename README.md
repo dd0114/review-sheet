@@ -38,7 +38,7 @@ review-sheet chat say main "답장"
 node --test test/
 ```
 
-시트 데이터 형식·작성 원칙(쉬운 말, 추천 필수, 질문마다 사진)은 [`SKILL.md`](SKILL.md).
+시트 데이터 형식·작성 원칙(쉬운 말, 추천 필수, 질문마다 사진)은 [`SKILL.md`](SKILL.md). 무엇을·언제·어떻게 물을지(공통 판단 규칙)도 거기에, 작업 영역별 노하우는 [`domains/visual.md`](domains/visual.md)(화면·연출) · [`domains/backend-ops.md`](domains/backend-ops.md)(백엔드·운영).
 
 ## 보안 — 꼭 읽기
 
