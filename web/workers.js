@@ -13,6 +13,9 @@
   let species = Object.keys(EMOJI), sheets = {};   // sheets[sp] = { image, size:[w,h], frame:[w,h], fps, states:{state:[[x,y],…]} }
 
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  // http(s) 만 누를 수 있는 링크로 — javascript:·data: 등은 글자로만 보인다.
+  const linkHtml = u => /^https?:\/\//i.test(String(u)) ?
+    '<a href="' + esc(u) + '" target="_blank" rel="noopener">' + esc(u) + '</a>' : esc(u);
   const ago = ms => ms < m ? '방금' : ms < h ? Math.round(ms / m) + '분' : ms < d ? Math.round(ms / h) + '시간' : Math.round(ms / d) + '일';
   const since = iso => { const t = Date.parse(iso); return isNaN(t) ? null : Math.max(0, Date.now() - t); };
   const hash = s => { let x = 2166136261; for (const c of String(s)) { x ^= c.codePointAt(0); x = Math.imul(x, 16777619); } return x >>> 0; };   // FNV-1a
@@ -105,7 +108,7 @@
       '<div class="now">' + (live(w) ? esc(w.now || '—') : '자리 비움 — 1시간 뒤 목록에서 사라진다') + '</div>' +
       '<dl><dt>마지막 지시</dt><dd>' + esc(w.ask || '—') + '</dd>' + (w.said ? '<dt>마지막 답</dt><dd>' + esc(w.said) + '</dd>' : '') +
       '<dt>브랜치</dt><dd>' + esc(where) + '</dd><dt>컨텍스트</dt><dd>' + esc(load) + '</dd>' +
-      (w.link ? '<dt>링크</dt><dd><a href="' + esc(w.link) + '" target="_blank" rel="noopener">' + esc(w.link) + '</a></dd>' : '') + '</dl>';
+      (w.link ? '<dt>링크</dt><dd>' + linkHtml(w.link) + '</dd>' : '') + '</dl>';
     card.querySelector('.x').onclick = () => { dim.hidden = card.hidden = true; };
     dim.hidden = card.hidden = false;
   }
@@ -116,5 +119,5 @@
     return r.json();
   }
 
-  window.WorkerBoard = { render, summary, openCard, fetchBoard, loadSprites, speciesOf, ST, ORDER };
+  window.WorkerBoard = { linkHtml, render, summary, openCard, fetchBoard, loadSprites, speciesOf, ST, ORDER };
 }());

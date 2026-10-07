@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 import { startServer, loadSheet, readAnswers, renderMarkdown, readWorkers, WORKER_STATES } from '../bin/review-sheet.mjs';
 
 const BIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'review-sheet.mjs');
@@ -260,6 +261,17 @@ test('workers view: inbox carries the hidden strip + board script, /workers.html
     assert.equal((await fetch(base + '/sprites/index.json')).status, fs.existsSync(path.join(path.dirname(BIN), '..', 'web', 'sprites', 'index.json')) ? 200 : 404);
     assert.equal((await fetch(base + '/sprites/..%2fsheet.css')).status, 404);
   } finally { await close(); }
+});
+
+test('workers card link: only http(s) becomes a clickable <a>, javascript:/data:/relative stay escaped text (AC6)', () => {
+  const ctx = { window: {}, setInterval: () => 0 };
+  vm.runInNewContext(fs.readFileSync(path.join(path.dirname(BIN), '..', 'web', 'workers.js'), 'utf8'), ctx);
+  const { linkHtml } = ctx.window.WorkerBoard;
+  assert.equal(linkHtml('https://github.com/x/y/pull/2'), '<a href="https://github.com/x/y/pull/2" target="_blank" rel="noopener">https://github.com/x/y/pull/2</a>');
+  for (const u of ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,<b>x</b>', '//evil.example', '/local', ' https://x']) {
+    assert.ok(!linkHtml(u).includes('<a'), u);
+  }
+  assert.equal(linkHtml('data:text/html,<b>"x"</b>'), 'data:text/html,&lt;b&gt;&quot;x&quot;&lt;/b&gt;');
 });
 
 test('sheet attach: upload any file → answer keeps {name,orig} → bogus names dropped → images inline, others download → read prints the path (hero 2026-10-06)', async () => {
