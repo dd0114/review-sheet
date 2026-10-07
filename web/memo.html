@@ -91,16 +91,18 @@ const remove = async id => {
 };
 const draft = { get: () => { try { return localStorage.getItem(LS); } catch (_) { return null; } },
                 set: v => { try { v ? localStorage.setItem(LS, v) : localStorage.removeItem(LS); } catch (_) { /* private mode */ } } };
+let sending = false;   // one send at a time — iOS Korean IME can fire submit twice (see chat.html)
 const submit = async () => {
+  if (sending) return;
   const text = input.value.trim(); if (!text) return;
-  sendBtn.disabled = true;
+  sending = true; sendBtn.disabled = true;
   try {
     const r = await fetch('/__memo?m=' + NAME, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     input.value = ''; draft.set(''); fit(); setTimeout(() => { if (/^\s*$/.test(input.value)) { input.value = ''; fit(); } }, 0);
     await load(); toBottom();
   } catch (err) { upd.textContent = '✗ 전송 실패(' + err.message + ') — 글은 입력칸에 그대로'; }
-  finally { sendBtn.disabled = false; input.focus(); }
+  finally { sending = false; sendBtn.disabled = false; input.focus(); }
 };
 document.getElementById('m-form').addEventListener('submit', ev => { ev.preventDefault(); submit(); });
 // 한글 IME: 조합 중 Enter 는 줄바꿈을 넣지 않고 조합이 끝난 뒤 보낸다
