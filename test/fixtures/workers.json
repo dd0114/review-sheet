@@ -1,0 +1,44 @@
+{
+  "generatedAt": "2026-10-06T09:30:00.000Z",
+  "groups": [
+    { "id": "spider", "name": "spider 방" },
+    { "id": "shop", "name": "shop 방" }
+  ],
+  "workers": [
+    {
+      "id": "spider:rs-board", "group": "spider", "name": "rs-board",
+      "state": "working", "stateSince": "2026-10-06T09:21:00.000Z", "createdAt": "2026-10-06T09:05:00.000Z",
+      "now": "'리뷰시트 일꾼 보드 AC1 구현' 하는 중", "ask": "리뷰시트 일꾼 보드 AC1 구현", "said": "worktree 만들었습니다",
+      "load": { "pct": 18, "zone": "ok" },
+      "detail": { "branch": "feat/worker-board", "dir": "~/work/spider" }, "link": null
+    },
+    {
+      "id": "spider:docs", "group": "spider", "name": "docs",
+      "state": "waiting_input", "stateSince": "2026-10-06T09:28:30.000Z", "createdAt": "2026-10-06T07:40:00.000Z",
+      "now": "'Do you want to proceed? (y/n)' 기다림", "ask": "README 표 정리", "said": "",
+      "load": { "pct": 62, "zone": "warn" },
+      "detail": { "branch": "docs/table", "dir": "~/work/spider-docs" }, "link": null
+    },
+    {
+      "id": "shop:cart", "group": "shop", "name": "장바구니",
+      "state": "reply_ready", "stateSince": "2026-10-06T09:10:00.000Z", "createdAt": "2026-10-05T22:00:00.000Z",
+      "now": "'장바구니 합계 버그 고쳤습니다' — 확인 대기", "ask": "장바구니 합계가 0 으로 나온다", "said": "장바구니 합계 버그 고쳤습니다",
+      "load": { "pct": 91, "zone": "hard" },
+      "detail": { "branch": "fix/cart-total", "dir": "~/work/shop" }, "link": null
+    },
+    {
+      "id": "shop:search", "group": "shop", "name": "검색",
+      "state": "delegating", "stateSince": "2026-10-06T09:25:00.000Z", "createdAt": "2026-10-06T08:00:00.000Z",
+      "now": "부하 시켜 '검색 색인 재생성' 하는 중", "ask": "검색 색인 재생성", "said": "",
+      "load": { "pct": 34, "zone": "ok" },
+      "detail": { "branch": "main", "dir": "~/work/shop-search" }, "link": null
+    },
+    {
+      "id": "shop:old", "group": "shop", "name": "예전 일꾼",
+      "state": "gone", "stateSince": "2026-10-06T09:00:00.000Z", "createdAt": "2026-10-06T06:00:00.000Z",
+      "now": "", "ask": "로그 정리", "said": "정리 끝났습니다",
+      "load": null,
+      "detail": { "branch": "chore/logs", "dir": "~/work/shop" }, "link": null
+    }
+  ]
+}
