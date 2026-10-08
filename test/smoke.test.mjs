@@ -296,3 +296,39 @@ test('double send: same text twice within 3s is stored once (chat + memo), a dif
   const m1 = sendMemo(dir, 'hero', '메모'), m2 = sendMemo(dir, 'hero', '메모');
   assert.equal(m1.id, m2.id); assert.equal(readMemo(dir, 'hero').messages.length, 1);
 });
+
+test('urgent: 🔥 on a sheet → top of its group, hero notice to the owner channel, off → notice again (hero 2026-10-08)', async () => {
+  const dir = tmpDir();
+  const { newChat, readChatLog, readUrgent } = await import('../bin/review-sheet.mjs');
+  const mk = (name, from) => fs.writeFileSync(path.join(dir, name + '-data.js'),
+    `window.SHEET = { id: '${name}', title: 'T-${name}', from: '${from}', createdAt: '2026-10-0${name === 'a' ? 2 : 1}T00:00:00Z', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
+  mk('a', 'infra'); mk('b', 'nochan');
+  newChat(dir, 'infra', 'infra', 'infra:fleet2');
+  const { base, close } = await startServer(dir, 0);
+  try {
+    const post = (d, on, ct = 'application/json') => fetch(base + '/__urgent?d=' + d, { method: 'POST', headers: { 'content-type': ct }, body: JSON.stringify({ on }) });
+    assert.equal((await post('b', true, 'text/plain')).status, 415);   // cross-site simple POST can't flip it
+    assert.equal((await post('zz', true)).status, 400);
+    let j = await (await post('b', true)).json();
+    assert.deepEqual([j.urgent, j.notified], [true, null]);             // no channel for 'nochan' — flag only
+    let inbox = await (await fetch(base + '/api/inbox')).json();
+    const order = inbox.sheets.filter(s => !s.error).map(s => s.name);
+    assert.ok(order.indexOf('b') < order.indexOf('a'), 'urgent b above newer a');
+    assert.equal(inbox.sheets.find(s => s.name === 'b').urgent, true);
+    j = await (await post('a', true)).json();
+    assert.equal(j.notified, 'infra');
+    await post('a', true);                                               // already on — no second notice
+    let log = readChatLog(dir, 'infra');
+    assert.equal(log.length, 1); assert.equal(log[0].from, 'hero'); assert.match(log[0].text, /^🔥 긴급 지정: T-a/);
+    await post('a', false);
+    log = readChatLog(dir, 'infra');
+    assert.equal(log.length, 2); assert.match(log[1].text, /^긴급 해제: T-a/);
+    assert.deepEqual(Object.keys(readUrgent(dir)), ['b']);
+    // from 이 빠진 시트(데이터 파일 통째 덮어쓰기) → 시트 이름 접두로 채널을 찾는다
+    fs.writeFileSync(path.join(dir, 'infra-x-data.js'), "window.SHEET = { id: 'infra-x', title: 'T-x', sections: [] };");
+    assert.equal((await (await post('infra-x', true)).json()).notified, 'infra');
+    const html = await (await fetch(base + '/')).text();
+    assert.match(html, /rs-flag/);
+    assert.match(execFileSync(process.execPath, [BIN, 'ls', dir], { encoding: 'utf8' }), /^🔥b\t/m);
+  } finally { await close(); }
+});

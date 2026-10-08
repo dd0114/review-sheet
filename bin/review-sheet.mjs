@@ -152,7 +152,35 @@ const cell = s => String(s == null ? '' : s)
   .replace(/<\s*\/?\s*(b|strong)\s*>/gi, '**').replace(/<\s*\/?\s*(i|em)\s*>/gi, '_').replace(/<\s*\/?\s*code\s*>/gi, '`')
   .replace(/<br\s*\/?>/gi, '<br>').replace(/\|/g, '\\|').replace(/\n/g, '<br>');
 
+/* 🔥 긴급 (hero 2026-10-08) — 시트만, 켜짐/꺼짐 두 단계, 켜고 끄는 건 hero(받은편지함 🔥 버튼)만.
+   inbox/urgent.json { "<data 파일 이름>": "<켠 시각>" }. 켜면 '답 기다리는 중' 맨 위, 담당 세션 채널에 hero 이름으로 알림이 간다. */
+const urgentFile = dir => path.join(dir, 'urgent.json');
+export function readUrgent(dir) { try { return JSON.parse(fs.readFileSync(urgentFile(dir), 'utf8')) || {}; } catch { return {}; } }
+/** 시트 → 담당 세션의 채널: from 과 이름/owner 가 같은 채널, 없으면(데이터 파일을 통째로 덮어써 from 이 빠진 경우) 시트 이름 접두가 가장 긴 채널 */
+function chatFor(root, from, sheetName) {
+  const all = listChats(root);
+  if (from) { const c = all.find(c => c.name === from) || all.find(c => c.owner === from || String(c.owner).split(':')[0] === from); if (c) return c; }
+  return all.filter(c => String(sheetName).startsWith(c.name + '-')).sort((a, b) => b.name.length - a.name.length)[0] || null;
+}
+export function setUrgent(dir, name, on) {
+  const s = listSheets(dir).find(x => !x.error && x.name === name); if (!s) throw new Error(`시트 ${name} 없음`);
+  const u = readUrgent(dir), was = !!u[name];
+  if (on) u[name] = u[name] || new Date().toISOString(); else delete u[name];
+  fs.writeFileSync(urgentFile(dir) + '.tmp', JSON.stringify(u, null, 2) + '\n'); fs.renameSync(urgentFile(dir) + '.tmp', urgentFile(dir));
+  let notified = null;
+  if (was !== !!on) {
+    const c = chatFor(path.resolve(dir), s.from, s.name);
+    if (c) {
+      appendChat(path.resolve(dir), c.name, 'hero', on
+        ? `🔥 긴급 지정: ${s.title} (시트 ${s.name}) — 하던 일을 안전한 지점까지만 정리하고 이 일부터 처리. SoT 이슈가 있으면 긴급 라벨.`
+        : `긴급 해제: ${s.title} (시트 ${s.name}) — 평소 순서로. SoT 이슈의 긴급 라벨 제거.`);
+      notified = c.name;
+    }
+  }
+  return { ok: true, name, urgent: !!on, notified };
+}
 function listSheets(dir) {
+  const urgent = readUrgent(dir);
   return fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).sort().map(f => {
     const name = f.slice(0, -'-data.js'.length);
     try {
@@ -164,12 +192,13 @@ function listSheets(dir) {
       if (!createdAt) { try { createdAt = fs.statSync(path.join(dir, f)).mtime.toISOString(); } catch { /* ignore */ } }
       const savedAt = saved && saved.savedAt || null;
       return { name, id: sheet.id, title: sheet.title || sheet.id, from: sheet.from || '', createdAt,
-               total: qs.length, picked, savedAt, submitted: !!savedAt };
+               total: qs.length, picked, savedAt, submitted: !!savedAt, urgent: !!urgent[name], urgentAt: urgent[name] || null };
     } catch (e) { return { name, error: String(e.message || e) }; }
   }).sort((a, b) => {
     // queue order: errors first (they need fixing), then pending (newest first), then submitted (latest first)
     const g = x => x.error ? 0 : x.submitted ? 2 : 1;
     if (g(a) !== g(b)) return g(a) - g(b);
+    if (!!a.urgent !== !!b.urgent) return a.urgent ? -1 : 1;   // 🔥 긴급은 자기 묶음 맨 위
     return String(g(a) === 2 ? b.savedAt : b.createdAt || '').localeCompare(String(g(a) === 2 ? a.savedAt : a.createdAt || ''));
   });
 }
@@ -428,10 +457,11 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;
 const when = iso => { if(!iso) return ''; const d = new Date(iso); return d.toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}); };
 const row = s => s.error
   ? '<li class="bad"><b>' + esc(s.name) + '</b> — ' + esc(s.error) + '</li>'
-  : '<li class="' + (s.submitted ? 'done' : 'wait') + '"><a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
-    '<span class="rs-badge">' + (s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
+  : '<li class="' + (s.submitted ? 'done' : 'wait') + (s.urgent ? ' urgent' : '') + '"><a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
+    '<span class="rs-badge">' + (s.urgent ? '🔥 긴급 · ' : '') + (s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
     '<small>' + (s.from ? esc(s.from) + ' · ' : '') + s.picked + '/' + s.total + ' 답함' +
-    (s.submitted ? ' · 제출 ' + when(s.savedAt) : (s.createdAt ? ' · 보냄 ' + when(s.createdAt) : '')) + '</small></a></li>';
+    (s.submitted ? ' · 제출 ' + when(s.savedAt) : (s.createdAt ? ' · 보냄 ' + when(s.createdAt) : '')) + '</small></a>' +
+    '<button type="button" class="rs-flag' + (s.urgent ? ' on' : '') + '" data-d="' + esc(s.name) + '" aria-pressed="' + !!s.urgent + '" title="' + (s.urgent ? '긴급 해제' : '긴급으로') + '" aria-label="' + (s.urgent ? '긴급 해제' : '긴급으로') + '">🔥</button></li>';
 const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : c.manager ? ' mgr' : ' sess') + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
   '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : c.hub ? '★ 메인 허브' : c.manager ? '🧭 매니저' : '💬 세션') + '</span><b>' + esc(c.title) + '</b>' +
   '<small>' + esc(c.owner) + (c.last ? ' · ' + esc(c.last.from === 'hero' ? '나' : c.last.from) + ': ' + esc(c.last.text.slice(0, 60)) + (c.last.text.length > 60 ? '…' : '') + ' · ' + when(c.last.ts) : ' · 아직 대화 없음') + '</small></a></li>';
@@ -455,6 +485,15 @@ const render = d => {
 render(INIT);
 const refresh = async () => { const b = document.getElementById('rs-refresh'); b.disabled = true; try { const r = await fetch('/api/inbox', {cache:'no-store'}); if(r.ok) render(await r.json()); } catch(_){ document.getElementById('rs-upd').textContent = '갱신 실패 — 서버 확인'; } b.disabled = false; };
 document.getElementById('rs-refresh').addEventListener('click', refresh);
+document.getElementById('rs-list').addEventListener('click', async ev => {   // 🔥 = 긴급 켜기/끄기 (담당 세션 채널에 알림)
+  const b = ev.target.closest('.rs-flag'); if (!b) return;
+  ev.preventDefault(); b.disabled = true;
+  try {
+    const r = await fetch('/__urgent?d=' + encodeURIComponent(b.dataset.d), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: !b.classList.contains('on') }) });
+    if (!r.ok) throw new Error(await r.text());
+  } catch (e) { document.getElementById('rs-upd').textContent = '긴급 표시 실패 — ' + e.message; }
+  await refresh();
+});
 setInterval(refresh, 5000);
 document.addEventListener('visibilitychange', () => { if(!document.hidden) refresh(); });  // 폰: 탭 돌아오면 바로
 </script></html>`;
@@ -566,6 +605,18 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
           if (typeof j.del === 'string') { const ok = deleteMemo(root, name, j.del); return send(res, ok ? 200 : 404, TYPES['.json'], JSON.stringify({ ok, del: j.del })); }
           send(res, 200, TYPES['.json'], JSON.stringify(sendMemo(root, name, j.text)));
         } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
+      });
+      return;
+    }
+    if (url.pathname === '/__urgent' && req.method === 'POST') {   // ?d=<시트> {on} — 페이지(hero) 전용, CORS 없음
+      const name = url.searchParams.get('d') || '';
+      if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'd=<sheet> ([a-z0-9-])');
+      if (!/^application\/json/.test(String(req.headers['content-type'] || ''))) return send(res, 415, 'text/plain', 'application/json');
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 1e4) req.destroy(); });
+      req.on('end', () => {
+        try { send(res, 200, TYPES['.json'], JSON.stringify(setUrgent(root, name, !!JSON.parse(body || '{}').on))); }
+        catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
       });
       return;
     }
@@ -722,7 +773,7 @@ async function main() {
     return;
   }
   if (cmd === 'ls') {
-    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}`);
+    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}`);
     return;
   }
   if (cmd === 'read' || cmd === 'wait') {
