@@ -185,3 +185,4 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .rs-mic[data-state=busy]{background:#F3EFE6;color:#555;cursor:progress}
 @keyframes rs-mic-pulse{50%{box-shadow:0 0 0 6px rgba(178,71,47,.25)}}
 .rs-mic-toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);max-width:90vw;padding:10px 14px;border-radius:10px;background:#2B2A27;color:#fff;font:14px/1.4 system-ui,sans-serif;z-index:50;box-shadow:0 4px 16px rgba(0,0,0,.2)}
+.rs-mic-live{position:fixed;z-index:49;box-sizing:border-box;max-height:40vh;overflow:auto;padding:8px 12px;border-radius:10px;background:#F3EFE6;border:1px dashed #B9B2A3;color:#7A756B;font:15px/1.45 system-ui,sans-serif;white-space:pre-wrap;box-shadow:0 4px 14px rgba(0,0,0,.12);pointer-events:none}

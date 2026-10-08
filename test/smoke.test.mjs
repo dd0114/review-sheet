@@ -259,7 +259,11 @@ test('stt: /api/stt → ffmpeg → whisper-cli with vocab as --prompt (fake bina
     assert.equal(r.status, 200);
     const j = await r.json();
     assert.match(j.text, /^안녕하세요 -m /);
-    assert.match(j.text, /-l ko -nt -np --prompt 스파이더, 리뷰시트$/);
+    assert.match(j.text, /-l ko -nt -np -t \d+ --prompt 스파이더, 리뷰시트$/);
+    assert.ok(!/ -bs 1/.test(j.text));   // 최종 전사는 정밀(beam) 그대로
+    // 말하는 중 미리보기: 새로 쌓인 소리가 너무 짧으면 whisper 를 안 돌리고 end=from 그대로
+    const lv = await (await fetch(base + '/api/stt?live=1&from=3.5', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: Buffer.from('fake-opus') })).json();
+    assert.deepEqual([lv.text, lv.end], ['', 3.5]);
     assert.ok(!/\n/.test(j.text));
     assert.equal((await fetch(base + '/mic.js')).status, 200);
   } finally {

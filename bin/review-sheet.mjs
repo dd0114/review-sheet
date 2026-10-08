@@ -19,7 +19,7 @@
  *   answers/<id>.files/ files the reviewer attached to a question (page: 📎·paste·drop → POST /__answers/file), served at /answers/<id>.files/<name>
  *   anything else       images etc. the sheet references by relative path
  *
- * 음성 입력: POST /api/stt (audio/* 바디) → ffmpeg → whisper.cpp(whisper-cli) 로 **로컬에서만** 전사해 { text } 를 돌려준다.
+ * 음성 입력: POST /api/stt[?live=1&from=초] (audio/* 바디) → ffmpeg → whisper.cpp(whisper-cli) 로 **로컬에서만** 전사해 { text, end } 를 돌려준다(live = 말하는 중 미리보기).
  *   모델 ~/.review-sheet/models/ggml-large-v3-turbo.bin · 단어장 ~/.review-sheet/vocab.txt(한 줄 1단어 → --prompt).
  *   env 로 교체: REVIEW_SHEET_WHISPER_BIN / _WHISPER_MODEL / _FFMPEG / _VOCAB / _STT_LANG(기본 ko). 오디오는 외부로 나가지 않는다.
  *
@@ -31,7 +31,8 @@ import path from 'node:path';
 import vm from 'node:vm';
 import os from 'node:os';
 import process from 'node:process';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -323,19 +324,73 @@ export function sttStatus(c = sttConfig()) {
 const run = (bin, args, timeout) => new Promise((resolve, reject) =>
   execFile(bin, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) =>
     err ? reject(new Error(`${path.basename(bin)}: ${String(stderr || err.message).trim().split('\n').slice(-3).join(' | ')}`)) : resolve(stdout)));
+const sttThreads = () => String(Math.max(4, Math.min(8, os.cpus().length - 2)));
+/* 상주 whisper-server — whisper-cli 는 부를 때마다 모델을 새로 읽느라 2초쯤 쓴다(3초 말도 3초 걸림). whisper-cli 옆에 whisper-server 가
+   있으면 127.0.0.1 빈 포트에 한 번 띄워 두고 재사용(짧은 말 ~0.8초), 10분 놀면 내린다(메모리). 없거나 실패하면 whisper-cli 로 떨어진다. */
+const WS_IDLE_MS = 10 * 60e3;
+let ws = null;   // { key, proc, port, ready, idle }
+function wsStop() { if (!ws) return; clearTimeout(ws.idle); try { ws.proc.kill(); } catch { /* gone */ } ws = null; }
+process.on('exit', wsStop);
+const freePort = () => new Promise((resolve, reject) => {
+  const srv = net.createServer(); srv.on('error', reject);
+  srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+});
+export async function sttServer(c = sttConfig()) {
+  const bin = c.whisper && path.join(path.dirname(c.whisper), 'whisper-server');
+  if (!bin || !fs.existsSync(bin)) return null;
+  const key = [bin, c.model, c.lang].join('|');
+  if (ws && ws.key !== key) wsStop();
+  if (!ws) {
+    const port = await freePort();
+    const proc = spawn(bin, ['-m', c.model, '-l', c.lang, '-t', sttThreads(), '--host', '127.0.0.1', '--port', String(port)], { stdio: 'ignore' });
+    const me = ws = { key, proc, port };
+    proc.on('exit', () => { if (ws === me) ws = null; });
+    proc.on('error', () => { if (ws === me) ws = null; });
+    me.ready = (async () => {
+      for (let i = 0; i < 240; i++) {
+        if (ws !== me) throw new Error('whisper-server 종료');
+        try { await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1000) }); return; } catch { /* still loading */ }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      throw new Error('whisper-server 기동 시간 초과');
+    })();
+  }
+  const me = ws;
+  clearTimeout(me.idle); me.idle = setTimeout(() => { if (ws === me) wsStop(); }, WS_IDLE_MS); me.idle.unref();
+  try { await me.ready; return me; } catch { if (ws === me) wsStop(); return null; }
+}
+async function sttServerInfer(me, wav, c, live) {
+  const fd = new FormData();
+  fd.append('file', new Blob([fs.readFileSync(wav)], { type: 'audio/wav' }), 'in.wav');
+  fd.append('response_format', 'text'); fd.append('language', c.lang);
+  fd.append('beam_size', live ? '1' : '5'); fd.append('best_of', live ? '1' : '5');
+  if (c.vocab.length) fd.append('prompt', c.vocab.join(', '));
+  const r = await fetch(`http://127.0.0.1:${me.port}/inference`, { method: 'POST', body: fd, signal: AbortSignal.timeout(300e3) });
+  if (!r.ok) throw new Error('whisper-server HTTP ' + r.status);
+  return r.text();
+}
+
 let sttQueue = Promise.resolve();   // one transcription at a time — whisper already uses every core
-/** audio bytes (any ffmpeg-readable container: webm/opus, mp4/aac, wav…) → text. Local only. */
-export function transcribe(buf, c = sttConfig()) {
+/** audio bytes (any ffmpeg-readable container: webm/opus, mp4/aac, wav…) → { text, end }. Local only.
+ *  live = 말하는 중 미리보기: 쌓인 녹음 전체를 받아 from 초 이후만 빠르게(greedy) 적는다 — end(초)를 돌려줘 다음 from 이 된다. */
+export function transcribe(buf, c = sttConfig(), { from = 0, live = false } = {}) {
   const job = sttQueue.then(async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-stt-'));
     try {
       const inp = path.join(tmp, 'in.bin'), wav = path.join(tmp, 'in.wav');
       fs.writeFileSync(inp, buf);
-      await run(c.ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', inp, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], 60e3);
-      const args = ['-m', c.model, '-f', wav, '-l', c.lang, '-nt', '-np'];
-      if (c.vocab.length) args.push('--prompt', c.vocab.join(', '));
-      const out = await run(c.whisper, args, 300e3);
-      return out.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+      await run(c.ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', inp, ...(from > 0 ? ['-ss', String(from)] : []), '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], 60e3);
+      const sec = Math.max(0, (fs.statSync(wav).size - 44) / 32000), end = Math.round((from + sec) * 100) / 100;
+      if (live && sec < 0.8) return { text: '', end: from };   // 새로 쌓인 소리가 너무 짧다 — 다음 번에
+      let out = null;
+      const srv = await sttServer(c).catch(() => null);
+      if (srv) out = await sttServerInfer(srv, wav, c, live).catch(() => null);
+      if (out == null) {
+        const args = ['-m', c.model, '-f', wav, '-l', c.lang, '-nt', '-np', '-t', sttThreads(), ...(live ? ['-bs', '1', '-bo', '1'] : [])];
+        if (c.vocab.length) args.push('--prompt', c.vocab.join(', '));
+        out = await run(c.whisper, args, 300e3);
+      }
+      return { text: out.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim(), end };
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
   sttQueue = job.catch(() => {});
@@ -454,7 +509,11 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       return send(res, 405, 'text/plain', 'method');
     }
     if (url.pathname === '/api/stt') {
-      if (req.method === 'GET') return send(res, 200, TYPES['.json'], JSON.stringify(sttStatus()));
+      if (req.method === 'GET') {
+        const st = sttStatus();
+        if (st.ready && url.searchParams.get('warm') === '1') sttServer().catch(() => {});   // 🎤 누르는 순간 모델을 미리 올린다
+        return send(res, 200, TYPES['.json'], JSON.stringify(st));
+      }
       if (req.method !== 'POST') return send(res, 405, 'text/plain', 'method');
       // audio/* only: a cross-site page can't send that content-type without a preflight we never answer.
       const ctype = String(req.headers['content-type'] || '');
@@ -474,8 +533,9 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
         if (!size) return send(res, 400, TYPES['.json'], JSON.stringify({ error: '빈 오디오' }));
         const t0 = Date.now();
         try {
-          const text = await transcribe(Buffer.concat(chunks), c);
-          send(res, 200, TYPES['.json'], JSON.stringify({ text, ms: Date.now() - t0 }));
+          const from = Math.max(0, Number(url.searchParams.get('from')) || 0);
+          const { text, end } = await transcribe(Buffer.concat(chunks), c, { from, live: url.searchParams.get('live') === '1' });
+          send(res, 200, TYPES['.json'], JSON.stringify({ text, end, ms: Date.now() - t0 }));
         } catch (e) { send(res, 500, TYPES['.json'], JSON.stringify({ error: String(e.message || e) })); }
       });
       return;
