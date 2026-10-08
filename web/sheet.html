@@ -99,11 +99,15 @@ document.getElementById('app').innerHTML = h;
    (GitHub) shows blank — the "새 탭" link in the panel bar is the way out. */
 const pop = document.getElementById('rs-pop'), popF = document.getElementById('rs-pop-f'), popT = document.getElementById('rs-pop-t'), popX = document.getElementById('rs-pop-ext');
 let popBtn = null;
-const closePop = () => { pop.hidden = true; pop.classList.remove('full'); popF.src = 'about:blank'; if(popBtn) popBtn.classList.remove('open'); popBtn = null; document.body.classList.remove('rs-locked'); };
-const openPop = (anchor, title, url, btn) => {
+const closePop = () => { pop.hidden = true; pop.classList.remove('full'); popF.removeAttribute('srcdoc'); popF.src = 'about:blank'; if(popBtn) popBtn.classList.remove('open'); popBtn = null; document.body.classList.remove('rs-locked'); };
+// An image opens fitted to the popup's width (tap = actual size, scroll to pan) — a bare image URL in the
+// iframe showed at its pixel size, wider than a phone, and could not be zoomed out (hero 2026-10-08).
+const imgDoc = url => '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;background:#E9E7E2}img{display:block;max-width:100%;height:auto;margin:0 auto;cursor:zoom-in}body.real img{max-width:none;cursor:zoom-out}</style><img src="' + url.replace(/"/g, '&quot;') + '" onclick="document.body.classList.toggle(\'real\')">';
+const openPop = (anchor, title, url, btn, isImg) => {
   if(popBtn) popBtn.classList.remove('open');
   popBtn = btn || null; if(btn) btn.classList.add('open');
-  popT.textContent = title; popX.href = url; popF.src = url;
+  popT.textContent = title; popX.href = url;
+  if(isImg) popF.srcdoc = imgDoc(url); else { popF.removeAttribute('srcdoc'); popF.src = url; }
   anchor.after(pop); pop.hidden = false;
   pop.scrollIntoView({ block: 'nearest' });
 };
@@ -115,7 +119,7 @@ document.getElementById('app').addEventListener('click', ev => {
 document.getElementById('app').addEventListener('click', ev => {
   const im = ev.target.closest('img.rs-img, .v-q li img'); if(!im) return;
   const row = im.closest('.rs-imgs') || im.closest('.v-q ul');
-  openPop(row, im.alt || im.getAttribute('src'), im.src, null);
+  openPop(row, im.alt || im.getAttribute('src'), im.src, null, true);
 });
 document.getElementById('rs-pop-x').addEventListener('click', closePop);
 document.getElementById('rs-pop-full').addEventListener('click', () => { const on = pop.classList.toggle('full'); document.body.classList.toggle('rs-locked', on); });
