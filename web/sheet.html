@@ -55,7 +55,7 @@ h += '<nav class="toc">' + D.sections.map(s => '<a href="#' + e(s.id || s.code) 
 
 h += '<section class="box" id="summary"><h2>한눈에 — 추천</h2>' + D.sections.map((s, si) =>
   '<div class="v-srow"><a href="#' + e(s.id || s.code) + '">' + e(s.code || (si + 1)) + '</a><div><div>' + e(s.title) + (s.first ? '<span class="v-first">먼저</span>' : '') +
-  '</div><div class="r">' + s.questions.map(norm).map(q => e(q.k) + '=' + e(q.rec || '—')).join(' · ') + '</div></div></div>').join('') + '</section>';
+  '</div><div class="r">' + (s.questions || []).map(norm).map(q => e(q.k) + '=' + e(q.rec || '—')).join(' · ') + '</div></div></div>').join('') + '</section>';
 
 /* links + images of a section or a question. Question-level ones sit right under the question text so the
    reviewer never scrolls between a picture pile and the question it belongs to (hero 2026-10-02). */
@@ -79,7 +79,7 @@ for(const s of D.sections){
   if(s.html) h += '<div class="rs-html">' + s.html + '</div>';
   if(s.flow) h += '<div class="v-flow">' + s.flow.map((f, i) => '<span class="s' + (i === 1 ? ' x' : '') + '">' + e(f) + '</span>').join('<span class="v-arrow">→</span>') + '</div>';
   if(s.table) h += tbl(s.table);
-  h += s.questions.map(norm).map(o => {
+  h += (s.questions || []).map(norm).map(o => {
     const { k, q: t, opts, rec, why } = o;
     const tok = String(rec).split(' ')[0];
     const ctx = o.sit || o.decide || o.effect ? '<div class="v-ctx">' + (o.sit ? '<div><b>지금 상황</b>' + m(o.sit) + '</div>' : '') + (o.decide ? '<div><b>정하는 것</b>' + m(o.decide) + '</div>' : '') + (o.effect ? '<div><b>고르면 달라지는 것</b>' + m(o.effect) + '</div>' : '') + '</div>' : '';
