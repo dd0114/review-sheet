@@ -47,7 +47,7 @@
     catch (err) { toast('마이크 권한이 없다 — ' + (err && err.name === 'NotAllowedError' ? '브라우저 설정에서 허용' : (err && err.message || err))); return; }
     const type = pickType();
     const rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
-    const me = cur = { btn, rec, stream, chunks: [], t0: Date.now(), timer: null };
+    const me = cur = { btn, ta, rec, stream, chunks: [], t0: Date.now(), timer: null };
     rec.ondataavailable = ev => { if (ev.data && ev.data.size) me.chunks.push(ev.data); };
     rec.onstop = async () => {
       clearInterval(me.timer); stream.getTracks().forEach(t => t.stop());
@@ -86,6 +86,14 @@
     if (cur) stop();
     start(btn);
   });
+  // 다른 칸·버튼을 누르면 정지 버튼 없이도 멈추고 전사 → 원래 칸에 들어간다 (hero 2026-10-08: 기본 마이크처럼).
+  // click 만 본다 — pointerdown 은 폰 스크롤에도 떠서 녹음이 끊긴다.
+  const other = el => cur && el && !cur.btn.contains(el) && el !== cur.ta;
+  document.addEventListener('focusin', ev => { if (other(ev.target) && ev.target.matches('input,textarea,select,[contenteditable]')) stop(); });
+  document.addEventListener('click', ev => {
+    const el = ev.target.closest && ev.target.closest('button,a,input,textarea,select,label,[role=button],[contenteditable]');
+    if (other(el) && !el.closest('.rs-mic')) stop();
+  }, true);
   // pointerdown on the button must not steal the caret from the textarea on desktop
   document.addEventListener('mousedown', ev => { if (ev.target.closest && ev.target.closest('.rs-mic')) ev.preventDefault(); });
   window.RSMic = { supported, stop };
