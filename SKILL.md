@@ -203,7 +203,7 @@ curl -s http://127.0.0.1:5600/api/stt                             # {ready, miss
 
 - env 교체: `REVIEW_SHEET_WHISPER_BIN` / `REVIEW_SHEET_WHISPER_MODEL` / `REVIEW_SHEET_FFMPEG` / `REVIEW_SHEET_VOCAB` / `REVIEW_SHEET_STT_LANG`(기본 `ko`). launchd PATH 에 brew 가 없어도 `/opt/homebrew/bin` 을 직접 찾는다.
 - `POST /api/stt` 는 `content-type: audio/*` 만 받는다(교차 사이트 단순 POST 차단), 25MB 상한, 한 번에 하나씩 직렬 처리.
-- **말하는 중 미리보기** (hero 2026-10-08): 녹음 중 2.5초마다 쌓인 녹음을 `POST /api/stt?live=1&from=<초>` 로 보내 새로 쌓인 부분만 빠르게(greedy) 적어 입력칸 위 회색 말풍선에 붙인다(`{text, end}` → 다음 from). 멈추면 전체를 정밀하게 다시 적어 칸에 넣고 말풍선을 지운다. 녹음 중 **다른 칸·버튼을 누르면 자동 정지**(스크롤은 아님).
+- **말하는 중 미리보기** (hero 2026-10-08): 녹음 중 1.5초마다 쌓인 녹음 전체를 `POST /api/stt?live=1` 로 보내 빠르게(greedy, 단어장 없이 — 짧은 조각에 단어장을 주면 단어장을 읊는다) 적어 입력칸 위 회색 말풍선을 바꾼다. 조각 이어 붙이기(`from=<초>`)는 경계에서 단어가 잘려 안 쓴다. 멈추면 전체를 정밀하게 다시 적어 칸에 넣고 말풍선을 지운다. 녹음 중 **다른 칸·버튼을 누르면 자동 정지**(스크롤은 아님).
 - **상주 모델**: `whisper-cli` 옆에 `whisper-server` 가 있으면 127.0.0.1 빈 포트에 한 번 띄워 재사용(13초 말 3초 → 1.3초, 조각 ~1초), 10분 놀면 내린다. 🎤 누르면 `GET /api/stt?warm=1` 로 미리 올린다. 없거나 실패하면 `whisper-cli` 로 떨어진다.
 - **폰 마이크는 HTTPS 에서만 열린다.** 서버는 127.0.0.1 그대로 두고 `tailscale serve` 로 감싼다(tailnet 전용, funnel 아님):
 

@@ -324,6 +324,12 @@ export function sttStatus(c = sttConfig()) {
 const run = (bin, args, timeout) => new Promise((resolve, reject) =>
   execFile(bin, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) =>
     err ? reject(new Error(`${path.basename(bin)}: ${String(stderr || err.message).trim().split('\n').slice(-3).join(' | ')}`)) : resolve(stdout)));
+/** 16-bit mono wav 가 거의 무음인가 (RMS < ~-45dBFS) */
+function quiet(wav) {
+  const b = fs.readFileSync(wav); let sum = 0, n = 0;
+  for (let i = 44; i + 1 < b.length; i += 2) { const v = b.readInt16LE(i); sum += v * v; n++; }
+  return !n || Math.sqrt(sum / n) < 180;
+}
 const sttThreads = () => String(Math.max(4, Math.min(8, os.cpus().length - 2)));
 /* 상주 whisper-server — whisper-cli 는 부를 때마다 모델을 새로 읽느라 2초쯤 쓴다(3초 말도 3초 걸림). whisper-cli 옆에 whisper-server 가
    있으면 127.0.0.1 빈 포트에 한 번 띄워 두고 재사용(짧은 말 ~0.8초), 10분 놀면 내린다(메모리). 없거나 실패하면 whisper-cli 로 떨어진다. */
@@ -364,7 +370,7 @@ async function sttServerInfer(me, wav, c, live) {
   fd.append('file', new Blob([fs.readFileSync(wav)], { type: 'audio/wav' }), 'in.wav');
   fd.append('response_format', 'text'); fd.append('language', c.lang);
   fd.append('beam_size', live ? '1' : '5'); fd.append('best_of', live ? '1' : '5');
-  if (c.vocab.length) fd.append('prompt', c.vocab.join(', '));
+  if (c.vocab.length && !live) fd.append('prompt', c.vocab.join(', '));   // 짧은 조각에 단어장을 주면 단어장을 그대로 읊는다
   const r = await fetch(`http://127.0.0.1:${me.port}/inference`, { method: 'POST', body: fd, signal: AbortSignal.timeout(300e3) });
   if (!r.ok) throw new Error('whisper-server HTTP ' + r.status);
   return r.text();
@@ -382,12 +388,13 @@ export function transcribe(buf, c = sttConfig(), { from = 0, live = false } = {}
       await run(c.ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', inp, ...(from > 0 ? ['-ss', String(from)] : []), '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], 60e3);
       const sec = Math.max(0, (fs.statSync(wav).size - 44) / 32000), end = Math.round((from + sec) * 100) / 100;
       if (live && sec < 0.8) return { text: '', end: from };   // 새로 쌓인 소리가 너무 짧다 — 다음 번에
+      if (live && quiet(wav)) return { text: '', end };          // 조용한 조각 — whisper 가 ‘감사합니다’ 를 지어낸다
       let out = null;
       const srv = await sttServer(c).catch(() => null);
       if (srv) out = await sttServerInfer(srv, wav, c, live).catch(() => null);
       if (out == null) {
         const args = ['-m', c.model, '-f', wav, '-l', c.lang, '-nt', '-np', '-t', sttThreads(), ...(live ? ['-bs', '1', '-bo', '1'] : [])];
-        if (c.vocab.length) args.push('--prompt', c.vocab.join(', '));
+        if (c.vocab.length && !live) args.push('--prompt', c.vocab.join(', '));
         out = await run(c.whisper, args, 300e3);
       }
       return { text: out.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim(), end };

@@ -1,5 +1,5 @@
 /* review-sheet 🎤 음성 입력 — 탭 = 녹음 시작, 다시 탭(또는 다른 칸 탭) = 멈춤 → POST /api/stt (로컬 whisper.cpp) → 텍스트를 커서 위치에 끼운다.
-   말하는 동안: 2~3초마다 쌓인 녹음을 ?live=1&from=<이미 적은 초> 로 보내 회색 말풍선에 조각을 붙인다(빠른 greedy).
+   말하는 동안: 1.5초마다 쌓인 녹음 전체를 ?live=1 로 보내 회색 말풍선을 새로 적은 글로 바꾼다(빠른 greedy, 단어장 없이).
    멈추면 전체를 한 번 더 깨끗이 적어 칸에 넣고 말풍선은 지운다 (hero 2026-10-08 ②).
    쓰는 법: <button type="button" class="rs-mic" data-for="<textarea id>"> 또는 textarea 의 바로 옆 형제 버튼.
    폰 마이크는 보안 컨텍스트(HTTPS · localhost)에서만 열린다 — 폰은 tailscale serve 의 https 주소로 연다. */
@@ -9,7 +9,7 @@
   const supported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
   const pickType = () => ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
     .find(t => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
-  const LIVE_MS = 2500;
+  const LIVE_MS = 1500;
   let cur = null;   // { btn, ta, rec, stream, chunks, timer, t0, live }
 
   const toast = msg => {
@@ -54,15 +54,17 @@
   const livePeek = async me => {
     const L = me.live;
     if (L.busy || cur !== me || me.rec.state !== 'recording' || !me.chunks.length) return;
-    if ((Date.now() - me.t0) / 1000 - L.from < 2) return;
+    const sec = (Date.now() - me.t0) / 1000;
+    if (sec < 1.5 || sec - L.at < 1) return;
     L.busy = true;
     try {
       const blob = new Blob(me.chunks.slice(), { type: (me.rec.mimeType || 'audio/webm').split(';')[0] });
-      const r = await fetch('/api/stt?live=1&from=' + L.from, { method: 'POST', headers: { 'content-type': blob.type }, body: blob });
+      L.at = sec;
+      // 매번 처음부터 다시 적는다 — 조각을 이어 붙이면 경계에서 단어가 잘린다(‘마이 | 크’). 상주 모델이라 1분 말도 ~2초.
+      const r = await fetch('/api/stt?live=1', { method: 'POST', headers: { 'content-type': blob.type }, body: blob });
       const j = await r.json().catch(() => ({}));
-      if (r.ok && !L.done) {
-        if (typeof j.end === 'number' && j.end > L.from) L.from = j.end;
-        if (j.text) L.text = (L.text ? L.text + ' ' : '') + j.text;
+      if (r.ok && !L.done && me.rec.state === 'recording') {   // 멈춘 뒤 늦게 온 조각은 버린다(‘다듬는 중’ 덮어쓰기 방지)
+        if (j.text) L.text = j.text;
         bubble(me, (L.text || '듣는 중…') + (me.rec.state === 'recording' ? ' …' : ''));
       }
     } catch (_) { /* 미리보기는 실패해도 그만 — 최종 전사가 있다 */ }
@@ -79,7 +81,7 @@
     catch (err) { toast('마이크 권한이 없다 — ' + (err && err.name === 'NotAllowedError' ? '브라우저 설정에서 허용' : (err && err.message || err))); return; }
     const type = pickType();
     const rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
-    const me = cur = { btn, ta, rec, stream, chunks: [], t0: Date.now(), timer: null, live: { text: '', from: 0, busy: false, done: false }, liveEl: null };
+    const me = cur = { btn, ta, rec, stream, chunks: [], t0: Date.now(), timer: null, live: { text: '', at: 0, busy: false, done: false }, liveEl: null };
     rec.ondataavailable = ev => { if (ev.data && ev.data.size) me.chunks.push(ev.data); };
     rec.onstop = async () => {
       clearInterval(me.timer); clearInterval(me.liveTimer); stream.getTracks().forEach(t => t.stop());
