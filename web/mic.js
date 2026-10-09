@@ -20,12 +20,13 @@
   };
   const setState = (btn, state, label) => {
     btn.dataset.state = state;
-    btn.textContent = label || { idle: '🎤', rec: '⏹', busy: '…' }[state];
+    btn.textContent = label || (state === 'idle' && btn.dataset.idle) || { idle: '🎤', rec: '⏹', busy: '…' }[state];
     btn.setAttribute('aria-label', { idle: '음성 입력', rec: '녹음 멈추고 전사', busy: '전사 중' }[state]);
   };
   const targetOf = btn => (btn.dataset.for && document.getElementById(btn.dataset.for)) ||
     (btn.previousElementSibling && btn.previousElementSibling.matches('textarea,input') ? btn.previousElementSibling : null) ||
-    (btn.parentElement && btn.parentElement.querySelector('textarea'));
+    (btn.parentElement && btn.parentElement.querySelector('textarea')) ||
+    (btn.closest('.v-q,.c-bar') && btn.closest('.v-q,.c-bar').querySelector('textarea'));   // 첨부 줄·＋ 묶음 안의 🎤
 
   /** insert at the caret (remembered before the tap stole focus), with a space if it would glue onto a word */
   const insert = (ta, text, at) => {

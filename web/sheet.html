@@ -6,6 +6,7 @@
 <title>답변 시트</title>
 <link rel="stylesheet" href="/sheet.css">
 <script src="/mic.js" defer></script>
+<script src="/compose.js" defer></script>
 </head>
 <body class="rs-page">
 <main id="app"></main>
@@ -32,7 +33,7 @@
 window.SHEET_RUN = function(){
 'use strict';
 const D = window.SHEET;
-const MIC = '<button type="button" class="rs-mic" aria-label="음성 입력">🎤</button>';   // web/mic.js: 탭=녹음, 다시 탭=전사 → 옆 메모칸 커서에 삽입
+const MIC = '<button type="button" class="rs-mic" data-idle="🎤 음성" aria-label="음성 입력">🎤 음성</button>';   // web/mic.js: 탭=녹음, 다시 탭=전사 → 옆 메모칸 커서에 삽입
 const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 /* Text fields (ask/now/sit/decide/effect/why/question/table) are escaped, then a small markup set comes back:
    <b> <i> <u> <s> <code> <strong> <em> <br> and "\n". Sessions kept writing "<b>문제</b>…<br>" into `now` and hero
@@ -60,7 +61,9 @@ h += '<section class="box" id="summary"><h2>한눈에 — 추천</h2>' + D.secti
 /* links + images of a section or a question. Question-level ones sit right under the question text so the
    reviewer never scrolls between a picture pile and the question it belongs to (hero 2026-10-02). */
 /* attach row under every memo: 📎 picks files; pasting into the memo or dropping onto the question attaches too. */
-const ATT = '<div class="v-att"><label class="v-clip" title="파일 첨부 (붙여넣기·끌어놓기도 된다)">📎 파일<input type="file" multiple hidden></label><span class="v-files"></span></div>';
+const CLR = '<button type="button" class="rs-clear" title="모두 지우기" aria-label="메모 모두 지우기">✕</button>';   // web/compose.js — 글 있을 때만 보임
+// 메모칸은 한 줄을 다 쓰고, 📎·🎤 은 그 아래 줄에(hero 2026-10-09 — 칸 옆에 붙어 칸이 쪼개지던 것)
+const ATT = '<div class="v-att"><label class="v-clip" title="파일 첨부 (붙여넣기·끌어놓기도 된다)">📎 파일<input type="file" multiple hidden></label>' + MIC + '<span class="v-files"></span></div>';
 const media = o => {
   let m = '';
   if(o.links && o.links.length) m += '<div class="v-links">' + o.links.map(([t, u]) => '<button type="button" class="v-link" data-u="' + e(u) + '" data-t="' + e(t) + '">' + e(t) + ' ▾</button>').join('') + '</div>';
@@ -87,8 +90,8 @@ for(const s of D.sections){
       opts.map(([lb, ex, img], i) => '<li data-i="' + i + '" data-t="' + e(lb) + '"' + (opts.length > 1 && tok && String(lb).startsWith(tok + ' ') ? ' class="on"' : '') + '><span class="dot"></span><span>' + m(lb) +
         (ex ? '<span class="ex">예: ' + m(ex) + '</span>' : '') + '</span>' + (img ? '<img src="' + e(img) + '" alt="">' : '') + '</li>').join('') + '</ul>' +
       (why ? '<p class="v-why">' + m(why) + '</p>' : '') +
-      '<div class="v-memo-row"><textarea class="v-memo" rows="1" placeholder="메모 · 다른 안 (선택 안 하고 여기만 써도 된다)"></textarea>' + MIC + '</div>' + ATT + '</div>';
-  }).join('') + '<div class="v-q" data-q="' + e(s.code + '-memo') + '"><div class="v-qh"><span>' + e(s.code) + ' 전체 메모</span></div><div class="v-memo-row"><textarea class="v-memo" rows="2" placeholder="이 항목 전체에 대한 말"></textarea>' + MIC + '</div>' + ATT + '</div></section>';
+      '<div class="v-memo-row"><textarea class="v-memo" rows="1" placeholder="메모 · 다른 안 (선택 안 하고 여기만 써도 된다)"></textarea>' + CLR + '</div>' + ATT + '</div>';
+  }).join('') + '<div class="v-q" data-q="' + e(s.code + '-memo') + '"><div class="v-qh"><span>' + e(s.code) + ' 전체 메모</span></div><div class="v-memo-row"><textarea class="v-memo" rows="2" placeholder="이 항목 전체에 대한 말"></textarea>' + CLR + '</div>' + ATT + '</div></section>';
 }
 h += '<div class="rs-pop" id="rs-pop" hidden><div class="rs-pop-bar"><b id="rs-pop-t"></b><a id="rs-pop-ext" href="#" target="_blank" rel="noopener">새 탭 ↗</a><button type="button" id="rs-pop-full" title="전체 화면">⤢</button><button type="button" id="rs-pop-x">닫기 ✕</button></div><iframe id="rs-pop-f" title="미리보기"></iframe></div>';
 h += '<div class="v-bar"><a class="inbox" href="/" id="v-inbox" title="받은편지함으로">📥<span> 편지함</span></a><button class="all" type="button" id="v-all">빈 칸 = 추천</button><span class="st" id="v-st">고르고 · 적고 · 저장</span><button class="save" type="button" id="v-save">제출</button></div>';

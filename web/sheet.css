@@ -210,3 +210,22 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .rs-flag:disabled{cursor:progress}
 .rs-page ul.rs-index li.urgent{border-left:8px solid #D12E1F;background:#FFF0EE;box-shadow:0 0 0 2px #D12E1F inset,0 1px 3px rgba(0,0,0,.08);opacity:1}
 .rs-page ul.rs-index li.urgent .rs-badge{background:#D12E1F;color:#fff}
+
+/* ✕ 지우기 · ＋ 묶음 (web/compose.js, hero 2026-10-09) — 입력칸이 한 줄을 다 쓰고, 📎·🎤 은 ＋ 줄(채팅) 또는 아래 줄(시트) */
+.rs-page .c-field,.rs-page .v-memo-row{position:relative}
+.rs-page .c-field{flex:1;min-width:0;display:flex}
+.rs-page .c-bar .c-field textarea{flex:1;padding-right:44px}
+.rs-page .v-memo-row textarea.v-memo{padding-right:44px}
+.rs-page .rs-clear{position:absolute;top:8px;right:8px;width:30px;height:30px;padding:0;border:0;border-radius:50%;background:#D9D5CC;color:#444;font:700 14px/30px system-ui,sans-serif;text-align:center;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+.rs-page .v-memo-row .rs-clear{top:12px}
+.rs-page .rs-clear:active{background:#B2472F;color:#fff}
+.rs-page textarea:placeholder-shown + .rs-clear{display:none}
+.rs-page .rs-plus{flex:0 0 auto;width:46px;height:46px;padding:0;border:1px solid #CFCBC2;border-radius:50%;background:#fff;color:#2B2A27;font:400 28px/1 system-ui,sans-serif;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:transform .15s}
+.rs-page .rs-plus.on{background:#2B2A27;color:#fff;border-color:#2B2A27}
+.rs-page .c-tray{flex:0 0 100%;display:flex;flex-wrap:wrap;gap:8px}
+.rs-page .c-tray[hidden]{display:none}
+.rs-page .c-bar .c-tray .c-clip,.rs-page .c-bar .c-tray .c-inbox,.rs-page .c-bar .c-tray .rs-mic{flex:1 1 0;width:auto;min-width:0;height:46px;min-height:46px;margin:0;padding:0 10px;border-radius:12px;font:700 15px system-ui,sans-serif;color:#2B2A27;white-space:nowrap}
+.rs-page .c-bar .c-tray .rs-mic{color:#1F6B3A}
+.rs-page .c-bar .c-tray .rs-mic[data-state=rec]{color:#fff}
+.rs-page .v-att .rs-mic{min-width:0;min-height:40px;margin:0;padding:0 14px;font-size:14px}
+.rs-page .v-att .v-clip{min-height:40px}

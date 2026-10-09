@@ -6,6 +6,7 @@
 <title>나와의 메시지</title>
 <link rel="stylesheet" href="/sheet.css">
 <!-- 🎤 is only offered when /mic.js is actually served (the STT branch); otherwise the button stays hidden. -->
+<script src="/compose.js" defer></script>
 <script src="/mic.js" defer onload="document.getElementById('m-mic').hidden = false"></script>
 <!-- review-sheet 메모: hero 가 자기한테 보내는 답장 없는 1대1 메시지 (hero 2026-10-06 "저장 개념 없이, 누르면 복사").
      GET /api/memo?m=<name> → {messages:[{id,ts,text}]}; POST /__memo?m=<name> {text} 보냄 · {del:id} 지움.
@@ -18,7 +19,7 @@
   <p class="lede">나한테 보내는 메시지 — 답장 없음, 세션은 읽지 않는다. <b>말풍선을 누르면 복사</b>된다.</p>
   <div class="c-log" id="m-log"></div>
   <form class="c-bar" id="m-form">
-    <textarea id="m-in" rows="1" placeholder="메시지 (Enter = 보내기, Shift+Enter = 줄바꿈)"></textarea>
+    <div class="c-field"><textarea id="m-in" rows="1" placeholder="메시지 (Enter = 보내기, Shift+Enter = 줄바꿈)"></textarea><button type="button" class="rs-clear" title="모두 지우기" aria-label="입력 모두 지우기">✕</button></div>
     <button type="button" class="rs-mic" id="m-mic" data-for="m-in" aria-label="음성 입력" hidden>🎤</button>
     <button type="submit" class="save" id="m-send">보내기</button>
   </form>

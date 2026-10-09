@@ -6,6 +6,7 @@
 <title>채널</title>
 <link rel="stylesheet" href="/sheet.css">
 <script src="/mic.js" defer></script>
+<script src="/compose.js" defer></script>
 <!-- review-sheet 상시 채널: hero ↔ 한 세션의 메신저. GET /api/chat?c=<ch>, POST /__chat?c=<ch> {text, files, re?} (항상 hero 로 기록).
      답장(re = 원문 메시지 id, 카톡식): 말풍선 위에 원문 인용이 뜨고 누르면 원문으로 이동. 세션은 `chat say <ch> --re <id> …`, 페이지는 말풍선의 ↩.
      이미지: 📎·붙여넣기·끌어놓기 → POST /__chat/file?c=<ch> (raw body) → {name} → 메시지 files 에 실어 보냄.
@@ -19,11 +20,15 @@
   <div class="c-log" id="c-log"></div>
   <form class="c-bar" id="c-form">
     <div class="c-att" id="c-att" hidden></div>
-    <a class="c-inbox" href="/" title="받은편지함으로" aria-label="받은편지함으로">📥</a>
     <div class="c-reply" id="c-reply" hidden><b>↩</b><span id="c-reply-t"></span><button type="button" id="c-reply-x" aria-label="답장 취소">✕</button></div>
-    <label class="c-clip" title="이미지 첨부 (붙여넣기·끌어놓기도 됨)">📎<input type="file" id="c-file" accept="image/*" multiple hidden></label>
-    <textarea id="c-in" rows="1" placeholder="메시지 (Enter = 보내기, Shift+Enter = 줄바꿈)"></textarea>
-    <button type="button" class="rs-mic" data-for="c-in" aria-label="음성 입력">🎤</button>
+    <!-- ＋ 묶음(hero 2026-10-09): 사진·음성·편지함은 입력칸 옆에 늘어놓지 않고 ＋ 로 여는 줄에 — 입력칸이 한 줄을 다 쓴다. 열림 상태는 기기에 기억 -->
+    <div class="c-tray" id="c-tray" hidden>
+      <label class="c-clip" title="이미지 첨부 (붙여넣기·끌어놓기도 됨)">📎 사진<input type="file" id="c-file" accept="image/*" multiple hidden></label>
+      <button type="button" class="rs-mic" data-for="c-in" data-idle="🎤 음성" aria-label="음성 입력">🎤 음성</button>
+      <a class="c-inbox" href="/" title="받은편지함으로">📥 편지함</a>
+    </div>
+    <button type="button" class="rs-plus" data-tray="c-tray" aria-expanded="false" aria-label="사진·음성·편지함">＋</button>
+    <div class="c-field"><textarea id="c-in" rows="1" placeholder="메시지 (Enter = 보내기, Shift+Enter = 줄바꿈)"></textarea><button type="button" class="rs-clear" title="모두 지우기" aria-label="입력 모두 지우기">✕</button></div>
     <button type="submit" class="save" id="c-send">보내기</button>
   </form>
 </main>
