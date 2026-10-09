@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>채널</title>
 <link rel="stylesheet" href="/sheet.css">
-<!-- review-sheet 상시 채널: hero ↔ 한 세션의 메신저. GET /api/chat?c=<ch>, POST /__chat?c=<ch> {text, files} (항상 hero 로 기록).
+<!-- review-sheet 상시 채널: hero ↔ 한 세션의 메신저. GET /api/chat?c=<ch>, POST /__chat?c=<ch> {text, files, re?} (항상 hero 로 기록).
+     답장(re = 원문 메시지 id, 카톡식): 말풍선 위에 원문 인용이 뜨고 누르면 원문으로 이동. 세션은 `chat say <ch> --re <id> …`, 페이지는 말풍선의 ↩.
      이미지: 📎·붙여넣기·끌어놓기 → POST /__chat/file?c=<ch> (raw body) → {name} → 메시지 files 에 실어 보냄.
      세션 쪽은 `review-sheet chat wait <ch>` 로 받고 `chat say <ch> <text>` 로 답한다. meta.seenAt 이 "세션이 여기까지 읽음". -->
 </head>
@@ -17,6 +18,7 @@
   <div class="c-log" id="c-log"></div>
   <form class="c-bar" id="c-form">
     <div class="c-att" id="c-att" hidden></div>
+    <div class="c-reply" id="c-reply" hidden><b>↩</b><span id="c-reply-t"></span><button type="button" id="c-reply-x" aria-label="답장 취소">✕</button></div>
     <label class="c-clip" title="이미지 첨부 (붙여넣기·끌어놓기도 됨)">📎<input type="file" id="c-file" accept="image/*" multiple hidden></label>
     <textarea id="c-in" rows="1" placeholder="메시지 (Enter = 보내기, Shift+Enter = 줄바꿈)"></textarea>
     <button type="submit" class="save" id="c-send">보내기</button>
@@ -40,12 +42,17 @@ const render = (m, msgs) => {
   const key = msgs.length + ':' + (msgs.length ? msgs[msgs.length - 1].id : '') + ':' + (m.seenAt || '');
   if (key === lastKey) return; lastKey = key;
   const atBottom = nearBottom();
+  const byId = {}; for (const x of msgs) byId[x.id] = x; window.__msgs = byId;
+  // 답장(x.re): 말풍선 맨 위에 원문 한 줄 인용 — 누르면 원문으로 이동(아래 click). 원문이 지워졌으면 글만
+  const quote = x => { if (!x.re) return ''; const q = byId[x.re]; const who = !q ? '' : q.from === 'hero' ? '나' : q.from;
+    const txt = !q ? '(원문 없음)' : (q.text || '').replace(/\s+/g, ' ').trim() || ((q.files || []).length ? '📷 사진' : '');
+    return '<a class="c-quote" href="#m-' + e(x.re) + '" data-to="' + e(x.re) + '"><span class="c-qwho">↩ ' + (who ? e(who) + ' 에게 답장' : '답장') + '</span><span class="c-qtxt">' + e(txt) + '</span></a>'; };
   let h = '', day = '';
   for (const x of msgs) {
     const d = new Date(x.ts).toLocaleDateString('ko-KR'); if (d !== day) { day = d; h += '<div class="c-day">' + e(d) + '</div>'; }
     const mine = x.from === 'hero';
-    h += '<div class="c-msg ' + (mine ? 'me' : 'them') + '">' + (mine ? '' : '<div class="c-who">' + e(x.from) + '</div>') +
-      '<div class="c-bubble">' + (x.files || []).map(f => { const u = '/chat/' + encodeURIComponent(CH) + '.files/' + encodeURIComponent(f); return '<a href="' + u + '" target="_blank" rel="noopener"><img class="c-img" src="' + u + '" alt="" loading="lazy"></a>'; }).join('') + linkify(x.text) + '</div><div class="c-meta">' + t(x.ts) + (mine && m.seenAt && x.ts <= m.seenAt ? ' · 읽음' : '') + '</div></div>';
+    h += '<div class="c-msg ' + (mine ? 'me' : 'them') + '" id="m-' + e(x.id) + '">' + (mine ? '' : '<div class="c-who">' + e(x.from) + '</div>') +
+      '<div class="c-bubble">' + quote(x) + (x.files || []).map(f => { const u = '/chat/' + encodeURIComponent(CH) + '.files/' + encodeURIComponent(f); return '<a href="' + u + '" target="_blank" rel="noopener"><img class="c-img" src="' + u + '" alt="" loading="lazy"></a>'; }).join('') + linkify(x.text) + '</div><div class="c-meta">' + t(x.ts) + (mine && m.seenAt && x.ts <= m.seenAt ? ' · 읽음' : '') + ' <button type="button" class="c-re" data-re="' + e(x.id) + '" title="이 메시지에 답장" aria-label="답장">↩</button></div></div>';
   }
   log.innerHTML = h || '<div class="c-day">아직 대화 없음 — 아래에 적어 보내면 세션이 받는다</div>';
   if (atBottom || first) { first = false; toBottom(); requestAnimationFrame(toBottom); }
@@ -80,6 +87,18 @@ document.getElementById('c-file').addEventListener('change', ev => { addFiles(ev
 document.addEventListener('paste', ev => { const fs = [...(ev.clipboardData ? ev.clipboardData.files : [])].filter(f => /^image\//.test(f.type)); if (fs.length) { ev.preventDefault(); addFiles(fs); } });
 document.addEventListener('dragover', ev => { if ([...ev.dataTransfer.types].includes('Files')) ev.preventDefault(); });
 document.addEventListener('drop', ev => { if (ev.dataTransfer.files.length) { ev.preventDefault(); addFiles(ev.dataTransfer.files); } });
+// 답장: 인용 누르면 원문으로 스크롤 + 잠깐 테두리. 말풍선의 ↩ 누르면 입력칸 위에 "누구에게 답장" 띠 → 보내면 re 로 실림(강제 아님, ✕ 로 뺌)
+let replyTo = null;
+const replyBar = document.getElementById('c-reply'), replyTxt = document.getElementById('c-reply-t');
+const setReply = x => { replyTo = x; replyBar.hidden = !x; if (x) { replyTxt.textContent = (x.from === 'hero' ? '나' : x.from) + ' 에게 답장 · ' + ((x.text || '').replace(/\s+/g, ' ').trim() || '📷 사진'); input.focus(); } };
+document.getElementById('c-reply-x').addEventListener('click', () => setReply(null));
+log.addEventListener('click', ev => {
+  const q = ev.target.closest('.c-quote');
+  if (q) { ev.preventDefault(); const el = document.getElementById('m-' + q.dataset.to); if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); return; }
+  const b = ev.target.closest('.c-re');
+  if (b) { const r = (window.__msgs || {})[b.dataset.re]; if (r) setReply(r); }
+});
 /* one send at a time: Korean IME on iOS fires compositionend (→ deferred submit) and then one more plain Enter keydown,
    so submit() can run twice before the first fetch clears the input — the second would post the same text again. */
 let sending = false;
@@ -96,9 +115,9 @@ const submit = async () => {
       if (!r.ok) throw new Error('이미지 ' + (await r.text()));
       files.push((await r.json()).name);
     }
-    const r = await fetch('/__chat?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, files }) });
+    const r = await fetch('/__chat?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, files, re: replyTo ? replyTo.id : undefined }) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    for (const p of pending) URL.revokeObjectURL(p.url); pending = []; drawAtt();
+    for (const p of pending) URL.revokeObjectURL(p.url); pending = []; drawAtt(); setReply(null);
     input.value = ''; fit(); setTimeout(() => { if (/^\s*$/.test(input.value)) { input.value = ''; fit(); } }, 0); await load(false); toBottom();
   } catch (err) { upd.textContent = '✗ 전송 실패(' + err.message + ')'; }
   finally { sending = false; sendBtn.disabled = false; input.focus(); }
