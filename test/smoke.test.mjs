@@ -132,6 +132,39 @@ test('chat: new → page posts as hero → owner reads/says → hero sees 읽음
   } finally { await close(); }
 });
 
+test('chat reply (hero 2026-10-09): say --re quotes an earlier message, page may post re, unknown original is dropped/rejected, read prints #id', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-reply-'));
+  const { newChat, readChatLog } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root:hub');
+  const { base, close } = await startServer(dir, 0);
+  const env = { ...process.env, REVIEW_SHEET_INBOX: dir };
+  try {
+    await fetch(base + '/__chat?c=root', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '요구 1' }) });
+    await fetch(base + '/__chat?c=root', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '요구 2' }) });
+    const [m1, m2] = readChatLog(dir, 'root');
+    // session answers requirement 1 by id; read/wait output carries #id so the session can pick one
+    const out = execFileSync('node', [BIN, 'chat', 'read', 'root'], { encoding: 'utf8', env });
+    assert.match(out, new RegExp('^#' + m1.id + ' .*hero: 요구 1', 'm'));
+    execFileSync('node', [BIN, 'chat', 'say', 'root', '--re', m1.id, '1번 답'], { encoding: 'utf8', env });
+    let log = readChatLog(dir, 'root');
+    assert.equal(log[2].re, m1.id); assert.equal(log[2].text, '1번 답');
+    assert.match(execFileSync('node', [BIN, 'chat', 'read', 'root', '--all'], { encoding: 'utf8', env }), new RegExp('root:hub: ↩#' + m1.id + ' 1번 답'));
+    // unknown original → CLI refuses, nothing stored
+    assert.throws(() => execFileSync('node', [BIN, 'chat', 'say', 'root', '--re', 'zzzzzzzz', 'x'], { encoding: 'utf8', env, stdio: 'pipe' }), /답장 원문/);
+    assert.equal(readChatLog(dir, 'root').length, 3);
+    // page: hero replies to the session's answer; a bogus re is dropped, the message still lands
+    let r = await (await fetch(base + '/__chat?c=root', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '고마워', re: log[2].id }) })).json();
+    assert.equal(r.msg.re, log[2].id);
+    r = await (await fetch(base + '/__chat?c=root', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '평문', re: '../x' }) })).json();
+    assert.equal(r.msg.re, undefined); assert.equal(r.msg.text, '평문');
+    log = readChatLog(dir, 'root'); assert.equal(log.length, 5); assert.equal(log[1].id, m2.id);
+    // api hands re through untouched so the page can quote + jump
+    const j = await (await fetch(base + '/api/chat?c=root')).json();
+    assert.equal(j.messages[2].re, m1.id);
+    assert.match(await (await fetch(base + '/chat.html?c=root')).text(), /c-quote/);
+  } finally { await close(); }
+});
+
 test('hub: first CLI channel becomes the hub, chat hub switches it, /hub redirects, hub listed first', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-hub-'));
   const env = { ...process.env, REVIEW_SHEET_INBOX: dir };
