@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>답변 시트</title>
 <link rel="stylesheet" href="/sheet.css">
+<script src="/mic.js" defer></script>
 </head>
 <body class="rs-page">
 <main id="app"></main>
@@ -31,6 +32,7 @@
 window.SHEET_RUN = function(){
 'use strict';
 const D = window.SHEET;
+const MIC = '<button type="button" class="rs-mic" aria-label="음성 입력">🎤</button>';   // web/mic.js: 탭=녹음, 다시 탭=전사 → 옆 메모칸 커서에 삽입
 const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 /* Text fields (ask/now/sit/decide/effect/why/question/table) are escaped, then a small markup set comes back:
    <b> <i> <u> <s> <code> <strong> <em> <br> and "\n". Sessions kept writing "<b>문제</b>…<br>" into `now` and hero
@@ -53,7 +55,7 @@ h += '<nav class="toc">' + D.sections.map(s => '<a href="#' + e(s.id || s.code) 
 
 h += '<section class="box" id="summary"><h2>한눈에 — 추천</h2>' + D.sections.map((s, si) =>
   '<div class="v-srow"><a href="#' + e(s.id || s.code) + '">' + e(s.code || (si + 1)) + '</a><div><div>' + e(s.title) + (s.first ? '<span class="v-first">먼저</span>' : '') +
-  '</div><div class="r">' + s.questions.map(norm).map(q => e(q.k) + '=' + e(q.rec || '—')).join(' · ') + '</div></div></div>').join('') + '</section>';
+  '</div><div class="r">' + (s.questions || []).map(norm).map(q => e(q.k) + '=' + e(q.rec || '—')).join(' · ') + '</div></div></div>').join('') + '</section>';
 
 /* links + images of a section or a question. Question-level ones sit right under the question text so the
    reviewer never scrolls between a picture pile and the question it belongs to (hero 2026-10-02). */
@@ -77,7 +79,7 @@ for(const s of D.sections){
   if(s.html) h += '<div class="rs-html">' + s.html + '</div>';
   if(s.flow) h += '<div class="v-flow">' + s.flow.map((f, i) => '<span class="s' + (i === 1 ? ' x' : '') + '">' + e(f) + '</span>').join('<span class="v-arrow">→</span>') + '</div>';
   if(s.table) h += tbl(s.table);
-  h += s.questions.map(norm).map(o => {
+  h += (s.questions || []).map(norm).map(o => {
     const { k, q: t, opts, rec, why } = o;
     const tok = String(rec).split(' ')[0];
     const ctx = o.sit || o.decide || o.effect ? '<div class="v-ctx">' + (o.sit ? '<div><b>지금 상황</b>' + m(o.sit) + '</div>' : '') + (o.decide ? '<div><b>정하는 것</b>' + m(o.decide) + '</div>' : '') + (o.effect ? '<div><b>고르면 달라지는 것</b>' + m(o.effect) + '</div>' : '') + '</div>' : '';
@@ -85,8 +87,8 @@ for(const s of D.sections){
       opts.map(([lb, ex, img], i) => '<li data-i="' + i + '" data-t="' + e(lb) + '"' + (opts.length > 1 && tok && String(lb).startsWith(tok + ' ') ? ' class="on"' : '') + '><span class="dot"></span><span>' + m(lb) +
         (ex ? '<span class="ex">예: ' + m(ex) + '</span>' : '') + '</span>' + (img ? '<img src="' + e(img) + '" alt="">' : '') + '</li>').join('') + '</ul>' +
       (why ? '<p class="v-why">' + m(why) + '</p>' : '') +
-      '<textarea class="v-memo" rows="1" placeholder="메모 · 다른 안 (선택 안 하고 여기만 써도 된다)"></textarea>' + ATT + '</div>';
-  }).join('') + '<div class="v-q" data-q="' + e(s.code + '-memo') + '"><div class="v-qh"><span>' + e(s.code) + ' 전체 메모</span></div><textarea class="v-memo" rows="2" placeholder="이 항목 전체에 대한 말"></textarea>' + ATT + '</div></section>';
+      '<div class="v-memo-row"><textarea class="v-memo" rows="1" placeholder="메모 · 다른 안 (선택 안 하고 여기만 써도 된다)"></textarea>' + MIC + '</div>' + ATT + '</div>';
+  }).join('') + '<div class="v-q" data-q="' + e(s.code + '-memo') + '"><div class="v-qh"><span>' + e(s.code) + ' 전체 메모</span></div><div class="v-memo-row"><textarea class="v-memo" rows="2" placeholder="이 항목 전체에 대한 말"></textarea>' + MIC + '</div>' + ATT + '</div></section>';
 }
 h += '<div class="rs-pop" id="rs-pop" hidden><div class="rs-pop-bar"><b id="rs-pop-t"></b><a id="rs-pop-ext" href="#" target="_blank" rel="noopener">새 탭 ↗</a><button type="button" id="rs-pop-full" title="전체 화면">⤢</button><button type="button" id="rs-pop-x">닫기 ✕</button></div><iframe id="rs-pop-f" title="미리보기"></iframe></div>';
 h += '<div class="v-bar"><a class="inbox" href="/" id="v-inbox" title="받은편지함으로">📥<span> 편지함</span></a><button class="all" type="button" id="v-all">빈 칸 = 추천</button><span class="st" id="v-st">고르고 · 적고 · 저장</span><button class="save" type="button" id="v-save">제출</button></div>';

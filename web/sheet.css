@@ -146,6 +146,7 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .c-thumb img{display:block;width:64px;height:64px;object-fit:cover;border-radius:10px;border:1px solid #CFCBC2}
 .rs-page .c-thumb button{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:0;background:#2B2A27;color:#fff;font-size:12px;line-height:22px;padding:0;cursor:pointer}
 .rs-page .c-img{display:block;max-width:100%;max-height:320px;border-radius:10px;margin:2px 0 6px}
+.rs-page .c-bar .c-inbox{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:44px;height:46px;border-radius:12px;border:1px solid #CFCBC2;background:#fff;font-size:20px;text-decoration:none;box-sizing:border-box}
 .rs-page .c-bar .save{min-height:46px;padding:0 16px;border-radius:12px;border:0;background:#1F6B3A;color:#fff;font:800 15px system-ui,sans-serif}
 .rs-page .c-bar .save:disabled{opacity:.6}
 /* 답장(카톡식 인용): 말풍선 맨 위 한 줄 원문, 누르면 원문으로. 원문 말풍선은 잠깐 테두리(flash) */
@@ -169,6 +170,12 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page ul.rs-index li.chat.hub{border-left-width:8px;background:#FFF9EC}
 .rs-page ul.rs-index li.chat.hub b{font-size:1.08em}
 .rs-page ul.rs-index li.chat.new .rs-badge{background:#B2472F}
+.rs-page ul.rs-index li.chat.mgr{border-left:8px solid #3E5F8A;background:#EEF3FA}
+.rs-page ul.rs-index li.chat.mgr .rs-badge{background:#3E5F8A}
+.rs-page ul.rs-index li.chat.mgr b{font-size:1.05em}
+.rs-page ul.rs-index li.chat.sess{margin-left:18px;border-left-width:3px}
+.rs-page ul.rs-index li.chat.sess .rs-badge{background:#A89878}
+.rs-page ul.rs-index li.chat.mgr.new .rs-badge,.rs-page ul.rs-index li.chat.sess.new .rs-badge{background:#B2472F}
 .rs-page .rs-n-chat{background:#8A6D2E}
 
 /* ── 메모 (memo.html) — hero 가 자기한테 보내는 답장 없는 메시지. 채널(c-*) 모양 그대로, 말풍선 탭 = 복사 ── */
@@ -183,3 +190,23 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .m-del{border:0;background:none;padding:0 2px;font:inherit;color:#999;cursor:pointer;text-decoration:underline}
 .rs-page .m-del:hover{color:#B2472F}
 .rs-toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);max-width:90vw;padding:10px 14px;border-radius:10px;background:#2B2A27;color:#fff;font:14px/1.4 system-ui,sans-serif;z-index:50;box-shadow:0 4px 16px rgba(0,0,0,.2)}
+
+/* 🎤 음성 입력 (web/mic.js) — 폰 엄지 크기 터치영역 */
+.rs-page .v-memo-row{display:flex;gap:6px;align-items:flex-start}
+.rs-page .v-memo-row textarea.v-memo{flex:1;min-height:48px}
+.rs-page .rs-mic{flex:none;min-width:48px;min-height:48px;margin-top:4px;padding:0 10px;border:1px solid #CFCBC2;border-radius:12px;background:#fff;font:700 20px/1 system-ui,sans-serif;color:#1F6B3A;touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer}
+.rs-page .c-bar .rs-mic{margin-top:0}
+.rs-page .rs-mic[data-state=rec]{background:#B2472F;border-color:#B2472F;color:#fff;font-size:15px;animation:rs-mic-pulse 1.2s ease-in-out infinite}
+.rs-page .rs-mic[data-state=busy]{background:#F3EFE6;color:#555;cursor:progress}
+@keyframes rs-mic-pulse{50%{box-shadow:0 0 0 6px rgba(178,71,47,.25)}}
+.rs-mic-toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);max-width:90vw;padding:10px 14px;border-radius:10px;background:#2B2A27;color:#fff;font:14px/1.4 system-ui,sans-serif;z-index:50;box-shadow:0 4px 16px rgba(0,0,0,.2)}
+.rs-mic-live{position:fixed;z-index:49;box-sizing:border-box;max-height:40vh;overflow:auto;padding:8px 12px;border-radius:10px;background:#F3EFE6;border:1px dashed #B9B2A3;color:#7A756B;font:15px/1.45 system-ui,sans-serif;white-space:pre-wrap;box-shadow:0 4px 14px rgba(0,0,0,.12);pointer-events:none}
+/* 🔥 긴급 (hero 2026-10-08) — 시트 줄 오른쪽 버튼, 켜지면 빨간 테두리·배지로 자기 묶음 맨 위 */
+.rs-page ul.rs-index li{position:relative}
+.rs-page ul.rs-index li:has(.rs-flag) a{padding-right:62px}
+.rs-page .rs-flag{position:absolute;right:10px;top:10px;width:44px;height:44px;border-radius:10px;border:1px solid #CFCBC2;background:#fff;font-size:20px;line-height:1;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+.rs-page .rs-flag:not(.on){filter:grayscale(1);opacity:.4}
+.rs-page .rs-flag.on{background:#D12E1F;border-color:#D12E1F}
+.rs-page .rs-flag:disabled{cursor:progress}
+.rs-page ul.rs-index li.urgent{border-left:8px solid #D12E1F;background:#FFF0EE;box-shadow:0 0 0 2px #D12E1F inset,0 1px 3px rgba(0,0,0,.08);opacity:1}
+.rs-page ul.rs-index li.urgent .rs-badge{background:#D12E1F;color:#fff}

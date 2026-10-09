@@ -99,6 +99,13 @@ hero 는 탭 하나만 둔다(5초마다 자동 갱신). 세션마다 서버·�
 
 `<SKILL_DIR>` = 이 SKILL.md 가 있는 디렉토리. CLI 를 자주 쓰면 `ln -s <SKILL_DIR>/bin/review-sheet.mjs ~/bin/review-sheet`.
 
+### 🔥 긴급 (hero 2026-10-08)
+
+받은편지함의 **시트 줄마다 🔥 버튼** — hero 만 켜고 끈다(두 단계: 긴급/보통). 켜면 그 시트가 자기 묶음(‘답 기다리는 중’) **맨 위**로 빨간 띠·`🔥 긴급` 배지와 함께 올라가고, **담당 세션 채널에 hero 이름으로** `🔥 긴급 지정: <제목> (시트 <이름>) …` 이 간다(끄면 `긴급 해제: …`). 담당 채널 = 시트 `from` 과 이름/owner 가 같은 채널, 없으면 시트 이름 접두가 가장 긴 채널(`sidekick-infra-db` → `sidekick-infra`).
+- 저장: `inbox/urgent.json` `{ "<시트 이름>": "<켠 시각>" }`. `POST /__urgent?d=<시트>` `{on}`(페이지 전용, `application/json` 만 — CORS 없음). `ls` 는 긴급 시트 앞에 `🔥`.
+- **세션 규칙**: `🔥 긴급 지정` 을 받으면 하던 일을 안전한 지점까지만 정리하고 그 일부터 한다. SoT 이슈가 있으면 `urgent` 라벨을 단다(해제 때 뗀다). 급한 불을 끄면 채널에 `급한 불 끔 — 해제해도 됨: <제목>` 한 줄 — **끄는 건 hero**, 세션은 끄지 않는다.
+- 데이터 파일을 통째로 덮어쓰면 `new` 가 넣은 `from`·`createdAt` 이 사라진다 — 덮어쓸 땐 `from: '<세션>'` 을 직접 넣는다.
+
 ## 상시 채널 (chat) — hero ↔ 세션 메신저
 
 결정 시트와 별개로, hero 가 특정 세션과 **그냥 말을 주고받는** 채널. 받은편지함 맨 위 "상시 채널" 에 뜨고, 페이지는 메신저(말풍선·Enter 전송·3초 갱신·링크 자동 연결·"읽음" 표시)다. 채널은 세션 하나가 소유한다(hero 가 root 와, pkch:main 과 각각).
@@ -155,7 +162,7 @@ window.SHEET = {
     ask: 'hero 가 전에 한 말 그대로',  now: '지금 상태 한두 문장 (글자 — 줄바꿈 \\n, 강조 <b><i><code><br> 만)',
     links: [['화면 열기', 'http://127.0.0.1:5200/m4.html?state=x']],   // 선택 — 같은 페이지 안 팝업(iframe)으로 열린다
     images: [['shots/overview.png', '전체 흐름']],                        // 선택, 시트 dir 기준 상대경로 — 섹션 공통 그림 1장 정도만
-    table: { head: ['안', '모양', '변수'], rows: [['A', '…', '1']], note: '숫자 전부 임시' },  // 선택
+    // table: 쓰지 말 것 — 폰에서 열이 쪼개져 못 읽음(hero 2026-10-07). 나열은 now/sit 에 \n 번호 줄로
     questions: [
       { k: '1', q: '“+1” 은 무엇을 올리나',
         sit: '지금 상황', decide: '정하는 것', effect: '고르면 달라지는 것',
@@ -169,6 +176,8 @@ window.SHEET = {
 ```
 
 `from`(보낸 세션) · `createdAt` 은 `new` 가 채운다 — inbox 큐의 출처·정렬에 쓴다.
+
+**표(열 쪼개기) 금지 — 폰 기준** (hero 2026-10-07): hero 는 시트를 **폰으로** 본다. `table` 처럼 열을 여러 개로 쪼갠 표는 폰 폭에서 글이 세로로 잘게 부서져 읽을 수 없다. 섹션 `table` 은 쓰지 않는다 — 항목 나열은 `now`·`sit` 에 `\n` 줄바꿈 + 번호(`1.` `2.`)로, 항목마다 덧붙일 말은 같은 줄 뒤에 ` — ` 로 잇거나 다음 줄 들여쓰기로 쓴다. 비교가 꼭 필요하면 질문 `opts` 의 선택지 설명칸에 한 줄씩 넣는다. 섹션 `html` 로 표를 다시 만드는 것도 같은 이유로 금지.
 
 **글 칸은 HTML 이 아니다** (hero 2026-10-05): `ask`·`now`·`sit`·`decide`·`effect`·`why`·질문·선택지·표 는 글자 그대로 보인다. 줄을 나누려면 `\n`, 강조는 `<b>` `<i>` `<code>` `<br>` 까지만 통하고 그 밖의 태그는 글자로 뜬다. HTML 전체가 되는 칸은 `lede`·`howto`·섹션 `html` 셋뿐. `read` 는 그 표시들을 마크다운(`**` `_` `` ` ``)으로 바꿔 SoT 에 낸다. "문제 / 한 것 / 남은 것" 처럼 단락이 나뉘면 `now` 에 몰지 말고 `sit`·`decide`·`effect` 세 칸에 나눠 쓴다.
 
@@ -189,6 +198,31 @@ window.SHEET = {
 
 hero 가 질문마다 📎 로 파일을 붙일 수 있다(붙여넣기·끌어놓기도, 종류 무관 50MB까지) → 답에 `"files": [{ "name", "orig" }]`, 실물은 `answers/<id>.files/<name>`. `read` 는 항목마다 `- 📎 <질문>: <원래 이름> → <절대경로>` 줄을 낸다 → Read 로 열어 본다(표의 메모 칸엔 `📎N`).
 
+## 음성 입력 (🎤 STT) — 로컬 whisper.cpp
+
+채널 입력창 옆·시트 메모칸 옆 🎤: **탭 = 녹음 시작, 다시 탭 = 멈춤** → `POST /api/stt` → 커서 위치에 텍스트가 끼워진다(최대 120초). 전사는 **이 맥에서만**(whisper.cpp + `large-v3-turbo`, 한국어) — 오디오를 클라우드로 보내지 않는다.
+
+```
+brew install whisper-cpp ffmpeg                                   # 1회
+mkdir -p ~/.review-sheet/models && curl -L -o ~/.review-sheet/models/ggml-large-v3-turbo.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin   # 1.6GB, 1회
+~/.review-sheet/vocab.txt                                         # 단어장: 한 줄 1단어(# 주석) → whisper --prompt 로 주입. 고치면 다음 요청부터 반영
+curl -s http://127.0.0.1:5600/api/stt                             # {ready, missing, model, lang, vocab}
+```
+
+- env 교체: `REVIEW_SHEET_WHISPER_BIN` / `REVIEW_SHEET_WHISPER_MODEL` / `REVIEW_SHEET_FFMPEG` / `REVIEW_SHEET_VOCAB` / `REVIEW_SHEET_STT_LANG`(기본 `ko`). launchd PATH 에 brew 가 없어도 `/opt/homebrew/bin` 을 직접 찾는다.
+- `POST /api/stt` 는 `content-type: audio/*` 만 받는다(교차 사이트 단순 POST 차단), 25MB 상한, 한 번에 하나씩 직렬 처리.
+- **말하는 중 미리보기** (hero 2026-10-08): 녹음 중 1.5초마다 쌓인 녹음 전체를 `POST /api/stt?live=1` 로 보내 빠르게(greedy, 단어장 없이 — 짧은 조각에 단어장을 주면 단어장을 읊는다) 적어 입력칸 위 회색 말풍선을 바꾼다. 조각 이어 붙이기(`from=<초>`)는 경계에서 단어가 잘려 안 쓴다. 멈추면 전체를 정밀하게 다시 적어 칸에 넣고 말풍선을 지운다. 녹음 중 **다른 칸·버튼을 누르면 자동 정지**(스크롤은 아님).
+- **상주 모델**: `whisper-cli` 옆에 `whisper-server` 가 있으면 127.0.0.1 빈 포트에 한 번 띄워 재사용(13초 말 3초 → 1.3초, 조각 ~1초), 10분 놀면 내린다. 🎤 누르면 `GET /api/stt?warm=1` 로 미리 올린다. 없거나 실패하면 `whisper-cli` 로 떨어진다.
+- **폰 마이크는 HTTPS 에서만 열린다.** 서버는 127.0.0.1 그대로 두고 `tailscale serve` 로 감싼다(tailnet 전용, funnel 아님):
+
+```
+bin/tailscale-serve.sh on       # https://bh-l175-personal.tail1f3f2b.ts.net/ → 127.0.0.1:5600 (personal tailscaled 소켓)
+bin/tailscale-serve.sh status | off
+```
+
+hero 체크리스트 (1회): Tailscale admin 콘솔 → **DNS → HTTPS Certificates → Enable** → `bin/tailscale-serve.sh on` → 폰(Tailscale 켠 상태)에서 https 주소 열고 🎤 허용. 미활성이면 스크립트가 멈추고 이 안내를 낸다.
+
 ## CLI
 
 `[dir]` 를 생략하면 inbox(`~/.review-sheet/inbox`). 명시하면 그 폴더(레포 안 `review/` 등).
@@ -196,7 +230,7 @@ hero 가 질문마다 📎 로 파일을 붙일 수 있다(붙여넣기·끌어�
 | 명령 | 뜻 |
 |---|---|
 | `serve [dir] [--port N] [--lan]` | 폴더와 시트 페이지를 서브. `/` 는 큐(답 기다림 ↑ / 제출됨 ↓, 5초 자동 갱신), `/api/sheets` 는 같은 목록 JSON(CORS 열림 — 다른 대시보드 배지용). inbox 면 기본 :5600 |
-| `install-inbox [--port N]` | launchd 플리스트(`com.review-sheet.inbox`) 작성 — inbox 를 부팅 시 `--lan` 으로 서브. 출력된 `launchctl bootstrap` 을 실행 |
+| `install-inbox [--port N]` | launchd 플리스트(`com.review-sheet.inbox`) 작성 — inbox 를 부팅 시 **127.0.0.1** 로 서브(폰은 `tailscale-serve.sh`). 출력된 `launchctl bootstrap` 을 실행 |
 | `new [dir] <name>` | 템플릿 복사 → `<name>-data.js` (`from` = `$REVIEW_SHEET_FROM` / fleet sender / user@host, `createdAt` 자동) |
 | `ls [dir]` | 시트 목록 + 대기/제출됨 + 진행(답한 수/전체) + 제출 시각 |
 | `read [dir] <name|id> [--json]` | 제출된 답을 질문과 합쳐 마크다운(없으면 exit 4) |
@@ -212,6 +246,9 @@ HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모 건수), `
 의존성 없음, Node 18+. 테스트: `node --test <SKILL_DIR>/test/`.
 
 ## Do NOT
+
+- 서버를 `--lan`/0.0.0.0 으로 띄우지 마라 — 127.0.0.1 고정, 폰은 `tailscale serve` HTTPS 로만. `tailscale funnel`(공개 인터넷) 금지.
+- STT 를 클라우드 API 로 바꾸지 마라 — 음성은 로컬 whisper.cpp 로만 전사한다.
 
 - 시트를 claude.ai 아티팩트나 외부 URL 로 내지 마라 (원칙 1).
 - 답을 기다리는 질문을 모아 두지 마라 — 1개라도 생기는 즉시 시트로 (§언제 보낼지).

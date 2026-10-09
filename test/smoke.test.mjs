@@ -267,6 +267,56 @@ test('sheet attach: upload any file → answer keeps {name,orig} → bogus names
   } finally { await close(); }
 });
 
+test('stt: /api/stt → ffmpeg → whisper-cli with vocab as --prompt (fake binaries, nothing leaves the box)', async () => {
+  const dir = tmpDir();
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-stt-bin-'));
+  const ff = path.join(bin, 'ffmpeg'), wh = path.join(bin, 'whisper-cli'), model = path.join(bin, 'model.bin'), vocab = path.join(bin, 'vocab.txt');
+  fs.writeFileSync(ff, '#!/bin/sh\nfor a; do last="$a"; done\nprintf wav > "$last"\n', { mode: 0o755 });   // ffmpeg … <out.wav>
+  fs.writeFileSync(wh, '#!/bin/sh\necho "  안녕하세요 $*"\necho\n', { mode: 0o755 });                       // echoes its args
+  fs.writeFileSync(model, 'x');
+  fs.writeFileSync(vocab, '# 주석\n스파이더\n\n리뷰시트\n');
+  const saved = { ...process.env };
+  const { base, close } = await startServer(dir, 0);
+  try {
+    // not ready → 503 (model missing)
+    Object.assign(process.env, { REVIEW_SHEET_WHISPER_BIN: wh, REVIEW_SHEET_FFMPEG: ff, REVIEW_SHEET_WHISPER_MODEL: path.join(bin, 'nope.bin'), REVIEW_SHEET_VOCAB: vocab });
+    assert.equal((await (await fetch(base + '/api/stt')).json()).ready, false);
+    assert.equal((await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: 'abc' })).status, 503);
+    process.env.REVIEW_SHEET_WHISPER_MODEL = model;
+    const st = await (await fetch(base + '/api/stt')).json();
+    assert.equal(st.ready, true); assert.equal(st.vocab, 2); assert.equal(st.lang, 'ko');
+    // wrong content-type (what a cross-site simple POST would send) → 415; empty → 400
+    assert.equal((await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'abc' })).status, 415);
+    assert.equal((await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: '' })).status, 400);
+    const r = await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: Buffer.from('fake-opus') });
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.match(j.text, /^안녕하세요 -m /);
+    assert.match(j.text, /-l ko -nt -np -t \d+ --prompt 스파이더, 리뷰시트$/);
+    assert.ok(!/ -bs 1/.test(j.text));   // 최종 전사는 정밀(beam) 그대로
+    // 말하는 중 미리보기: 새로 쌓인 소리가 너무 짧으면 whisper 를 안 돌리고 end=from 그대로
+    const lv = await (await fetch(base + '/api/stt?live=1&from=3.5', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: Buffer.from('fake-opus') })).json();
+    assert.deepEqual([lv.text, lv.end], ['', 3.5]);
+    assert.ok(!/\n/.test(j.text));
+    assert.equal((await fetch(base + '/mic.js')).status, 200);
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    await close();
+  }
+});
+
+test('stt: binary lookup skips a same-named directory on PATH (launchd PATH=/opt/homebrew/Cellar → Cellar/ffmpeg/)', async () => {
+  const { sttConfig } = await import('../bin/review-sheet.mjs');
+  const a = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-path-a-')), b = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-path-b-'));
+  fs.mkdirSync(path.join(a, 'ffmpeg'));
+  fs.writeFileSync(path.join(b, 'ffmpeg'), '#!/bin/sh\n', { mode: 0o755 });
+  const saved = { PATH: process.env.PATH, FF: process.env.REVIEW_SHEET_FFMPEG };
+  try {
+    delete process.env.REVIEW_SHEET_FFMPEG; process.env.PATH = `${a}:${b}`;
+    assert.equal(sttConfig().ffmpeg, path.join(b, 'ffmpeg'));
+  } finally { process.env.PATH = saved.PATH; if (saved.FF !== undefined) process.env.REVIEW_SHEET_FFMPEG = saved.FF; }
+});
+
 test('double send: same text twice within 3s is stored once (chat + memo), a different text or a later repeat is kept (hero 2026-10-07)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-dup-'));
   const { appendChat, newChat, readChatLog, sendMemo, readMemo } = await import('../bin/review-sheet.mjs');
@@ -278,4 +328,40 @@ test('double send: same text twice within 3s is stored once (chat + memo), a dif
   assert.equal(readChatLog(dir, 'dup').length, 3);
   const m1 = sendMemo(dir, 'hero', '메모'), m2 = sendMemo(dir, 'hero', '메모');
   assert.equal(m1.id, m2.id); assert.equal(readMemo(dir, 'hero').messages.length, 1);
+});
+
+test('urgent: 🔥 on a sheet → top of its group, hero notice to the owner channel, off → notice again (hero 2026-10-08)', async () => {
+  const dir = tmpDir();
+  const { newChat, readChatLog, readUrgent } = await import('../bin/review-sheet.mjs');
+  const mk = (name, from) => fs.writeFileSync(path.join(dir, name + '-data.js'),
+    `window.SHEET = { id: '${name}', title: 'T-${name}', from: '${from}', createdAt: '2026-10-0${name === 'a' ? 2 : 1}T00:00:00Z', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
+  mk('a', 'infra'); mk('b', 'nochan');
+  newChat(dir, 'infra', 'infra', 'infra:fleet2');
+  const { base, close } = await startServer(dir, 0);
+  try {
+    const post = (d, on, ct = 'application/json') => fetch(base + '/__urgent?d=' + d, { method: 'POST', headers: { 'content-type': ct }, body: JSON.stringify({ on }) });
+    assert.equal((await post('b', true, 'text/plain')).status, 415);   // cross-site simple POST can't flip it
+    assert.equal((await post('zz', true)).status, 400);
+    let j = await (await post('b', true)).json();
+    assert.deepEqual([j.urgent, j.notified], [true, null]);             // no channel for 'nochan' — flag only
+    let inbox = await (await fetch(base + '/api/inbox')).json();
+    const order = inbox.sheets.filter(s => !s.error).map(s => s.name);
+    assert.ok(order.indexOf('b') < order.indexOf('a'), 'urgent b above newer a');
+    assert.equal(inbox.sheets.find(s => s.name === 'b').urgent, true);
+    j = await (await post('a', true)).json();
+    assert.equal(j.notified, 'infra');
+    await post('a', true);                                               // already on — no second notice
+    let log = readChatLog(dir, 'infra');
+    assert.equal(log.length, 1); assert.equal(log[0].from, 'hero'); assert.match(log[0].text, /^🔥 긴급 지정: T-a/);
+    await post('a', false);
+    log = readChatLog(dir, 'infra');
+    assert.equal(log.length, 2); assert.match(log[1].text, /^긴급 해제: T-a/);
+    assert.deepEqual(Object.keys(readUrgent(dir)), ['b']);
+    // from 이 빠진 시트(데이터 파일 통째 덮어쓰기) → 시트 이름 접두로 채널을 찾는다
+    fs.writeFileSync(path.join(dir, 'infra-x-data.js'), "window.SHEET = { id: 'infra-x', title: 'T-x', sections: [] };");
+    assert.equal((await (await post('infra-x', true)).json()).notified, 'infra');
+    const html = await (await fetch(base + '/')).text();
+    assert.match(html, /rs-flag/);
+    assert.match(execFileSync(process.execPath, [BIN, 'ls', dir], { encoding: 'utf8' }), /^🔥b\t/m);
+  } finally { await close(); }
 });

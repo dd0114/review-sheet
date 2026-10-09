@@ -19,6 +19,10 @@
  *   answers/<id>.files/ files the reviewer attached to a question (page: 📎·paste·drop → POST /__answers/file), served at /answers/<id>.files/<name>
  *   anything else       images etc. the sheet references by relative path
  *
+ * 음성 입력: POST /api/stt[?live=1&from=초] (audio/* 바디) → ffmpeg → whisper.cpp(whisper-cli) 로 **로컬에서만** 전사해 { text, end } 를 돌려준다(live = 말하는 중 미리보기).
+ *   모델 ~/.review-sheet/models/ggml-large-v3-turbo.bin · 단어장 ~/.review-sheet/vocab.txt(한 줄 1단어 → --prompt).
+ *   env 로 교체: REVIEW_SHEET_WHISPER_BIN / _WHISPER_MODEL / _FFMPEG / _VOCAB / _STT_LANG(기본 ko). 오디오는 외부로 나가지 않는다.
+ *
  * No dependencies. Node 18+.
  */
 import http from 'node:http';
@@ -27,6 +31,8 @@ import path from 'node:path';
 import vm from 'node:vm';
 import os from 'node:os';
 import process from 'node:process';
+import { execFile, spawn } from 'node:child_process';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -146,7 +152,35 @@ const cell = s => String(s == null ? '' : s)
   .replace(/<\s*\/?\s*(b|strong)\s*>/gi, '**').replace(/<\s*\/?\s*(i|em)\s*>/gi, '_').replace(/<\s*\/?\s*code\s*>/gi, '`')
   .replace(/<br\s*\/?>/gi, '<br>').replace(/\|/g, '\\|').replace(/\n/g, '<br>');
 
+/* 🔥 긴급 (hero 2026-10-08) — 시트만, 켜짐/꺼짐 두 단계, 켜고 끄는 건 hero(받은편지함 🔥 버튼)만.
+   inbox/urgent.json { "<data 파일 이름>": "<켠 시각>" }. 켜면 '답 기다리는 중' 맨 위, 담당 세션 채널에 hero 이름으로 알림이 간다. */
+const urgentFile = dir => path.join(dir, 'urgent.json');
+export function readUrgent(dir) { try { return JSON.parse(fs.readFileSync(urgentFile(dir), 'utf8')) || {}; } catch { return {}; } }
+/** 시트 → 담당 세션의 채널: from 과 이름/owner 가 같은 채널, 없으면(데이터 파일을 통째로 덮어써 from 이 빠진 경우) 시트 이름 접두가 가장 긴 채널 */
+function chatFor(root, from, sheetName) {
+  const all = listChats(root);
+  if (from) { const c = all.find(c => c.name === from) || all.find(c => c.owner === from || String(c.owner).split(':')[0] === from); if (c) return c; }
+  return all.filter(c => String(sheetName).startsWith(c.name + '-')).sort((a, b) => b.name.length - a.name.length)[0] || null;
+}
+export function setUrgent(dir, name, on) {
+  const s = listSheets(dir).find(x => !x.error && x.name === name); if (!s) throw new Error(`시트 ${name} 없음`);
+  const u = readUrgent(dir), was = !!u[name];
+  if (on) u[name] = u[name] || new Date().toISOString(); else delete u[name];
+  fs.writeFileSync(urgentFile(dir) + '.tmp', JSON.stringify(u, null, 2) + '\n'); fs.renameSync(urgentFile(dir) + '.tmp', urgentFile(dir));
+  let notified = null;
+  if (was !== !!on) {
+    const c = chatFor(path.resolve(dir), s.from, s.name);
+    if (c) {
+      appendChat(path.resolve(dir), c.name, 'hero', on
+        ? `🔥 긴급 지정: ${s.title} (시트 ${s.name}) — 하던 일을 안전한 지점까지만 정리하고 이 일부터 처리. SoT 이슈가 있으면 긴급 라벨.`
+        : `긴급 해제: ${s.title} (시트 ${s.name}) — 평소 순서로. SoT 이슈의 긴급 라벨 제거.`);
+      notified = c.name;
+    }
+  }
+  return { ok: true, name, urgent: !!on, notified };
+}
 function listSheets(dir) {
+  const urgent = readUrgent(dir);
   return fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).sort().map(f => {
     const name = f.slice(0, -'-data.js'.length);
     try {
@@ -158,12 +192,13 @@ function listSheets(dir) {
       if (!createdAt) { try { createdAt = fs.statSync(path.join(dir, f)).mtime.toISOString(); } catch { /* ignore */ } }
       const savedAt = saved && saved.savedAt || null;
       return { name, id: sheet.id, title: sheet.title || sheet.id, from: sheet.from || '', createdAt,
-               total: qs.length, picked, savedAt, submitted: !!savedAt };
+               total: qs.length, picked, savedAt, submitted: !!savedAt, urgent: !!urgent[name], urgentAt: urgent[name] || null };
     } catch (e) { return { name, error: String(e.message || e) }; }
   }).sort((a, b) => {
     // queue order: errors first (they need fixing), then pending (newest first), then submitted (latest first)
     const g = x => x.error ? 0 : x.submitted ? 2 : 1;
     if (g(a) !== g(b)) return g(a) - g(b);
+    if (!!a.urgent !== !!b.urgent) return a.urgent ? -1 : 1;   // 🔥 긴급은 자기 묶음 맨 위
     return String(g(a) === 2 ? b.savedAt : b.createdAt || '').localeCompare(String(g(a) === 2 ? a.savedAt : a.createdAt || ''));
   });
 }
@@ -232,7 +267,7 @@ export function listChats(root) {
     const unreadHero = log.filter(m => m.from !== 'hero' && (!meta.heroSeenAt || m.ts > meta.heroSeenAt)).length;   // for hero: session replies not yet seen
     const unreadOwner = log.filter(m => m.from === 'hero' && (!meta.seenAt || m.ts > meta.seenAt)).length;         // for the session: hero messages not yet read
     return { ...meta, hub: !!meta.hub, count: log.length, last, unreadHero, unreadOwner };
-  }).filter(Boolean).sort((a, b) => b.hub - a.hub);
+  }).filter(Boolean).sort((a, b) => (b.hub - a.hub) || (!!b.manager - !!a.manager));   // 허브 → 매니저(meta.manager, 일 분배 세션) → 일반
 }
 function markSeen(root, ch, who) {
   const meta = readChatMeta(root, ch); if (!meta) return null;
@@ -288,6 +323,121 @@ export function listMemos(root) {
   });
 }
 
+/* ── 음성 입력 (STT, 로컬 whisper.cpp) ───────────────────────────────────────────
+   launchd 의 PATH 는 /usr/bin:/bin 뿐이라 brew 경로를 직접 찾는다. 설정은 요청마다 env 에서 읽는다(테스트·교체용). */
+const STT_DIR = path.join(os.homedir(), '.review-sheet');
+const STT_MAX_BYTES = 25 * 1024 * 1024;
+function which(name) {
+  const dirs = (process.env.PATH || '').split(':').concat(['/opt/homebrew/bin', '/usr/local/bin']);
+  for (const d of dirs) {
+    if (!d) continue;   // empty PATH entry = cwd (launchd: often /) — would match a directory like Cellar/ffmpeg
+    const f = path.join(d, name);
+    try { fs.accessSync(f, fs.constants.X_OK); if (fs.statSync(f).isFile()) return f; } catch { /* next */ }
+  }
+  return null;
+}
+export function sttConfig() {
+  const vocabFile = process.env.REVIEW_SHEET_VOCAB || path.join(STT_DIR, 'vocab.txt');
+  let vocab = [];
+  try { vocab = fs.readFileSync(vocabFile, 'utf8').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')); } catch { /* optional */ }
+  return {
+    whisper: process.env.REVIEW_SHEET_WHISPER_BIN || which('whisper-cli'),
+    ffmpeg: process.env.REVIEW_SHEET_FFMPEG || which('ffmpeg'),
+    model: process.env.REVIEW_SHEET_WHISPER_MODEL || path.join(STT_DIR, 'models', 'ggml-large-v3-turbo.bin'),
+    lang: process.env.REVIEW_SHEET_STT_LANG || 'ko',
+    vocabFile, vocab,
+  };
+}
+export function sttStatus(c = sttConfig()) {
+  const missing = [];
+  if (!c.whisper) missing.push('whisper-cli (brew install whisper-cpp)');
+  if (!c.ffmpeg) missing.push('ffmpeg (brew install ffmpeg)');
+  if (!fs.existsSync(c.model)) missing.push('model ' + c.model);
+  return { ready: !missing.length, missing, model: path.basename(c.model), lang: c.lang, vocab: c.vocab.length };
+}
+const run = (bin, args, timeout) => new Promise((resolve, reject) =>
+  execFile(bin, args, { timeout, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) =>
+    err ? reject(new Error(`${path.basename(bin)}: ${String(stderr || err.message).trim().split('\n').slice(-3).join(' | ')}`)) : resolve(stdout)));
+/** 16-bit mono wav 가 거의 무음인가 (RMS < ~-45dBFS) */
+function quiet(wav) {
+  const b = fs.readFileSync(wav); let sum = 0, n = 0;
+  for (let i = 44; i + 1 < b.length; i += 2) { const v = b.readInt16LE(i); sum += v * v; n++; }
+  return !n || Math.sqrt(sum / n) < 180;
+}
+const sttThreads = () => String(Math.max(4, Math.min(8, os.cpus().length - 2)));
+/* 상주 whisper-server — whisper-cli 는 부를 때마다 모델을 새로 읽느라 2초쯤 쓴다(3초 말도 3초 걸림). whisper-cli 옆에 whisper-server 가
+   있으면 127.0.0.1 빈 포트에 한 번 띄워 두고 재사용(짧은 말 ~0.8초), 10분 놀면 내린다(메모리). 없거나 실패하면 whisper-cli 로 떨어진다. */
+const WS_IDLE_MS = 10 * 60e3;
+let ws = null;   // { key, proc, port, ready, idle }
+function wsStop() { if (!ws) return; clearTimeout(ws.idle); try { ws.proc.kill(); } catch { /* gone */ } ws = null; }
+process.on('exit', wsStop);
+const freePort = () => new Promise((resolve, reject) => {
+  const srv = net.createServer(); srv.on('error', reject);
+  srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+});
+export async function sttServer(c = sttConfig()) {
+  const bin = c.whisper && path.join(path.dirname(c.whisper), 'whisper-server');
+  if (!bin || !fs.existsSync(bin)) return null;
+  const key = [bin, c.model, c.lang].join('|');
+  if (ws && ws.key !== key) wsStop();
+  if (!ws) {
+    const port = await freePort();
+    const proc = spawn(bin, ['-m', c.model, '-l', c.lang, '-t', sttThreads(), '--host', '127.0.0.1', '--port', String(port)], { stdio: 'ignore' });
+    const me = ws = { key, proc, port };
+    proc.on('exit', () => { if (ws === me) ws = null; });
+    proc.on('error', () => { if (ws === me) ws = null; });
+    me.ready = (async () => {
+      for (let i = 0; i < 240; i++) {
+        if (ws !== me) throw new Error('whisper-server 종료');
+        try { await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1000) }); return; } catch { /* still loading */ }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      throw new Error('whisper-server 기동 시간 초과');
+    })();
+  }
+  const me = ws;
+  clearTimeout(me.idle); me.idle = setTimeout(() => { if (ws === me) wsStop(); }, WS_IDLE_MS); me.idle.unref();
+  try { await me.ready; return me; } catch { if (ws === me) wsStop(); return null; }
+}
+async function sttServerInfer(me, wav, c, live) {
+  const fd = new FormData();
+  fd.append('file', new Blob([fs.readFileSync(wav)], { type: 'audio/wav' }), 'in.wav');
+  fd.append('response_format', 'text'); fd.append('language', c.lang);
+  fd.append('beam_size', live ? '1' : '5'); fd.append('best_of', live ? '1' : '5');
+  if (c.vocab.length && !live) fd.append('prompt', c.vocab.join(', '));   // 짧은 조각에 단어장을 주면 단어장을 그대로 읊는다
+  const r = await fetch(`http://127.0.0.1:${me.port}/inference`, { method: 'POST', body: fd, signal: AbortSignal.timeout(300e3) });
+  if (!r.ok) throw new Error('whisper-server HTTP ' + r.status);
+  return r.text();
+}
+
+let sttQueue = Promise.resolve();   // one transcription at a time — whisper already uses every core
+/** audio bytes (any ffmpeg-readable container: webm/opus, mp4/aac, wav…) → { text, end }. Local only.
+ *  live = 말하는 중 미리보기: 쌓인 녹음 전체를 받아 from 초 이후만 빠르게(greedy) 적는다 — end(초)를 돌려줘 다음 from 이 된다. */
+export function transcribe(buf, c = sttConfig(), { from = 0, live = false } = {}) {
+  const job = sttQueue.then(async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-stt-'));
+    try {
+      const inp = path.join(tmp, 'in.bin'), wav = path.join(tmp, 'in.wav');
+      fs.writeFileSync(inp, buf);
+      await run(c.ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', inp, ...(from > 0 ? ['-ss', String(from)] : []), '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], 60e3);
+      const sec = Math.max(0, (fs.statSync(wav).size - 44) / 32000), end = Math.round((from + sec) * 100) / 100;
+      if (live && sec < 0.8) return { text: '', end: from };   // 새로 쌓인 소리가 너무 짧다 — 다음 번에
+      if (live && quiet(wav)) return { text: '', end };          // 조용한 조각 — whisper 가 ‘감사합니다’ 를 지어낸다
+      let out = null;
+      const srv = await sttServer(c).catch(() => null);
+      if (srv) out = await sttServerInfer(srv, wav, c, live).catch(() => null);
+      if (out == null) {
+        const args = ['-m', c.model, '-f', wav, '-l', c.lang, '-nt', '-np', '-t', sttThreads(), ...(live ? ['-bs', '1', '-bo', '1'] : [])];
+        if (c.vocab.length && !live) args.push('--prompt', c.vocab.join(', '));
+        out = await run(c.whisper, args, 300e3);
+      }
+      return { text: out.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim(), end };
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  });
+  sttQueue = job.catch(() => {});
+  return job;
+}
+
 function send(res, code, type, body, extra = {}) {
   res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...extra });
   res.end(body);
@@ -312,12 +462,13 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;
 const when = iso => { if(!iso) return ''; const d = new Date(iso); return d.toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}); };
 const row = s => s.error
   ? '<li class="bad"><b>' + esc(s.name) + '</b> — ' + esc(s.error) + '</li>'
-  : '<li class="' + (s.submitted ? 'done' : 'wait') + '"><a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
-    '<span class="rs-badge">' + (s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
+  : '<li class="' + (s.submitted ? 'done' : 'wait') + (s.urgent ? ' urgent' : '') + '"><a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
+    '<span class="rs-badge">' + (s.urgent ? '🔥 긴급 · ' : '') + (s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
     '<small>' + (s.from ? esc(s.from) + ' · ' : '') + s.picked + '/' + s.total + ' 답함' +
-    (s.submitted ? ' · 제출 ' + when(s.savedAt) : (s.createdAt ? ' · 보냄 ' + when(s.createdAt) : '')) + '</small></a></li>';
-const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : '') + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
-  '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : c.hub ? '★ 메인 허브' : '💬 채널') + '</span><b>' + esc(c.title) + '</b>' +
+    (s.submitted ? ' · 제출 ' + when(s.savedAt) : (s.createdAt ? ' · 보냄 ' + when(s.createdAt) : '')) + '</small></a>' +
+    '<button type="button" class="rs-flag' + (s.urgent ? ' on' : '') + '" data-d="' + esc(s.name) + '" aria-pressed="' + !!s.urgent + '" title="' + (s.urgent ? '긴급 해제' : '긴급으로') + '" aria-label="' + (s.urgent ? '긴급 해제' : '긴급으로') + '">🔥</button></li>';
+const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : c.manager ? ' mgr' : ' sess') + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
+  '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : c.hub ? '★ 메인 허브' : c.manager ? '🧭 매니저' : '💬 세션') + '</span><b>' + esc(c.title) + '</b>' +
   '<small>' + esc(c.owner) + (c.last ? ' · ' + esc(c.last.from === 'hero' ? '나' : c.last.from) + ': ' + esc(c.last.text.slice(0, 60)) + (c.last.text.length > 60 ? '…' : '') + ' · ' + when(c.last.ts) : ' · 아직 대화 없음') + '</small></a></li>';
 const memoRow = m => '<li class="memo"><a href="/memo.html?m=' + encodeURIComponent(m.name) + '">' +
   '<span class="rs-badge">📝 메모</span><b>' + esc(m.name === 'hero' ? '나와의 메시지' : m.name) + '</b>' +
@@ -339,6 +490,15 @@ const render = d => {
 render(INIT);
 const refresh = async () => { const b = document.getElementById('rs-refresh'); b.disabled = true; try { const r = await fetch('/api/inbox', {cache:'no-store'}); if(r.ok) render(await r.json()); } catch(_){ document.getElementById('rs-upd').textContent = '갱신 실패 — 서버 확인'; } b.disabled = false; };
 document.getElementById('rs-refresh').addEventListener('click', refresh);
+document.getElementById('rs-list').addEventListener('click', async ev => {   // 🔥 = 긴급 켜기/끄기 (담당 세션 채널에 알림)
+  const b = ev.target.closest('.rs-flag'); if (!b) return;
+  ev.preventDefault(); b.disabled = true;
+  try {
+    const r = await fetch('/__urgent?d=' + encodeURIComponent(b.dataset.d), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: !b.classList.contains('on') }) });
+    if (!r.ok) throw new Error(await r.text());
+  } catch (e) { document.getElementById('rs-upd').textContent = '긴급 표시 실패 — ' + e.message; }
+  await refresh();
+});
 setInterval(refresh, 5000);
 document.addEventListener('visibilitychange', () => { if(!document.hidden) refresh(); });  // 폰: 탭 돌아오면 바로
 </script></html>`;
@@ -399,6 +559,38 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       }
       return send(res, 405, 'text/plain', 'method');
     }
+    if (url.pathname === '/api/stt') {
+      if (req.method === 'GET') {
+        const st = sttStatus();
+        if (st.ready && url.searchParams.get('warm') === '1') sttServer().catch(() => {});   // 🎤 누르는 순간 모델을 미리 올린다
+        return send(res, 200, TYPES['.json'], JSON.stringify(st));
+      }
+      if (req.method !== 'POST') return send(res, 405, 'text/plain', 'method');
+      // audio/* only: a cross-site page can't send that content-type without a preflight we never answer.
+      const ctype = String(req.headers['content-type'] || '');
+      if (!/^(audio|video)\//.test(ctype)) return send(res, 415, TYPES['.json'], JSON.stringify({ error: 'content-type audio/* 필요' }));
+      const c = sttConfig(), st = sttStatus(c);
+      if (!st.ready) return send(res, 503, TYPES['.json'], JSON.stringify({ error: 'STT 준비 안 됨: ' + st.missing.join(', ') }));
+      const chunks = []; let size = 0, over = false;
+      req.on('data', b => {
+        if (over) return;
+        size += b.length;
+        if (size <= STT_MAX_BYTES) return chunks.push(b);
+        over = true; chunks.length = 0;
+        send(res, 413, TYPES['.json'], JSON.stringify({ error: '오디오가 너무 크다 (25MB)' }), { connection: 'close' });
+      });
+      req.on('end', async () => {
+        if (over) return;
+        if (!size) return send(res, 400, TYPES['.json'], JSON.stringify({ error: '빈 오디오' }));
+        const t0 = Date.now();
+        try {
+          const from = Math.max(0, Number(url.searchParams.get('from')) || 0);
+          const { text, end } = await transcribe(Buffer.concat(chunks), c, { from, live: url.searchParams.get('live') === '1' });
+          send(res, 200, TYPES['.json'], JSON.stringify({ text, end, ms: Date.now() - t0 }));
+        } catch (e) { send(res, 500, TYPES['.json'], JSON.stringify({ error: String(e.message || e) })); }
+      });
+      return;
+    }
     const cors = { 'access-control-allow-origin': '*' };
     if (url.pathname === '/api/sheets') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root) }), cors);
     if (url.pathname === '/api/inbox') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root), chats: listChats(root), memos: listMemos(root) }), cors);
@@ -418,6 +610,18 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
           if (typeof j.del === 'string') { const ok = deleteMemo(root, name, j.del); return send(res, ok ? 200 : 404, TYPES['.json'], JSON.stringify({ ok, del: j.del })); }
           send(res, 200, TYPES['.json'], JSON.stringify(sendMemo(root, name, j.text)));
         } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
+      });
+      return;
+    }
+    if (url.pathname === '/__urgent' && req.method === 'POST') {   // ?d=<시트> {on} — 페이지(hero) 전용, CORS 없음
+      const name = url.searchParams.get('d') || '';
+      if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'd=<sheet> ([a-z0-9-])');
+      if (!/^application\/json/.test(String(req.headers['content-type'] || ''))) return send(res, 415, 'text/plain', 'application/json');
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 1e4) req.destroy(); });
+      req.on('end', () => {
+        try { send(res, 200, TYPES['.json'], JSON.stringify(setUrgent(root, name, !!JSON.parse(body || '{}').on))); }
+        catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
       });
       return;
     }
@@ -462,7 +666,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
-    if (rel === '/sheet.html' || rel === '/sheet.css' || rel === '/chat.html' || rel === '/memo.html') return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/mic.js'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
     serveFile(res, file);
@@ -543,7 +747,7 @@ async function main() {
     const port = flags.port || INBOX_PORT;
     fs.mkdirSync(path.join(INBOX, 'answers'), { recursive: true });
     const plist = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.review-sheet.inbox.plist');
-    fs.writeFileSync(plist, launchdPlist(port, flags.lan !== false));
+    fs.writeFileSync(plist, launchdPlist(port, flags.lan === true));   // 기본 127.0.0.1 — 폰은 tailscale serve(HTTPS)로
     console.log(`${plist}\n  → launchctl bootstrap gui/$(id -u) ${plist}   (재설치: bootout 후 bootstrap)\n  → http://127.0.0.1:${port}/`);
     return;
   }
@@ -575,7 +779,7 @@ async function main() {
     return;
   }
   if (cmd === 'ls') {
-    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}`);
+    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}`);
     return;
   }
   if (cmd === 'read' || cmd === 'wait') {
