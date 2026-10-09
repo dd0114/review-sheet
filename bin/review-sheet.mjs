@@ -60,7 +60,7 @@ function usage(code = 2) {
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
-  review-sheet chat ls | read <ch> [--all] [--json] | say <ch> <text…|-> | wait <ch> [--timeout SEC]
+  review-sheet chat ls | read <ch> [--all] [--json] | say <ch> [--re <id>] <text…|-> | wait <ch> [--timeout SEC]   # --re = 그 메시지에 답장(카톡식 인용)
   (메모: http://127.0.0.1:${INBOX_PORT}/memo.html — hero 가 자기한테 보내는 메시지, CLI 없음·세션은 읽지 않는다)
   [dir] omitted → inbox ${INBOX} (one folder for every session; served on :${INBOX_PORT})`);
   process.exit(code);
@@ -72,7 +72,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub') flags[a.slice(2)] = true;
     else if (a === '--port' || a === '--timeout') flags[a.slice(2)] = Number(argv[++i]);
-    else if (a === '--title' || a === '--owner') flags[a.slice(2)] = String(argv[++i] || '');
+    else if (a === '--title' || a === '--owner' || a === '--re') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
@@ -205,7 +205,9 @@ function listSheets(dir) {
 
 /* ── 상시 채널 (chat) ───────────────────────────────────────────────────────────
    inbox/chat/<ch>.json   meta  { name, title, owner, createdAt, seenAt (owner read up to), heroSeenAt }
-   inbox/chat/<ch>.jsonl  one message per line { id, ts, from: 'hero'|<owner>, text, files?: [name] }
+   inbox/chat/<ch>.jsonl  one message per line { id, ts, from: 'hero'|<owner>, text, files?: [name], re?: id }
+   re = reply (카톡식 답글): the id of an earlier message in the same channel. Optional — only when the message answers one
+   specific earlier message; the page shows the quoted original on top of the bubble and tapping it jumps there.
    inbox/chat/<ch>.files/ attached images (page: 📎·paste·drop → POST /__chat/file), served at /chat/<ch>.files/<name>
    The page always posts as 'hero'; the owning session answers with `chat say` and listens with `chat wait`. */
 const chatDir = root => path.join(root, 'chat');
@@ -230,12 +232,15 @@ export function readChatLog(root, ch) {
   try { return fs.readFileSync(chatLogFile(root, ch), 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); }
   catch { return []; }
 }
-export function appendChat(root, ch, from, text, files) {
+const MSG_ID_RE = /^[a-z0-9]{6,24}$/;
+export function appendChat(root, ch, from, text, files, re) {
   const meta = readChatMeta(root, ch); if (!meta) throw new Error(`채널 ${ch} 없음`);
   const msg = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: new Date().toISOString(), from, text: String(text) };
   if (files && files.length) msg.files = files;
-  const last = readChatLog(root, ch).at(-1);   // same sender + same text + same files within 3s = a double send, keep the first
-  if (last && last.from === from && last.text === msg.text && JSON.stringify(last.files || []) === JSON.stringify(msg.files || []) && Date.now() - Date.parse(last.ts) < 3000) return last;
+  const log = readChatLog(root, ch);
+  if (re) { if (!MSG_ID_RE.test(String(re)) || !log.some(m => m.id === re)) throw new Error(`답장 원문 ${re} 없음 — chat read ${ch} --all 의 #id`); msg.re = String(re); }
+  const last = log.at(-1);   // same sender + same text + same files within 3s = a double send, keep the first
+  if (last && last.from === from && last.text === msg.text && (last.re || null) === (msg.re || null) && JSON.stringify(last.files || []) === JSON.stringify(msg.files || []) && Date.now() - Date.parse(last.ts) < 3000) return last;
   fs.appendFileSync(chatLogFile(root, ch), JSON.stringify(msg) + '\n');
   return msg;
 }
@@ -651,7 +656,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
           let msg = null;
           const files = (Array.isArray(j.files) ? j.files : []).filter(f => typeof f === 'string' && FILE_RE.test(f) && fs.existsSync(chatFilePath(root, ch, f)));
           const text = typeof j.text === 'string' ? j.text.trim() : '';
-          if (text || files.length) msg = appendChat(root, ch, 'hero', text, files);   // the page is always hero
+          const re = typeof j.re === 'string' && MSG_ID_RE.test(j.re) && readChatLog(root, ch).some(m => m.id === j.re) ? j.re : undefined;   // unknown original → plain message
+          if (text || files.length) msg = appendChat(root, ch, 'hero', text, files, re);   // the page is always hero
           const meta = markSeen(root, ch, 'hero');
           send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, msg, meta }));
         } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
@@ -708,7 +714,7 @@ async function main() {
   if (cmd === 'chat') {
     const [, sub, ch, ...words] = rest;
     const root = INBOX; fs.mkdirSync(chatDir(root), { recursive: true });
-    const fmt = m => `${m.ts.replace('T', ' ').slice(0, 16)}  ${m.from === 'hero' ? 'hero' : m.from}: ${m.text}` +
+    const fmt = m => `#${m.id} ${m.ts.replace('T', ' ').slice(0, 16)}  ${m.from === 'hero' ? 'hero' : m.from}: ${m.re ? `↩#${m.re} ` : ''}${m.text}` +
       (m.files || []).map(f => `\n  [이미지] ${chatFilePath(root, ch, f)}`).join('');
     if (sub === 'hub') { if (!ch) { const h = hubChat(root); console.log(h ? h.name : '(허브 없음 — chat hub <ch>)'); return; } setHub(root, ch); console.log(`허브 = ${ch}  → http://127.0.0.1:${INBOX_PORT}/hub`); return; }
     if (sub === 'new') { const m = newChat(root, ch, flags.title, flags.owner, flags.hub || !listChats(root).length); console.log(`${chatLogFile(root, m.name)}\n  → http://127.0.0.1:${INBOX_PORT}/chat.html?c=${m.name}`); return; }
@@ -717,7 +723,7 @@ async function main() {
     if (sub === 'say') {
       const text = words[0] === '-' || !words.length ? fs.readFileSync(0, 'utf8').trim() : words.join(' ');
       if (!text) { console.error('text 없음'); process.exit(2); }
-      const meta = readChatMeta(root, ch); const m = appendChat(root, ch, meta.owner, text); markSeen(root, ch, 'owner');
+      const meta = readChatMeta(root, ch); const m = appendChat(root, ch, meta.owner, text, undefined, flags.re); markSeen(root, ch, 'owner');
       console.log(fmt(m)); return;
     }
     if (sub === 'read' || sub === 'wait') {

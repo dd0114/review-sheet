@@ -3,7 +3,7 @@
 사람 ↔ Claude Code 세션 소통용 **로컬 받은편지함**. 의존성 없음, Node 18+, CLI 하나.
 
 - **결정 시트** — 세션이 질문·선택지·추천을 데이터 파일로 쓰면, 사람은 브라우저(폰 OK)에서 탭으로 고르고 메모한 뒤 저장. 답은 `answers/<id>.json` 으로 떨어지고 세션이 마크다운으로 읽어 간다. 대화창에서 "A/B 중 뭐요?" 를 여러 번 주고받는 대신 한 페이지로 보내고 한 번에 받는다.
-- **상시 채널(chat)** — 사람과 특정 세션 사이의 메신저 페이지(말풍선·Enter 전송·읽음 표시·이미지 첨부 📎/붙여넣기/끌어놓기). 세션은 `chat wait` 를 백그라운드로 걸어 두고, 메시지가 오면 답하고 다시 건다.
+- **상시 채널(chat)** — 사람과 특정 세션 사이의 메신저 페이지(말풍선·Enter 전송·읽음 표시·이미지 첨부 📎/붙여넣기/끌어놓기·카톡식 답장 ↩ — 원문 인용, 누르면 이동). 세션은 `chat wait` 를 백그라운드로 걸어 두고, 메시지가 오면 답하고 다시 건다.
 - **메인 허브** — 채널 하나를 메인 세션의 허브로 지정(`--hub`, 첫 채널은 자동). 받은편지함 맨 위에 ★ 고정, `/hub` 가 바로 그 채널. 프로젝트 매니저·워커 채널은 그 아래.
 - **🎤 음성 입력** — 채팅 입력칸·시트 메모칸·메모 옆 마이크(탭 = 녹음, 다시 탭 = 전사). 전사는 **이 맥에서만**(ffmpeg → whisper.cpp `large-v3-turbo`, 한국어, `~/.review-sheet/vocab.txt` 단어장). 폰 마이크는 HTTPS 가 필요해 `bin/tailscale-serve.sh on` 으로 tailnet 안에서만 감싼다.
 - **메모(memo)** — hero 가 자기한테 보내는 답장 없는 1대1 메시지(`/memo.html`). 채널 모양으로 쌓이고, **말풍선을 누르면 복사**된다. 저장·초안 개념 없음, `inbox/memo/hero.jsonl` 한 줄 = 한 메시지. **세션은 읽지도 쓰지도 않는다** — hero 가 자기와 대화하는 칸이다.
@@ -36,6 +36,7 @@ review-sheet ls                       # 대기 / 제출됨
 review-sheet chat new main --title "메인 허브" --owner main --hub   # → http://127.0.0.1:5600/hub
 review-sheet chat wait main --timeout 14400   # 세션: 사람이 쓸 때까지 블록 → chat say main "…" 로 답 → 다시 wait
 review-sheet chat say main "답장"
+review-sheet chat say main --re <id> "그 메시지에 대한 답"   # 카톡식 답장 — wait/read 출력 맨 앞 #id. 답장일 때만, 강제 아님
 node --test test/
 ```
 

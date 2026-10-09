@@ -115,6 +115,7 @@ hero 는 탭 하나만 둔다(5초마다 자동 갱신). 세션마다 서버·�
   review-sheet chat new <ch> --title "<표시 이름>" --owner <세션>   # 1회. inbox/chat/<ch>.json + .jsonl
   review-sheet chat wait <ch> --timeout 14400                      # 백그라운드. hero 새 메시지가 오면 출력하고 exit 0 (읽음 처리) → 답하고 다시 wait
   review-sheet chat say  <ch> "<답>"      (또는  … say <ch> - <<< "$text")   # 소유자 이름으로 기록
+  review-sheet chat say  <ch> --re <id> "<답>"                    # 답장(카톡식 인용) — wait/read 출력 맨 앞의 #id 가 원문. 답장일 때만
   review-sheet chat read <ch> [--all] [--json]                     # 안 읽은 hero 메시지(또는 전부)
   review-sheet chat ls
 hero 쪽
@@ -135,6 +136,7 @@ review-sheet chat hub <ch>       # 허브 바꾸기(하나만)
 - hero 가 어디로 말할지 모르면 허브로 말한다 → 메인 세션이 해당 세션에 전달한다.
 
 규칙
+- **답장(`--re`)은 강제가 아니다** (hero 2026-10-09): hero 가 한 번에 요구를 여러 개 보냈을 때 *어느 요구에 대한 답인지* 를 가리키는 용도다. 그 메시지 하나에 대한 답일 때만 `--re <id>` 를 붙이고, 여러 요구를 한꺼번에 답하거나 애매하면 평문으로 보낸다. 페이지에서는 hero 도 말풍선 옆 ↩ 로 답장할 수 있다 — 세션은 `re` 가 붙은 hero 메시지(`↩#id`)를 그 원문에 대한 말로 읽는다.
 - 세션은 채널에 **항상 `wait` 를 걸어 둔다**(백그라운드 1개). 끝나면(hero 메시지 수신 / 타임아웃 exit 3) 답하고 즉시 다시 건다. 컴팩션·재기동 후에도 첫 할 일은 `chat read <ch>` → 답 → `wait` 재장전.
 - 답은 짧게, 대화창 말투 그대로. 긴 결정은 시트로 보내고 채널엔 링크만.
 - `wait` 는 소유 세션만 건다. 다른 세션 채널의 `say`/`read` 를 대신 하지 않는다(읽음 표시가 거짓이 된다).
@@ -236,10 +238,10 @@ hero 체크리스트 (1회): Tailscale admin 콘솔 → **DNS → HTTPS Certific
 | `chat new <ch> [--title T] [--owner S]` | 상시 채널 생성(inbox 고정) |
 | `chat hub [<ch>]` | 메인 허브 채널 보기/지정 — 받은편지함 맨 위 ★, `/hub` 리다이렉트 |
 | `chat wait <ch> [--timeout SEC]` | hero 의 새 메시지까지 블록(exit 3 = 타임아웃) → 출력 + 읽음 처리. 첨부 이미지는 `[이미지] <절대경로>` 줄로 나온다 → Read 로 열어 본다 |
-| `chat say <ch> <text…\|->` | 소유자 이름으로 답 기록 (`-` = stdin) |
-| `chat read <ch> [--all] [--json]` · `chat ls` | 안 읽은 메시지 / 전부 · 채널 목록(미읽 수) |
+| `chat say <ch> [--re <id>] <text…\|->` | 소유자 이름으로 답 기록 (`-` = stdin). `--re` = 그 메시지에 답장 — 말풍선 위에 원문 인용, 누르면 원문으로 이동 |
+| `chat read <ch> [--all] [--json]` · `chat ls` | 안 읽은 메시지 / 전부 · 채널 목록(미읽 수). 줄마다 `#<id>` 로 시작 — `--re` 에 쓴다 |
 
-HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모 건수), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text}`(페이지 = hero), 전부 CORS 열림. 메모: `GET /api/memo?m=` · `POST /__memo?m=` `{text}` 보냄 / `{del: id}` 지움 (CORS 없음 — 페이지만 쓴다, 세션 금지). `GET/POST /api/stt`(음성 입력, CORS 없음).
+HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모 건수), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text, files?, re?}`(페이지 = hero; `re` = 답장 원문 id, 없는 id 면 평문으로 저장), 전부 CORS 열림. 메모: `GET /api/memo?m=` · `POST /__memo?m=` `{text}` 보냄 / `{del: id}` 지움 (CORS 없음 — 페이지만 쓴다, 세션 금지).
 
 의존성 없음, Node 18+. 테스트: `node --test <SKILL_DIR>/test/`.
 
