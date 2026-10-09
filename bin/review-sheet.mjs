@@ -283,6 +283,38 @@ export function listMemos(root) {
   });
 }
 
+/* Worker board — who is working on what, supplied from outside (review-sheet knows nothing of tmux/claude).
+ * $REVIEW_SHEET_WORKERS=<url> → the server proxies that URL; else inbox/workers.json; else an empty board.
+ * A dead URL falls back to the file and says why in `error`. Format: SKILL.md §일꾼 보드. */
+export const WORKER_STATES = ['working', 'waiting_input', 'reply_ready', 'delegating', 'gone'];
+export function workersFile(root) { return path.join(root, 'workers.json'); }
+function normWorkers(doc, source) {
+  const d = doc && typeof doc === 'object' ? doc : {};
+  const ok = x => x && typeof x === 'object' && typeof x.id === 'string';
+  return {
+    generatedAt: typeof d.generatedAt === 'string' ? d.generatedAt : null,
+    groups: Array.isArray(d.groups) ? d.groups.filter(ok) : [],
+    workers: Array.isArray(d.workers) ? d.workers.filter(ok) : [],
+    source,
+  };
+}
+export async function readWorkers(root, url = process.env.REVIEW_SHEET_WORKERS) {
+  const errs = [];
+  if (url) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(3000), headers: { accept: 'application/json' } });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return normWorkers(await r.json(), 'url');
+    } catch (e) { errs.push('url: ' + (e.message || e)); }
+  }
+  let board = null;
+  try { board = normWorkers(JSON.parse(fs.readFileSync(workersFile(root), 'utf8')), 'file'); }
+  catch (e) { if (e.code !== 'ENOENT') errs.push('file: ' + (e.message || e)); }
+  board = board || normWorkers(null, 'none');
+  if (errs.length) board.error = errs.join('; ');
+  return board;
+}
+
 function send(res, code, type, body, extra = {}) {
   res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...extra });
   res.end(body);
@@ -298,9 +330,13 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 function indexHtml(dir) {
   const init = JSON.stringify({ dir, sheets: listSheets(dir), chats: listChats(path.resolve(dir)), memos: listMemos(path.resolve(dir)) }).replace(/</g, '\\u003c');
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>review-sheet</title><link rel="stylesheet" href="/sheet.css">
+<title>review-sheet</title><link rel="stylesheet" href="/sheet.css"><link rel="stylesheet" href="/workers.css">
 <body class="rs-page"><main><div class="eyebrow">REVIEW-SHEET · 받은편지함</div><h1>답변 시트</h1>
-<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button></p><div id="rs-list"></div></main>
+<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button></p>
+<button type="button" class="wb-strip" id="wb-strip" aria-expanded="false" hidden><span>🏗</span><span id="wb-sum"></span><span class="cnt"><span class="err" id="wb-err"></span> <span class="chev">▾</span></span></button>
+<div class="wb-panel wb-list" id="wb-panel" hidden><div class="wb-bar"><span class="sp">방별 · 방 안은 🔴 먼저 · 탭하면 카드</span><a href="/workers.html"><button type="button">⤢ 크게 보기</button></a></div><div id="wb-board"></div></div>
+<div id="rs-list"></div></main>
+<script src="/workers.js"></script>
 <script>
 const INIT = ${init};
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -332,7 +368,24 @@ const render = d => {
   document.title = (n ? '(' + n + ') ' : '') + 'review-sheet';
 };
 render(INIT);
-const refresh = async () => { const b = document.getElementById('rs-refresh'); b.disabled = true; try { const r = await fetch('/api/inbox', {cache:'no-store'}); if(r.ok) render(await r.json()); } catch(_){ document.getElementById('rs-upd').textContent = '갱신 실패 — 서버 확인'; } b.disabled = false; };
+// 일꾼 보드 — 공급자(REVIEW_SHEET_WORKERS / inbox/workers.json)가 없으면 띠 자체를 숨긴다. 펼침 여부는 이 브라우저에 기억.
+const WB = window.WorkerBoard, wbStrip = document.getElementById('wb-strip'), wbPanel = document.getElementById('wb-panel');
+const wbKey = 'rs-workers-open', wbOpen = () => { try { return localStorage.getItem(wbKey) === '1'; } catch(_){ return false; } };
+const wbShow = open => { wbPanel.hidden = !open; wbStrip.setAttribute('aria-expanded', open); try { localStorage.setItem(wbKey, open ? '1' : '0'); } catch(_){} };
+wbStrip.addEventListener('click', () => wbShow(wbPanel.hidden));
+const workers = async () => {
+  try {
+    const b = await WB.fetchBoard();
+    if (b.source === 'none' && !b.workers.length) { wbStrip.hidden = wbPanel.hidden = true; return; }
+    if (wbStrip.hidden) { wbStrip.hidden = false; wbShow(wbOpen()); }
+    document.getElementById('wb-sum').textContent = WB.summary(b);
+    document.getElementById('wb-err').textContent = b.error ? '공급 오류' : '';
+    wbStrip.title = b.error || '';
+    WB.render(document.getElementById('wb-board'), b);
+  } catch(_){}
+};
+WB.loadSprites('/sprites/').then(workers);
+const refresh = async () => { workers(); const b = document.getElementById('rs-refresh'); b.disabled = true; try { const r = await fetch('/api/inbox', {cache:'no-store'}); if(r.ok) render(await r.json()); } catch(_){ document.getElementById('rs-upd').textContent = '갱신 실패 — 서버 확인'; } b.disabled = false; };
 document.getElementById('rs-refresh').addEventListener('click', refresh);
 setInterval(refresh, 5000);
 document.addEventListener('visibilitychange', () => { if(!document.hidden) refresh(); });  // 폰: 탭 돌아오면 바로
@@ -416,6 +469,10 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       });
       return;
     }
+    if (url.pathname === '/api/workers') {   // no CORS: the board carries what sessions were told and said
+      readWorkers(root).then(b => send(res, 200, TYPES['.json'], JSON.stringify(b)), e => send(res, 500, 'text/plain; charset=utf-8', String(e.message || e)));
+      return;
+    }
     if (url.pathname === '/hub') { const h = hubChat(root); return h ? send(res, 302, 'text/plain', '', { location: '/chat.html?c=' + encodeURIComponent(h.name) }) : send(res, 302, 'text/plain', '', { location: '/' }); }
     if (url.pathname === '/api/chats') return send(res, 200, TYPES['.json'], JSON.stringify({ chats: listChats(root) }), cors);
     if (url.pathname === '/api/chat') {
@@ -456,7 +513,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
-    if (rel === '/sheet.html' || rel === '/sheet.css' || rel === '/chat.html' || rel === '/memo.html') return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/workers.html', '/workers.css', '/workers.js'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (/^\/sprites\/[a-z0-9-]+\.(png|json)$/.test(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));   // 일꾼 스프라이트시트 + 좌표
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
     serveFile(res, file);
@@ -483,7 +541,8 @@ function launchdPlist(port, lan) {
 <plist version="1.0"><dict>
   <key>Label</key><string>com.review-sheet.inbox</string>
   <key>ProgramArguments</key><array>${args.map(a => `<string>${esc(a)}</string>`).join('')}</array>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>${process.env.REVIEW_SHEET_WORKERS ? `
+  <key>EnvironmentVariables</key><dict><key>REVIEW_SHEET_WORKERS</key><string>${esc(process.env.REVIEW_SHEET_WORKERS)}</string></dict>` : ''}
   <key>StandardErrorPath</key><string>${esc(path.join(path.dirname(INBOX), 'inbox.err.log'))}</string>
 </dict></plist>
 `;
