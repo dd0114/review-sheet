@@ -650,7 +650,12 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       const ch = url.searchParams.get('c') || '';
       if (!ID_RE.test(ch)) return send(res, 400, 'text/plain', 'c=<channel> required');
       const meta = readChatMeta(root, ch); if (!meta) return send(res, 404, 'text/plain', 'no such channel');
-      return send(res, 200, TYPES['.json'], JSON.stringify({ meta, messages: readChatLog(root, ch) }), cors);
+      // limit=N → 최근 N개만(hero 2026-10-11 "대화도 다 띄우지 마, 필요할 때 로드"). total 은 전체 개수, refs 는 잘린 범위 밖 답장 원문
+      const all = readChatLog(root, ch), limit = Number(url.searchParams.get('limit')) || 0;
+      if (!limit) return send(res, 200, TYPES['.json'], JSON.stringify({ meta, messages: all, total: all.length }), cors);
+      const messages = all.slice(-limit), ids = new Set(messages.map(m => m.id)), refs = {};
+      for (const m of messages) if (m.re && !ids.has(m.re)) { const q = all.find(x => x.id === m.re); if (q) refs[q.id] = q; }
+      return send(res, 200, TYPES['.json'], JSON.stringify({ meta, messages, total: all.length, refs }), cors);
     }
     if (url.pathname === '/__chat/file' && req.method === 'POST') {   // raw image body → inbox/chat/<ch>.files/<name>
       const ch = url.searchParams.get('c') || '';
