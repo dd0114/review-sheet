@@ -38,6 +38,7 @@ const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;',
 const t = iso => new Date(iso).toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'});
 const linkify = s => e(s).replace(/(https?:\/\/[^\s<]+)/g, u => '<a href="' + u + '" target="_blank" rel="noopener">' + u + '</a>').replace(/\n/g, '<br>');
 let meta = null, lastKey = '', first = true;
+const STEP = 50; let shown = STEP, total = 0, refs = {};   // 최근 shown 개만 받는다. 위의 '이전 대화 더 보기' 로 STEP 씩 늘림
 const log = document.getElementById('c-log'), upd = document.getElementById('c-upd');
 // 로그가 자체 스크롤이면 로그를, 아니면(페이지가 늘어나는 레이아웃) 창을 맨 아래로
 const pageEl = document.scrollingElement || document.documentElement;
@@ -47,15 +48,16 @@ const render = (m, msgs) => {
   meta = m;
   document.title = m.title; document.getElementById('c-title').textContent = m.title;
   document.getElementById('c-lede').textContent = m.owner + ' 와 직접 대화 · 세션은 "chat wait" 로 받고 답한다';
-  const key = msgs.length + ':' + (msgs.length ? msgs[msgs.length - 1].id : '') + ':' + (m.seenAt || '');
+  const key = msgs.length + ':' + (msgs.length ? msgs[0].id + ':' + msgs[msgs.length - 1].id : '') + ':' + (m.seenAt || '');
   if (key === lastKey) return; lastKey = key;
   const atBottom = nearBottom();
-  const byId = {}; for (const x of msgs) byId[x.id] = x; window.__msgs = byId;
+  const byId = { ...refs }; for (const x of msgs) byId[x.id] = x; window.__msgs = byId;
+  const keep = more ? document.querySelector('#c-log .c-msg') : null, keepTop = keep ? keep.getBoundingClientRect().top : 0;
   // 답장(x.re): 말풍선 맨 위에 원문 한 줄 인용 — 누르면 원문으로 이동(아래 click). 원문이 지워졌으면 글만
   const quote = x => { if (!x.re) return ''; const q = byId[x.re]; const who = !q ? '' : q.from === 'hero' ? '나' : q.from;
     const txt = !q ? '(원문 없음)' : (q.text || '').replace(/\s+/g, ' ').trim() || ((q.files || []).length ? '📷 사진' : '');
     return '<a class="c-quote" href="#m-' + e(x.re) + '" data-to="' + e(x.re) + '"><span class="c-qwho">↩ ' + (who ? e(who) + ' 에게 답장' : '답장') + '</span><span class="c-qtxt">' + e(txt) + '</span></a>'; };
-  let h = '', day = '';
+  let h = total > msgs.length ? '<button type="button" class="rs-refresh c-more" id="c-more">이전 대화 더 보기 (' + (total - msgs.length) + ')</button>' : '', day = '';
   for (const x of msgs) {
     const d = new Date(x.ts).toLocaleDateString('ko-KR'); if (d !== day) { day = d; h += '<div class="c-day">' + e(d) + '</div>'; }
     const mine = x.from === 'hero';
@@ -63,14 +65,15 @@ const render = (m, msgs) => {
       '<div class="c-bubble">' + quote(x) + (x.files || []).map(f => { const u = '/chat/' + encodeURIComponent(CH) + '.files/' + encodeURIComponent(f); return '<a href="' + u + '" target="_blank" rel="noopener"><img class="c-img" src="' + u + '" alt="" loading="lazy"></a>'; }).join('') + linkify(x.text) + '</div><div class="c-meta">' + t(x.ts) + (mine && m.seenAt && x.ts <= m.seenAt ? ' · 읽음' : '') + ' <button type="button" class="c-re" data-re="' + e(x.id) + '" title="이 메시지에 답장" aria-label="답장">↩</button></div></div>';
   }
   log.innerHTML = h || '<div class="c-day">아직 대화 없음 — 아래에 적어 보내면 세션이 받는다</div>';
+  if (keep) { more = false; const k = document.getElementById(keep.id); if (k) { const dy = k.getBoundingClientRect().top - keepTop; log.scrollTop += dy; window.scrollBy(0, dy); } return; }   // 더 보기: 보던 자리 유지
   if (atBottom || first) { first = false; toBottom(); requestAnimationFrame(toBottom); }
 };
 const load = async (seen) => {
   try {
     if (seen) await fetch('/__chat?c=' + encodeURIComponent(CH), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-    const r = await fetch('/api/chat?c=' + encodeURIComponent(CH), { cache: 'no-store' });
+    const r = await fetch('/api/chat?c=' + encodeURIComponent(CH) + '&limit=' + shown, { cache: 'no-store' });
     if (!r.ok) { log.innerHTML = '<div class="c-day">채널 없음: ' + e(CH) + '</div>'; return; }
-    const j = await r.json(); render(j.meta, j.messages);
+    const j = await r.json(); total = j.total || j.messages.length; refs = j.refs || {}; render(j.meta, j.messages);
     upd.textContent = '갱신 ' + new Date().toLocaleTimeString('ko-KR');
   } catch (_) { upd.textContent = '갱신 실패 — 서버 확인'; }
 };
@@ -100,9 +103,13 @@ let replyTo = null;
 const replyBar = document.getElementById('c-reply'), replyTxt = document.getElementById('c-reply-t');
 const setReply = x => { replyTo = x; replyBar.hidden = !x; if (x) { replyTxt.textContent = (x.from === 'hero' ? '나' : x.from) + ' 에게 답장 · ' + ((x.text || '').replace(/\s+/g, ' ').trim() || '📷 사진'); input.focus(); } };
 document.getElementById('c-reply-x').addEventListener('click', () => setReply(null));
+let more = false;
 log.addEventListener('click', ev => {
+  if (ev.target.id === 'c-more') { ev.target.disabled = true; shown += STEP; more = true; load(false); return; }
   const q = ev.target.closest('.c-quote');
-  if (q) { ev.preventDefault(); const el = document.getElementById('m-' + q.dataset.to); if (!el) return;
+  if (q) { ev.preventDefault(); let el = document.getElementById('m-' + q.dataset.to);
+    if (!el && shown < total) { shown = total; lastKey = ''; return load(false).then(() => { const x = document.getElementById('m-' + q.dataset.to); if (x) { x.scrollIntoView({ block: 'center' }); x.classList.add('flash'); setTimeout(() => x.classList.remove('flash'), 1600); } }); }   // 원문이 아직 안 불러온 범위면 전부 받아서 이동
+    if (!el) return;
     el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); return; }
   const b = ev.target.closest('.c-re');
   if (b) { const r = (window.__msgs || {})[b.dataset.re]; if (r) setReply(r); }
