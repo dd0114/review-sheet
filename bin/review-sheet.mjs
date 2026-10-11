@@ -179,10 +179,17 @@ export function setUrgent(dir, name, on) {
   }
   return { ok: true, name, urgent: !!on, notified };
 }
+/* 시트 요약 캐시 (hero 2026-10-11 "리뷰시트 느려졌어") — 시트가 500개를 넘자 받은편지함을 열 때마다(그리고 5초 새로고침마다)
+   모든 data.js 를 vm 으로 돌리고 answers 를 읽어 1초 넘게 걸렸다. data.js·answers 의 mtime 이 그대로면 지난 요약을 쓴다. */
+const summaryCache = new Map();   // <dir>/<name> → { key, sum }
+const mtimeOf = f => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } };
 function listSheets(dir) {
   const urgent = readUrgent(dir);
   return fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).sort().map(f => {
     const name = f.slice(0, -'-data.js'.length);
+    const ck = path.join(path.resolve(dir), name), hit = summaryCache.get(ck), dataM = mtimeOf(path.join(dir, f));
+    if (hit && hit.dataM === dataM && (hit.sum.error || hit.ansM === mtimeOf(answersFile(dir, hit.sum.id))))
+      return hit.sum.error ? hit.sum : { ...hit.sum, urgent: !!urgent[name], urgentAt: urgent[name] || null };
     try {
       const sheet = loadSheet(dir, name);
       const saved = readAnswers(dir, sheet.id);
@@ -191,9 +198,11 @@ function listSheets(dir) {
       let createdAt = sheet.createdAt || null;
       if (!createdAt) { try { createdAt = fs.statSync(path.join(dir, f)).mtime.toISOString(); } catch { /* ignore */ } }
       const savedAt = saved && saved.savedAt || null;
-      return { name, id: sheet.id, title: sheet.title || sheet.id, from: sheet.from || '', createdAt,
-               total: qs.length, picked, savedAt, submitted: !!savedAt, urgent: !!urgent[name], urgentAt: urgent[name] || null };
-    } catch (e) { return { name, error: String(e.message || e) }; }
+      const sum = { name, id: sheet.id, title: sheet.title || sheet.id, from: sheet.from || '', createdAt,
+               total: qs.length, picked, savedAt, submitted: !!savedAt };
+      summaryCache.set(ck, { dataM, ansM: mtimeOf(answersFile(dir, sheet.id)), sum });
+      return { ...sum, urgent: !!urgent[name], urgentAt: urgent[name] || null };
+    } catch (e) { const sum = { name, error: String(e.message || e) }; summaryCache.set(ck, { dataM, sum }); return sum; }
   }).sort((a, b) => {
     // queue order: errors first (they need fixing), then pending (newest first), then submitted (latest first)
     const g = x => x.error ? 0 : x.submitted ? 2 : 1;
@@ -201,6 +210,13 @@ function listSheets(dir) {
     if (!!a.urgent !== !!b.urgent) return a.urgent ? -1 : 1;   // 🔥 긴급은 자기 묶음 맨 위
     return String(g(a) === 2 ? b.savedAt : b.createdAt || '').localeCompare(String(g(a) === 2 ? a.savedAt : a.createdAt || ''));
   });
+}
+
+/* 받은편지함 첫 화면: 답 기다리는 시트는 전부, 제출된 시트는 최근 RECENT_DONE 개만. 나머지는 '지난 시트 더 보기'(all=1) 때. */
+const RECENT_DONE = 20;
+function inboxSheets(dir, all) {
+  const sheets = listSheets(dir), done = sheets.filter(s => !s.error && s.submitted);
+  return { sheets: all ? sheets : sheets.filter(s => s.error || !s.submitted).concat(done.slice(0, RECENT_DONE)), doneTotal: done.length, all: !!all || done.length <= RECENT_DONE };
 }
 
 /* ── 상시 채널 (chat) ───────────────────────────────────────────────────────────
@@ -451,7 +467,7 @@ function serveFile(res, file) {
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 function indexHtml(dir) {
-  const init = JSON.stringify({ dir, sheets: listSheets(dir), chats: listChats(path.resolve(dir)), memos: listMemos(path.resolve(dir)) }).replace(/</g, '\\u003c');
+  const init = JSON.stringify({ dir, ...inboxSheets(dir, false), chats: listChats(path.resolve(dir)), memos: listMemos(path.resolve(dir)) }).replace(/</g, '\\u003c');
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>review-sheet</title><link rel="stylesheet" href="/sheet.css">
 <body class="rs-page"><main><div class="eyebrow">REVIEW-SHEET · 받은편지함</div><h1>답변 시트</h1>
@@ -481,15 +497,18 @@ const render = d => {
     (chats.length ? '<h2>상시 채널 <span class="rs-n rs-n-chat">' + chats.reduce((a, c) => a + c.unreadHero, 0) + '</span></h2><ul class="rs-index">' + chats.map(chatRow).join('') + '</ul>' : '') +
     '<h2>답 기다리는 중 <span class="rs-n">' + wait.length + '</span></h2><ul class="rs-index">' +
     (wait.map(row).join('') || '<li class="empty">기다리는 시트 없음</li>') + '</ul>' +
-    '<h2 class="rs-done-h">제출됨 <span class="rs-n">' + done.length + '</span></h2><ul class="rs-index">' +
-    (done.map(row).join('') || '<li class="empty">아직 없음</li>') + '</ul>';
+    '<h2 class="rs-done-h">제출됨 <span class="rs-n">' + (d.doneTotal ?? done.length) + '</span></h2><ul class="rs-index">' +
+    (done.map(row).join('') || '<li class="empty">아직 없음</li>') + '</ul>' +
+    (d.all === false ? '<button type="button" class="rs-refresh rs-more" id="rs-more">지난 시트 더 보기 (' + (d.doneTotal - done.length) + ')</button>' : '');
   document.getElementById('rs-upd').textContent = '갱신 ' + new Date().toLocaleTimeString('ko-KR');
   const n = wait.length + chats.reduce((a, c) => a + c.unreadHero, 0);
   document.title = (n ? '(' + n + ') ' : '') + 'review-sheet';
 };
 render(INIT);
-const refresh = async () => { const b = document.getElementById('rs-refresh'); b.disabled = true; try { const r = await fetch('/api/inbox', {cache:'no-store'}); if(r.ok) render(await r.json()); } catch(_){ document.getElementById('rs-upd').textContent = '갱신 실패 — 서버 확인'; } b.disabled = false; };
+let showAll = false;   // '지난 시트 더 보기' 누르면 그 뒤 새로고침도 전부
+const refresh = async () => { const b = document.getElementById('rs-refresh'); b.disabled = true; try { const r = await fetch('/api/inbox' + (showAll ? '?all=1' : ''), {cache:'no-store'}); if(r.ok) render(await r.json()); } catch(_){ document.getElementById('rs-upd').textContent = '갱신 실패 — 서버 확인'; } b.disabled = false; };
 document.getElementById('rs-refresh').addEventListener('click', refresh);
+document.getElementById('rs-list').addEventListener('click', ev => { if (ev.target.id === 'rs-more') { ev.target.disabled = true; showAll = true; refresh(); } });
 document.getElementById('rs-list').addEventListener('click', async ev => {   // 🔥 = 긴급 켜기/끄기 (담당 세션 채널에 알림)
   const b = ev.target.closest('.rs-flag'); if (!b) return;
   ev.preventDefault(); b.disabled = true;
@@ -593,7 +612,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     const cors = { 'access-control-allow-origin': '*' };
     if (url.pathname === '/api/sheets') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root) }), cors);
-    if (url.pathname === '/api/inbox') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, sheets: listSheets(root), chats: listChats(root), memos: listMemos(root) }), cors);
+    if (url.pathname === '/api/inbox') return send(res, 200, TYPES['.json'], JSON.stringify({ dir: root, ...inboxSheets(root, url.searchParams.get('all') === '1'), chats: listChats(root), memos: listMemos(root) }), cors);
     if (url.pathname === '/api/memo') {   // no CORS: hero's own, other dashboards don't get to read it
       const name = url.searchParams.get('m') || MEMO_DEFAULT;
       if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'm=<name> ([a-z0-9-])');
