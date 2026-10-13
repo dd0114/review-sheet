@@ -217,6 +217,7 @@ export function renderMarkdown(sheet, saved, dir) {
   const A = (saved && saved.answers) || {};
   const out = [`## ${sheet.title || sheet.id} — 답변`, ''];
   out.push(saved && saved.savedAt ? `저장 ${saved.savedAt} · sheet \`${sheet.id}\`` : `(아직 저장된 답변 없음) · sheet \`${sheet.id}\``, '');
+  if (askOf(saved)) out.push(`> **hero 추가 질문** — 채팅으로 답할 것: ${askOf(saved).replace(/\n/g, ' ')}`, '');
   let n = 0, picked = 0;
   for (const s of sheet.sections) {
     const title = [s.code, s.title].filter(Boolean).join(' · ');
@@ -254,6 +255,15 @@ function chatFor(root, from, sheetName) {
   if (from) { const c = all.find(c => c.name === from) || all.find(c => c.owner === from || String(c.owner).split(':')[0] === from); if (c) return c; }
   return all.filter(c => String(sheetName).startsWith(c.name + '-')).sort((a, b) => b.name.length - a.name.length)[0] || null;
 }
+/* 추가 질문 (hero 2026-10-13) — answers._ask.memo. 새로 쓰거나 바뀌면 담당 세션 채널에 hero 이름으로 알림, read 맨 위에 뜬다. */
+const askOf = saved => (saved && saved.answers && saved.answers._ask && typeof saved.answers._ask.memo === 'string' && saved.answers._ask.memo.trim()) || '';
+function notifyAsk(root, id, text) {
+  const s = listSheets(root).find(x => !x.error && x.id === id); if (!s) return null;
+  const c = chatFor(path.resolve(root), s.from, s.name); if (!c) return null;
+  appendChat(path.resolve(root), c.name, 'hero', `추가 질문 (시트 ${s.name} · ${s.title}): ${text}\n— 채팅으로 답할 것. 답이 일을 바꾸면 SoT 이슈에도 한 줄.`);
+  return c.name;
+}
+
 export function setUrgent(dir, name, on) {
   const s = listSheets(dir).find(x => !x.error && x.name === name); if (!s) throw new Error(`시트 ${name} 없음`);
   const u = readUrgent(dir), was = !!u[name];
@@ -681,9 +691,11 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
             for (const a of Object.values(json.answers || {})) if (a && typeof a === 'object') { const f = cleanFiles(root, id, a.files); if (f.length) a.files = f; else delete a.files; }
             json.savedAt = new Date().toISOString();
             const file = answersFile(root, id);
+            const prevAsk = askOf(readAnswers(root, id));
             fs.writeFileSync(file + '.tmp', JSON.stringify(json, null, 2) + '\n');
             fs.renameSync(file + '.tmp', file);
-            send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, savedAt: json.savedAt, file }));
+            const notified = askOf(json) && askOf(json) !== prevAsk ? notifyAsk(root, id, askOf(json)) : null;
+            send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, savedAt: json.savedAt, file, notified }));
           } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
         });
         return;
