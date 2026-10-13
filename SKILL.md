@@ -92,6 +92,8 @@ hero 는 탭 하나만 둔다(5초마다 자동 갱신). 세션마다 서버·�
 3. 대기   node <SKILL_DIR>/bin/review-sheet.mjs wait <이름> --timeout 3600   (제출되면 마크다운으로 출력, exit 0)
           또는 hero 가 "제출했어" 라고 하면  … read <이름>
 4. 기록   read 출력 → SoT (이슈 코멘트 "hero 답변 N" / 결정 원장). 해석 한 줄. 되물을 것은 <이름>b 시트로 (원칙 4).
+4b. 배정  … assign <이름> <이슈#> <담당 창>   — 답을 받으면 후속 일을 누가 하는지 적어야 시트가 닫힌다(정한 일이 빠지지 않게, 2026-10-13).
+          매시 점검: … unassigned [--prefix <도메인>-]  → 나오는 시트(배정없음·답바뀜)는 담당을 정해 assign. 게이트 시작 전 답한 시트는 대상 아님(assign/.since).
 5. 진행   답에 따라 구현. 시트 파일은 inbox 에 남긴다 — "제출됨" 묶음이 곧 결정 기록이다.
 ```
 
@@ -233,6 +235,8 @@ hero 체크리스트 (1회): Tailscale admin 콘솔 → **DNS → HTTPS Certific
 | `install-inbox [--port N]` | launchd 플리스트(`com.review-sheet.inbox`) 작성 — inbox 를 부팅 시 **127.0.0.1** 로 서브(폰은 `tailscale-serve.sh`). 출력된 `launchctl bootstrap` 을 실행 |
 | `new [dir] <name>` | 템플릿 복사 → `<name>-data.js` (`from` = `$REVIEW_SHEET_FROM` / fleet sender / user@host, `createdAt` 자동) |
 | `ls [dir]` | 시트 목록 + 대기/제출됨 + 진행(답한 수/전체) + 제출 시각 |
+| `assign [dir] <name|id> <issue#> <owner>` | 제출된 시트의 후속 일 담당(이슈#·창) 기록 → 그 시트는 닫힘. 미제출이면 거부 |
+| `unassigned [dir] [--prefix P]` | 제출됐는데 담당이 없거나(`배정없음`) 배정 뒤 답이 바뀐(`답바뀜`) 시트 — 하나라도 있으면 exit 5. 매시 점검용 |
 | `read [dir] <name|id> [--json]` | 제출된 답을 질문과 합쳐 마크다운(없으면 exit 4) |
 | `wait [dir] <name|id> [--timeout SEC]` | 제출될 때까지 블록(기본 1h, 타임아웃 exit 3) → 제출되면 `read` 와 같은 출력 |
 | `chat new <ch> [--title T] [--owner S]` | 상시 채널 생성(inbox 고정) |

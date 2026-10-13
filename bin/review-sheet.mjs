@@ -8,6 +8,8 @@
  *   review-sheet read  <dir> <id> [--json]           print saved answers joined with the questions (markdown)
  *   review-sheet wait  <dir> <id> [--timeout SEC]    block until <dir>/answers/<id>.json is (re)saved
  *   review-sheet ls    <dir>                         list sheets in <dir> and whether each is answered
+ *   review-sheet assign <dir> <id> <issue> <owner>   record who owns a submitted sheet's follow-up (closes it)
+ *   review-sheet unassigned <dir> [--prefix P]       submitted sheets nobody has been assigned yet (exit 5 if any)
  *
  * <dir> may be omitted everywhere: it then defaults to the INBOX (~/.review-sheet/inbox, or $REVIEW_SHEET_INBOX),
  * one folder every session drops its sheets into, served once (port 5600) like a queue — pending sheets on top,
@@ -17,6 +19,7 @@
  *   <name>-data.js      one sheet: `window.SHEET = { id, title, sections:[{ code, questions:[…] }] }`
  *   answers/<id>.json   what the reviewer saved: { sheet, answers:{ "<code>-<k>": { pick, memo, files:[{name,orig}] } }, savedAt }
  *   answers/<id>.files/ files the reviewer attached to a question (page: 📎·paste·drop → POST /__answers/file), served at /answers/<id>.files/<name>
+ *   assign/<id>.json    { issue, owner, at } written by `assign`; assign/.since = when the gate started (older answers are exempt)
  *   anything else       images etc. the sheet references by relative path
  *
  * 음성 입력: POST /api/stt[?live=1&from=초] (audio/* 바디) → ffmpeg → whisper.cpp(whisper-cli) 로 **로컬에서만** 전사해 { text, end } 를 돌려준다(live = 말하는 중 미리보기).
@@ -57,6 +60,8 @@ function usage(code = 2) {
   review-sheet read  [dir] <id> [--json]
   review-sheet wait  [dir] <id> [--timeout SEC]
   review-sheet ls    [dir]
+  review-sheet assign [dir] <id> <issue#> <owner>   # 제출된 시트의 후속 일 담당 기록 → 닫힘
+  review-sheet unassigned [dir] [--prefix P]        # 제출됐는데 담당 없는(또는 배정 뒤 답 바뀐) 시트 — 있으면 exit 5
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
@@ -72,7 +77,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub') flags[a.slice(2)] = true;
     else if (a === '--port' || a === '--timeout') flags[a.slice(2)] = Number(argv[++i]);
-    else if (a === '--title' || a === '--owner' || a === '--re') flags[a.slice(2)] = String(argv[++i] || '');
+    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
@@ -91,6 +96,32 @@ export function loadSheet(dir, name) {
 }
 
 export function answersFile(dir, id) { return path.join(dir, 'answers', id + '.json'); }
+
+/* 배정 게이트 (hero 2026-10-13 "정한 일이 빠지지 않게") — 제출된 시트는 후속 일을 맡을 이슈#·담당 창이 적혀야 닫힌다.
+   assign/<id>.json { issue, owner, at }. 게이트를 처음 쓴 시각을 assign/.since 에 남겨, 그 전에 답한 옛 시트는 대상에서 뺀다.
+   배정 뒤 hero 가 답을 바꾸면(savedAt > at) 다시 열린다 — 바뀐 답도 누군가 받아야 하니까. */
+const assignDir = dir => path.join(dir, 'assign');
+export function readAssign(dir, id) { try { return JSON.parse(fs.readFileSync(path.join(assignDir(dir), id + '.json'), 'utf8')); } catch { return null; } }
+export function assignSince(dir) {
+  const f = path.join(assignDir(dir), '.since');
+  try { return fs.readFileSync(f, 'utf8').trim(); } catch { /* first use */ }
+  const now = new Date().toISOString();
+  fs.mkdirSync(assignDir(dir), { recursive: true }); fs.writeFileSync(f, now + '\n');
+  return now;
+}
+export function writeAssign(dir, id, issue, owner) {
+  assignSince(dir);
+  const rec = { issue: String(issue), owner: String(owner), at: new Date().toISOString() };
+  fs.writeFileSync(path.join(assignDir(dir), id + '.json'), JSON.stringify(rec, null, 2) + '\n');
+  return rec;
+}
+/** 'none' = 제출됐는데 배정 없음 · 'changed' = 배정 뒤 답이 바뀜 · 'ok' = 배정됨 · null = 대상 아님(미제출·게이트 전 답) */
+export function assignState(dir, s, since) {
+  if (!s || s.error || !s.submitted) return null;
+  const a = readAssign(dir, s.id);
+  if (a) return String(s.savedAt) > String(a.at) ? 'changed' : 'ok';
+  return String(s.savedAt) >= String(since) ? 'none' : null;
+}
 /* Sheet attachments: any file type (hero 2026-10-06 "리뷰 시트에도 파일 첨부"), stored under a random name so the
    original name never reaches the disk path; the original is kept beside it in the answers JSON as `orig`. */
 export const sheetFilePath = (dir, id, name) => path.join(dir, 'answers', id + '.files', name);
@@ -731,6 +762,7 @@ async function main() {
   const needsArg2 = cmd === 'new' || cmd === 'read' || cmd === 'wait';
   let dirArg = rest[1], arg2 = rest[2];
   if (needsArg2 && rest.length === 2) { arg2 = rest[1]; dirArg = undefined; }
+  if (cmd === 'assign' && rest.length === 4) dirArg = undefined;   // assign <id> <issue> <owner> → inbox
   const dir = path.resolve(dirArg || INBOX);
   const isInbox = !dirArg;
   if (isInbox && cmd !== 'serve') fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
@@ -803,7 +835,30 @@ async function main() {
     return;
   }
   if (cmd === 'ls') {
-    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}`);
+    const since = fs.existsSync(path.join(assignDir(dir), '.since')) ? assignSince(dir) : '9';   // 게이트 안 쓰는 폴더는 표시 안 함
+    const tag = { none: '\t배정없음', changed: '\t답바뀜', ok: '' };
+    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}${tag[assignState(dir, s, since)] || ''}`);
+    return;
+  }
+  if (cmd === 'assign') {
+    const [id, issue, owner] = rest.slice(isInbox ? 1 : 2);
+    if (!id || !issue || !owner) usage();
+    const s = listSheets(dir).find(x => !x.error && (x.name === id || x.id === id));
+    if (!s) { console.error(`${dir} 에 ${id} 시트 없음`); process.exit(1); }
+    if (!s.submitted) { console.error(`${s.name}: 아직 제출 안 됨 — 답이 온 뒤에 배정한다`); process.exit(1); }
+    const a = writeAssign(dir, s.id, issue, owner);
+    console.log(`${s.name}\t배정 ${a.issue} → ${a.owner}`);
+    return;
+  }
+  if (cmd === 'unassigned') {
+    const since = assignSince(dir), open = [];
+    for (const s of listSheets(dir)) {
+      if (flags.prefix && !String(s.name).startsWith(flags.prefix)) continue;
+      const st = assignState(dir, s, since);
+      if (st === 'none' || st === 'changed') open.push(`${s.name}\t${st === 'none' ? '배정없음' : '답바뀜'}\t${s.savedAt}\t${s.from || '-'}\t${s.title}`);
+    }
+    for (const l of open) console.log(l);
+    if (open.length) process.exitCode = 5;
     return;
   }
   if (cmd === 'read' || cmd === 'wait') {
