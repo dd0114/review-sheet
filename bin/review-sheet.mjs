@@ -64,6 +64,7 @@ function usage(code = 2) {
   review-sheet assign [dir] <id> <issue#> <owner>   # 제출된 시트의 후속 일 담당 기록 → 닫힘
   review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [메모…]   # 담당 세션이 단계 보고 → 받은편지함 '보고' 묶음
   review-sheet unassigned [dir] [--prefix P] [--hours N]  # 담당 없음·배정 뒤 답 바뀜·N시간(기본 24) 단계 멈춤 시트 — 있으면 exit 5
+  review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|done,priority,owner,mode:claude|system|idle,modeNote,url}]} 쓰기, 인자 없으면 요약
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
@@ -166,6 +167,27 @@ export function assignState(dir, s, since, stallHours = 24) {
 export const sheetFilePath = (dir, id, name) => path.join(dir, 'answers', id + '.files', name);
 const SHEET_FILE_RE = /^[a-z0-9]{6,32}\.[a-z0-9]{1,8}$/;
 const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic', 'application/pdf': 'pdf', 'text/plain': 'txt' };
+// 진행판 — 바깥 생산자(예: fleet)가 만든 board.json 을 그대로 보여 주는 보기 전용 층. 판은 일을 고치지 않는다.
+export const BOARD_STATUS = ['todo', 'doing', 'done'], BOARD_MODES = ['claude', 'system', 'idle'];
+export const boardFile = dir => path.join(dir, 'board.json');
+export function cleanBoard(j) {
+  if (!j || !Array.isArray(j.cards)) throw new Error('board: {cards:[…]} 필요');
+  const str = (v, n = 300) => typeof v === 'string' ? v.slice(0, n) : undefined;
+  const cards = j.cards.filter(c => c && typeof c.title === 'string' && c.title.trim()).map(c => ({
+    id: str(c.id, 80), title: c.title.trim().slice(0, 300), url: /^https?:\/\//.test(c.url || '') ? str(c.url, 500) : undefined,
+    status: BOARD_STATUS.includes(c.status) ? c.status : 'todo', priority: str(c.priority, 20), group: str(c.group, 40),
+    owner: (Array.isArray(c.owner) ? c.owner : c.owner ? [c.owner] : []).filter(o => typeof o === 'string').map(o => o.slice(0, 60)).slice(0, 8),
+    mode: BOARD_MODES.includes(c.mode) ? c.mode : undefined, modeNote: str(c.modeNote, 120), note: str(c.note, 300), at: str(c.at, 40),
+  }));
+  return { title: str(j.title, 80), source: str(j.source, 80), updatedAt: str(j.updatedAt, 40) || new Date().toISOString(), cards };
+}
+export function writeBoard(dir, j) {
+  const b = cleanBoard(j), f = boardFile(dir), tmp = f + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(b, null, 1)); fs.renameSync(tmp, f);
+  return b;
+}
+export function readBoard(dir) { try { return JSON.parse(fs.readFileSync(boardFile(dir), 'utf8')); } catch { return null; } }
+
 export function saveSheetFile(dir, id, type, orig, buf) {
   if (!buf.length) throw new Error('빈 파일');
   const m = /\.([A-Za-z0-9]{1,8})$/.exec(String(orig || ''));
@@ -548,7 +570,7 @@ function indexHtml(dir) {
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>review-sheet</title><link rel="stylesheet" href="/sheet.css">
 <body class="rs-page"><main><div class="eyebrow">REVIEW-SHEET · 받은편지함</div><h1>답변 시트</h1>
-<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button></p><div id="rs-list"></div></main>
+<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a></p><div id="rs-list"></div></main>
 <script>
 const INIT = ${init};
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -743,6 +765,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       try { return send(res, 200, TYPES['.json'], JSON.stringify(ackReport(root, s.id))); }
       catch (e) { return send(res, 404, 'text/plain; charset=utf-8', String(e.message || e)); }
     }
+    if (url.pathname === '/board') return serveFile(res, path.join(WEB, 'board.html'));
+    if (url.pathname === '/api/board') return send(res, 200, TYPES['.json'], JSON.stringify({ board: readBoard(root) }), cors);
     if (url.pathname === '/hub') { const h = hubChat(root); return h ? send(res, 302, 'text/plain', '', { location: '/chat.html?c=' + encodeURIComponent(h.name) }) : send(res, 302, 'text/plain', '', { location: '/' }); }
     if (url.pathname === '/api/chats') return send(res, 200, TYPES['.json'], JSON.stringify({ chats: listChats(root) }), cors);
     if (url.pathname === '/api/chat') {
@@ -789,7 +813,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
-    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/mic.js', '/compose.js'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/mic.js', '/compose.js'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
     serveFile(res, file);
@@ -832,6 +856,7 @@ async function main() {
   if (needsArg2 && rest.length === 2) { arg2 = rest[1]; dirArg = undefined; }
   if (cmd === 'assign' && rest.length === 4) dirArg = undefined;   // assign <id> <issue> <owner> → inbox
   if (cmd === 'stage' && rest[2] && STAGES[rest[2]]) dirArg = undefined;   // stage <id> <stage> [note] → inbox
+  if (cmd === 'board' && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
   const dir = path.resolve(dirArg || INBOX);
   const isInbox = !dirArg;
   if (isInbox && cmd !== 'serve') fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
@@ -925,6 +950,14 @@ async function main() {
     const s = listSheets(dir).find(x => !x.error && (x.name === id || x.id === id));
     if (!s) { console.error(`${dir} 에 ${id} 시트 없음`); process.exit(1); }
     try { const a = writeStage(dir, s.id, stage, words.join(' ')); console.log(`${s.name}\t${a.stages.at(-1).stage}${words.length ? ' — ' + words.join(' ') : ''}`); }
+    catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'board') {
+    const src = rest.at(-1);
+    if (rest.length < 2 || (dirArg && rest.length === 2)) { const b = readBoard(dir); if (!b) { console.error('진행판 없음'); process.exit(1); } for (const st of BOARD_STATUS) console.log(`${st}\t${b.cards.filter(c => c.status === st).length}`); console.log(`updatedAt\t${b.updatedAt}`); return; }
+    let j; try { j = JSON.parse(src === '-' ? await (async () => { let t = ''; process.stdin.setEncoding('utf8'); for await (const c of process.stdin) t += c; return t; })() : fs.readFileSync(src, 'utf8')); } catch (e) { console.error('board: JSON 읽기 실패 — ' + e.message); process.exit(1); }
+    try { const b = writeBoard(dir, j); console.log(`${boardFile(dir)}\t카드 ${b.cards.length}\t→ http://127.0.0.1:${INBOX_PORT}/board`); }
     catch (e) { console.error(e.message); process.exit(1); }
     return;
   }
