@@ -389,3 +389,42 @@ test('cli: assign gate — submitted sheets stay open until an issue/owner is re
   save(new Date(Date.now() + 60000).toISOString());
   assert.match(run('unassigned', dir).out, /^example\t답바뀜\t/);
 });
+
+test('stage: owner reports each step → 보고 group until hero acks; stalled steps surface in unassigned (hero 2026-10-13)', async () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
+  run('unassigned', dir);                                   // gate starts now
+  fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers: { 'A-1': { pick: '①' } } }));
+  let r = run('stage', dir, 'example', '머지');
+  assert.equal(r.code, 1); assert.match(r.out, /아직 배정 안 됨/);
+  assert.equal(run('assign', dir, 'example', '#7', 'proj:ws1').code, 0);
+  assert.match(run('stage', dir, 'example', 'merged', 'PR', '#9').out, /^example\t머지 — PR #9/);
+  assert.equal(run('stage', dir, 'example', '반쯤').code, 1);
+  const a = JSON.parse(fs.readFileSync(path.join(dir, 'assign', 'example.json'), 'utf8'));
+  assert.deepEqual(a.stages.map(x => x.stage), ['배정', '머지']);
+  assert.match(run('ls', dir).out, /\t머지 #7$/m);
+  // backdate the last step → 멈춤 after 24h, not when final
+  a.stages.at(-1).at = new Date(Date.now() - 30 * 3600e3).toISOString();
+  fs.writeFileSync(path.join(dir, 'assign', 'example.json'), JSON.stringify(a));
+  r = run('unassigned', dir);
+  assert.equal(r.code, 5); assert.match(r.out, /^example\t멈춤\t/);
+  assert.equal(run('unassigned', dir, '--hours', '48').code, 0);
+  run('stage', dir, 'example', '라이브', '16:05 배포');
+  assert.equal(run('unassigned', dir).code, 0);
+  // server: report shows in /api/inbox until acked, then drops; next step brings it back
+  const { base, close } = await startServer(dir, 0);
+  try {
+    let inbox = await (await fetch(base + '/api/inbox')).json();
+    assert.deepEqual(inbox.reports.map(s => [s.name, s.assign.stage, s.assign.note]), [['example', '라이브', '16:05 배포']]);
+    assert.equal((await fetch(base + '/__report-ack?d=example', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' })).status, 415);
+    assert.equal((await fetch(base + '/__report-ack?d=example', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 200);
+    inbox = await (await fetch(base + '/api/inbox')).json();
+    assert.equal(inbox.reports.length, 0);
+    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.stage, '라이브');
+    run('stage', dir, 'example', '끝');
+    inbox = await (await fetch(base + '/api/inbox')).json();
+    assert.equal(inbox.reports.length, 1);
+    assert.match(await (await fetch(base + '/')).text(), /rs-report-h|reportRow/);
+  } finally { await close(); }
+});

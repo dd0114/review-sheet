@@ -229,3 +229,13 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .c-bar .c-tray .rs-mic[data-state=rec]{color:#fff}
 .rs-page .v-att .rs-mic{min-width:0;min-height:40px;margin:0;padding:0 14px;font-size:14px}
 .rs-page .v-att .v-clip{min-height:40px}
+/* 보고 묶음 (hero 2026-10-13) — 답할 것보다 낮은 우선순위: 회색 띠, 확인 누르면 다음 단계까지 내려감 */
+.rs-page h2.rs-report-h{margin-top:22px;color:#555}
+.rs-page h2.rs-report-h .rs-n{background:#5A6B7B}
+.rs-page h2.rs-report-h small{font:500 12px/1 system-ui,sans-serif;color:#888;margin-left:4px}
+.rs-page ul.rs-index li.report{position:relative;border-left:5px solid #5A6B7B;background:#F2F4F6}
+.rs-page ul.rs-index li.report .rs-badge{background:#5A6B7B;color:#fff}
+.rs-page ul.rs-index li.report a{padding-right:76px}
+.rs-page .rs-ack{position:absolute;right:10px;top:50%;transform:translateY(-50%);min-width:56px;height:40px;border-radius:10px;border:1px solid #5A6B7B;background:#fff;color:#2C3A47;font:700 14px/1 system-ui,sans-serif;cursor:pointer;touch-action:manipulation}
+.rs-page .rs-ack:disabled{opacity:.5}
+.rs-page .rs-stage{font-weight:700;color:#2C3A47}
