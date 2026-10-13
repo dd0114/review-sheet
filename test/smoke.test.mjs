@@ -365,3 +365,27 @@ test('urgent: 🔥 on a sheet → top of its group, hero notice to the owner cha
     assert.match(execFileSync(process.execPath, [BIN, 'ls', dir], { encoding: 'utf8' }), /^🔥b\t/m);
   } finally { await close(); }
 });
+
+test('cli: assign gate — submitted sheets stay open until an issue/owner is recorded', () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  fs.copyFileSync(path.join(dir, 'example-data.js'), path.join(dir, 'old-data.js'));
+  const old = fs.readFileSync(path.join(dir, 'old-data.js'), 'utf8').replace(/id:\s*'example'/, "id: 'old'");
+  fs.writeFileSync(path.join(dir, 'old-data.js'), old);
+  fs.writeFileSync(path.join(dir, 'answers', 'old.json'), JSON.stringify({ sheet: 'old', savedAt: '2020-01-01T00:00:00.000Z', answers: { 'A-1': { pick: '①' } } }));
+  const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8' }), code: 0 }; } catch (e) { return { out: e.stdout, code: e.status }; } };
+  // first use starts the gate — answers saved before it are exempt
+  assert.deepEqual(run('unassigned', dir), { out: '', code: 0 });
+  const save = at => fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: at, answers: { 'A-1': { pick: '①' } } }));
+  save(new Date().toISOString());
+  let r = run('unassigned', dir);
+  assert.equal(r.code, 5); assert.match(r.out, /^example\t배정없음\t/);
+  assert.match(run('ls', dir).out, /^example\t.*\t배정없음$/m);
+  assert.equal(run('unassigned', dir, '--prefix', 'zzz').code, 0);
+  assert.match(run('assign', dir, 'example', '#12', 'proj:ws1').out, /배정 #12 → proj:ws1/);
+  assert.deepEqual(run('unassigned', dir), { out: '', code: 0 });
+  assert.doesNotMatch(run('ls', dir).out, /배정없음|답바뀜/);
+  // hero changes the answer after assignment → reopens
+  save(new Date(Date.now() + 60000).toISOString());
+  assert.match(run('unassigned', dir).out, /^example\t답바뀜\t/);
+});
