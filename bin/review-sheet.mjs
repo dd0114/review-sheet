@@ -563,7 +563,7 @@ const row = s => s.error
     '<button type="button" class="rs-flag' + (s.urgent ? ' on' : '') + '" data-d="' + esc(s.name) + '" aria-pressed="' + !!s.urgent + '" title="' + (s.urgent ? '긴급 해제' : '긴급으로') + '" aria-label="' + (s.urgent ? '긴급 해제' : '긴급으로') + '">🔥</button></li>';
 const reportRow = s => '<li class="report"><a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
   '<span class="rs-badge">' + esc(s.assign.stage) + '</span><b>' + esc(s.title) + '</b>' +
-  '<small>' + esc(s.assign.issue) + ' · ' + esc(s.assign.owner) + (s.assign.note ? ' — ' + esc(s.assign.note) : '') + ' · ' + when(s.assign.stageAt) + '</small></a>' +
+  '<small>' + esc(s.assign.issue) + ' · ' + esc(s.assign.owner) + (s.assign.note && s.assign.stage !== '배정' ? ' — ' + esc(s.assign.note) : '') + ' · ' + when(s.assign.stageAt) + '</small></a>' +
   '<button type="button" class="rs-ack" data-d="' + esc(s.name) + '">확인</button></li>';
 const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : c.manager ? ' mgr' : ' sess') + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
   '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : c.hub ? '★ 메인 허브' : c.manager ? '🧭 매니저' : '💬 세션') + '</span><b>' + esc(c.title) + '</b>' +
