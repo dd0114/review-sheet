@@ -428,3 +428,28 @@ test('stage: owner reports each step → 보고 group until hero acks; stalled s
     assert.match(await (await fetch(base + '/')).text(), /rs-report-h|reportRow/);
   } finally { await close(); }
 });
+
+test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it, /board page loads, index links it (hero 2026-10-13)', async () => {
+  const dir = tmpDir();
+  const src = path.join(dir, 'in.json');
+  fs.writeFileSync(src, JSON.stringify({ title: '진행판', cards: [
+    { id: 'x#1', title: '빠른 일', status: 'doing', priority: 'P1', owner: 'a:main', mode: 'claude' },
+    { id: 'x#2', title: 'CI 기다림', status: 'doing', owner: ['a:w1'], mode: 'system', modeNote: 'CI', url: 'javascript:alert(1)' },
+    { title: '할 일', status: 'weird', mode: 'nope' }, { status: 'done' },
+  ] }));
+  const out = execFileSync('node', [BIN, 'board', dir, src], { encoding: 'utf8' });
+  assert.match(out, /카드 3/);   // title 없는 카드는 버림
+  const b = JSON.parse(fs.readFileSync(path.join(dir, 'board.json'), 'utf8'));
+  assert.deepEqual(b.cards.map(c => c.status), ['doing', 'doing', 'todo']);
+  assert.deepEqual(b.cards[0].owner, ['a:main']);
+  assert.equal(b.cards[1].url, undefined);   // http(s) 만
+  assert.equal(b.cards[2].mode, undefined);
+  assert.match(execFileSync('node', [BIN, 'board', dir], { encoding: 'utf8' }), /doing\t2/);
+  const srv = await startServer(dir, 0);
+  try {
+    const j = await (await fetch(srv.base + '/api/board')).json();
+    assert.equal(j.board.cards.length, 3);
+    assert.match(await (await fetch(srv.base + '/board')).text(), /<title>진행판<\/title>/);
+    assert.match(await (await fetch(srv.base + '/')).text(), /href="\/board"/);
+  } finally { await srv.close(); }
+});

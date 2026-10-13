@@ -239,3 +239,4 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .rs-ack{position:absolute;right:10px;top:50%;transform:translateY(-50%);min-width:56px;height:40px;border-radius:10px;border:1px solid #5A6B7B;background:#fff;color:#2C3A47;font:700 14px/1 system-ui,sans-serif;cursor:pointer;touch-action:manipulation}
 .rs-page .rs-ack:disabled{opacity:.5}
 .rs-page .rs-stage{font-weight:700;color:#2C3A47}
+.rs-page .rs-boardlink{font:700 12px/1 system-ui,sans-serif;padding:8px 10px;border-radius:14px;background:#2B2A27;color:#F3E6C4;text-decoration:none;margin-left:4px;vertical-align:middle;display:inline-block}

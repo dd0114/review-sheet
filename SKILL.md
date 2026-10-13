@@ -239,6 +239,7 @@ hero 체크리스트 (1회): Tailscale admin 콘솔 → **DNS → HTTPS Certific
 | `ls [dir]` | 시트 목록 + 대기/제출됨 + 진행(답한 수/전체) + 제출 시각 |
 | `assign [dir] <name|id> <issue#> <owner>` | 제출된 시트의 후속 일 담당(이슈#·창) 기록 → 그 시트는 닫힘. 미제출이면 거부 |
 | `stage [dir] <name|id> <머지\|배포대기\|라이브\|끝> [메모…]` | 배정된 시트의 단계 보고(한 줄 메모). 받은편지함 '보고' 묶음에 뜨고 hero 가 확인하면 내려감. 배정 전이면 거부 |
+| `board [dir] [<file\|->]` | 진행판(보기 전용, `/board`) — 바깥 생산자가 `{cards:[{title, status: todo\|doing\|done, priority, owner, mode: claude\|system\|idle, modeNote, group, url, note, at}]}` 를 넘기면 검증해 `board.json` 으로 원자 교체. 인자 없으면 칸별 개수. 판은 일을 바꾸지 않는다 |
 | `unassigned [dir] [--prefix P] [--hours N]` | 제출됐는데 담당이 없거나(`배정없음`) 배정 뒤 답이 바뀐(`답바뀜`) 시트, 라이브·끝 전 단계가 N시간(기본 24) 안 움직인 시트(`멈춤`) — 하나라도 있으면 exit 5. 매시 점검용 |
 | `read [dir] <name|id> [--json]` | 제출된 답을 질문과 합쳐 마크다운(없으면 exit 4) |
 | `wait [dir] <name|id> [--timeout SEC]` | 제출될 때까지 블록(기본 1h, 타임아웃 exit 3) → 제출되면 `read` 와 같은 출력 |
