@@ -9,7 +9,8 @@
  *   review-sheet wait  <dir> <id> [--timeout SEC]    block until <dir>/answers/<id>.json is (re)saved
  *   review-sheet ls    <dir>                         list sheets in <dir> and whether each is answered
  *   review-sheet assign <dir> <id> <issue> <owner>   record who owns a submitted sheet's follow-up (closes it)
- *   review-sheet unassigned <dir> [--prefix P]       submitted sheets nobody has been assigned yet (exit 5 if any)
+ *   review-sheet stage <dir> <id> <stage> [note…]    the owner reports a step (머지·배포대기·라이브·끝) — hero sees it in the 보고 group
+ *   review-sheet unassigned <dir> [--prefix P] [--hours N]  submitted sheets with no owner / answer changed / stalled N h (exit 5 if any)
  *
  * <dir> may be omitted everywhere: it then defaults to the INBOX (~/.review-sheet/inbox, or $REVIEW_SHEET_INBOX),
  * one folder every session drops its sheets into, served once (port 5600) like a queue — pending sheets on top,
@@ -19,7 +20,7 @@
  *   <name>-data.js      one sheet: `window.SHEET = { id, title, sections:[{ code, questions:[…] }] }`
  *   answers/<id>.json   what the reviewer saved: { sheet, answers:{ "<code>-<k>": { pick, memo, files:[{name,orig}] } }, savedAt }
  *   answers/<id>.files/ files the reviewer attached to a question (page: 📎·paste·drop → POST /__answers/file), served at /answers/<id>.files/<name>
- *   assign/<id>.json    { issue, owner, at } written by `assign`; assign/.since = when the gate started (older answers are exempt)
+ *   assign/<id>.json    { issue, owner, at, stages:[{stage,note,at,by}], heroSeenAt } written by `assign`/`stage`, page 확인 → heroSeenAt; assign/.since = when the gate started (older answers are exempt)
  *   anything else       images etc. the sheet references by relative path
  *
  * 음성 입력: POST /api/stt[?live=1&from=초] (audio/* 바디) → ffmpeg → whisper.cpp(whisper-cli) 로 **로컬에서만** 전사해 { text, end } 를 돌려준다(live = 말하는 중 미리보기).
@@ -61,7 +62,8 @@ function usage(code = 2) {
   review-sheet wait  [dir] <id> [--timeout SEC]
   review-sheet ls    [dir]
   review-sheet assign [dir] <id> <issue#> <owner>   # 제출된 시트의 후속 일 담당 기록 → 닫힘
-  review-sheet unassigned [dir] [--prefix P]        # 제출됐는데 담당 없는(또는 배정 뒤 답 바뀐) 시트 — 있으면 exit 5
+  review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [메모…]   # 담당 세션이 단계 보고 → 받은편지함 '보고' 묶음
+  review-sheet unassigned [dir] [--prefix P] [--hours N]  # 담당 없음·배정 뒤 답 바뀜·N시간(기본 24) 단계 멈춤 시트 — 있으면 exit 5
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
@@ -76,7 +78,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub') flags[a.slice(2)] = true;
-    else if (a === '--port' || a === '--timeout') flags[a.slice(2)] = Number(argv[++i]);
+    else if (a === '--port' || a === '--timeout' || a === '--hours') flags[a.slice(2)] = Number(argv[++i]);
     else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
@@ -109,17 +111,54 @@ export function assignSince(dir) {
   fs.mkdirSync(assignDir(dir), { recursive: true }); fs.writeFileSync(f, now + '\n');
   return now;
 }
-export function writeAssign(dir, id, issue, owner) {
+const saveAssign = (dir, id, rec) => fs.writeFileSync(path.join(assignDir(dir), id + '.json'), JSON.stringify(rec, null, 2) + '\n');
+export function writeAssign(dir, id, issue, owner, by = fromId()) {
   assignSince(dir);
-  const rec = { issue: String(issue), owner: String(owner), at: new Date().toISOString() };
-  fs.writeFileSync(path.join(assignDir(dir), id + '.json'), JSON.stringify(rec, null, 2) + '\n');
+  const old = readAssign(dir, id) || {}, at = new Date().toISOString();
+  const rec = { ...old, issue: String(issue), owner: String(owner), at,
+    stages: [...(old.stages || []), { stage: '배정', note: `${issue} → ${owner}`, at, by }] };
+  saveAssign(dir, id, rec);
   return rec;
 }
+
+/* 단계 보고 (hero 2026-10-13 "시트로 가져간 일은 끝나면 항상 보고") — 배정 뒤 담당 세션이 머지·배포대기·라이브·끝 을 한 줄 메모와 함께 남긴다.
+   단계가 바뀔 때마다 받은편지함 '보고' 묶음에 뜨고, hero 가 확인을 누르면(heroSeenAt) 다음 단계 전까지 내려간다. 답할 필요는 없다. */
+export const STAGES = { 머지: '머지', merged: '머지', 배포대기: '배포대기', deploy: '배포대기', 라이브: '라이브', live: '라이브', 끝: '끝', done: '끝' };
+export const FINAL_STAGES = new Set(['라이브', '끝']);
+export function fromId() {
+  return process.env.REVIEW_SHEET_FROM || process.env.FLEET_SENDER || process.env.TMUX_PANE && `tmux ${process.env.TMUX_PANE}` || `${os.userInfo().username}@${os.hostname()}`;
+}
+export function writeStage(dir, id, stage, note = '', by = fromId()) {
+  const st = STAGES[stage];
+  if (!st) throw new Error(`단계는 ${[...new Set(Object.values(STAGES))].join(' · ')} 중 하나 (받은 값: ${stage})`);
+  const a = readAssign(dir, id);
+  if (!a) throw new Error(`${id}: 아직 배정 안 됨 — 먼저 assign <시트> <이슈#> <담당>`);
+  a.stages = [...(a.stages || [{ stage: '배정', note: `${a.issue} → ${a.owner}`, at: a.at }]), { stage: st, note: String(note), at: new Date().toISOString(), by }];
+  saveAssign(dir, id, a);
+  return a;
+}
+export function ackReport(dir, id) {
+  const a = readAssign(dir, id);
+  if (!a) throw new Error(`${id}: 보고 없음`);
+  a.heroSeenAt = new Date().toISOString(); saveAssign(dir, id, a);
+  return { ok: true, id, heroSeenAt: a.heroSeenAt };
+}
+/** 시트 요약에 붙일 배정·단계 정보 — 마지막 단계가 hero 확인 뒤에 생겼으면 report = true(보고 묶음에 뜬다). */
+function assignInfo(a) {
+  if (!a) return null;
+  const last = (a.stages || []).at(-1) || { stage: '배정', note: `${a.issue} → ${a.owner}`, at: a.at };
+  return { issue: a.issue, owner: a.owner, stage: last.stage, note: last.note || '', stageAt: last.at, by: last.by || '',
+           report: !a.heroSeenAt || String(a.heroSeenAt) < String(last.at) };
+}
 /** 'none' = 제출됐는데 배정 없음 · 'changed' = 배정 뒤 답이 바뀜 · 'ok' = 배정됨 · null = 대상 아님(미제출·게이트 전 답) */
-export function assignState(dir, s, since) {
+export function assignState(dir, s, since, stallHours = 24) {
   if (!s || s.error || !s.submitted) return null;
   const a = readAssign(dir, s.id);
-  if (a) return String(s.savedAt) > String(a.at) ? 'changed' : 'ok';
+  if (a) {
+    if (String(s.savedAt) > String(a.at)) return 'changed';
+    const i = assignInfo(a);
+    return !FINAL_STAGES.has(i.stage) && Date.now() - Date.parse(i.stageAt) > stallHours * 3600e3 ? 'stalled' : 'ok';
+  }
   return String(s.savedAt) >= String(since) ? 'none' : null;
 }
 /* Sheet attachments: any file type (hero 2026-10-06 "리뷰 시트에도 파일 첨부"), stored under a random name so the
@@ -214,7 +253,7 @@ export function setUrgent(dir, name, on) {
    모든 data.js 를 vm 으로 돌리고 answers 를 읽어 1초 넘게 걸렸다. data.js·answers 의 mtime 이 그대로면 지난 요약을 쓴다. */
 const summaryCache = new Map();   // <dir>/<name> → { key, sum }
 const mtimeOf = f => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } };
-function listSheets(dir) {
+function listSheetsRaw(dir) {
   const urgent = readUrgent(dir);
   return fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).sort().map(f => {
     const name = f.slice(0, -'-data.js'.length);
@@ -243,11 +282,18 @@ function listSheets(dir) {
   });
 }
 
+function listSheets(dir) {   // 배정·단계는 자주 바뀌고 파일이 몇 개 안 되니 캐시 밖에서 붙인다
+  let names = []; try { names = fs.readdirSync(assignDir(dir)).filter(f => f.endsWith('.json')); } catch { /* 게이트 안 씀 */ }
+  const by = new Map(names.map(f => [f.slice(0, -5), f]));
+  return listSheetsRaw(dir).map(s => s.error || !by.has(s.id) ? s : { ...s, assign: assignInfo(readAssign(dir, s.id)) });
+}
+
 /* 받은편지함 첫 화면: 답 기다리는 시트는 전부, 제출된 시트는 최근 RECENT_DONE 개만. 나머지는 '지난 시트 더 보기'(all=1) 때. */
 const RECENT_DONE = 20;
 function inboxSheets(dir, all) {
   const sheets = listSheets(dir), done = sheets.filter(s => !s.error && s.submitted);
-  return { sheets: all ? sheets : sheets.filter(s => s.error || !s.submitted).concat(done.slice(0, RECENT_DONE)), doneTotal: done.length, all: !!all || done.length <= RECENT_DONE };
+  const reports = done.filter(s => s.assign && s.assign.report).sort((a, b) => String(b.assign.stageAt).localeCompare(String(a.assign.stageAt)));
+  return { sheets: all ? sheets : sheets.filter(s => s.error || !s.submitted).concat(done.slice(0, RECENT_DONE)), doneTotal: done.length, all: !!all || done.length <= RECENT_DONE, reports };
 }
 
 /* ── 상시 채널 (chat) ───────────────────────────────────────────────────────────
@@ -512,8 +558,13 @@ const row = s => s.error
   : '<li class="' + (s.submitted ? 'done' : 'wait') + (s.urgent ? ' urgent' : '') + '"><a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
     '<span class="rs-badge">' + (s.urgent ? '🔥 긴급 · ' : '') + (s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
     '<small>' + (s.from ? esc(s.from) + ' · ' : '') + s.picked + '/' + s.total + ' 답함' +
-    (s.submitted ? ' · 제출 ' + when(s.savedAt) : (s.createdAt ? ' · 보냄 ' + when(s.createdAt) : '')) + '</small></a>' +
+    (s.submitted ? ' · 제출 ' + when(s.savedAt) : (s.createdAt ? ' · 보냄 ' + when(s.createdAt) : '')) +
+    (s.assign ? ' · <span class="rs-stage">' + esc(s.assign.stage) + ' ' + esc(s.assign.issue) + '</span>' : '') + '</small></a>' +
     '<button type="button" class="rs-flag' + (s.urgent ? ' on' : '') + '" data-d="' + esc(s.name) + '" aria-pressed="' + !!s.urgent + '" title="' + (s.urgent ? '긴급 해제' : '긴급으로') + '" aria-label="' + (s.urgent ? '긴급 해제' : '긴급으로') + '">🔥</button></li>';
+const reportRow = s => '<li class="report"><a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
+  '<span class="rs-badge">' + esc(s.assign.stage) + '</span><b>' + esc(s.title) + '</b>' +
+  '<small>' + esc(s.assign.issue) + ' · ' + esc(s.assign.owner) + (s.assign.note ? ' — ' + esc(s.assign.note) : '') + ' · ' + when(s.assign.stageAt) + '</small></a>' +
+  '<button type="button" class="rs-ack" data-d="' + esc(s.name) + '">확인</button></li>';
 const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : c.manager ? ' mgr' : ' sess') + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
   '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : c.hub ? '★ 메인 허브' : c.manager ? '🧭 매니저' : '💬 세션') + '</span><b>' + esc(c.title) + '</b>' +
   '<small>' + esc(c.owner) + (c.last ? ' · ' + esc(c.last.from === 'hero' ? '나' : c.last.from) + ': ' + esc(c.last.text.slice(0, 60)) + (c.last.text.length > 60 ? '…' : '') + ' · ' + when(c.last.ts) : ' · 아직 대화 없음') + '</small></a></li>';
@@ -528,6 +579,7 @@ const render = d => {
     (chats.length ? '<h2>상시 채널 <span class="rs-n rs-n-chat">' + chats.reduce((a, c) => a + c.unreadHero, 0) + '</span></h2><ul class="rs-index">' + chats.map(chatRow).join('') + '</ul>' : '') +
     '<h2>답 기다리는 중 <span class="rs-n">' + wait.length + '</span></h2><ul class="rs-index">' +
     (wait.map(row).join('') || '<li class="empty">기다리는 시트 없음</li>') + '</ul>' +
+    ((d.reports || []).length ? '<h2 class="rs-report-h">보고 <span class="rs-n">' + d.reports.length + '</span> <small>답할 필요 없음 · 확인하면 내려가요</small></h2><ul class="rs-index">' + d.reports.map(reportRow).join('') + '</ul>' : '') +
     '<h2 class="rs-done-h">제출됨 <span class="rs-n">' + (d.doneTotal ?? done.length) + '</span></h2><ul class="rs-index">' +
     (done.map(row).join('') || '<li class="empty">아직 없음</li>') + '</ul>' +
     (d.all === false ? '<button type="button" class="rs-refresh rs-more" id="rs-more">지난 시트 더 보기 (' + (d.doneTotal - done.length) + ')</button>' : '');
@@ -547,6 +599,13 @@ document.getElementById('rs-list').addEventListener('click', async ev => {   // 
     const r = await fetch('/__urgent?d=' + encodeURIComponent(b.dataset.d), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: !b.classList.contains('on') }) });
     if (!r.ok) throw new Error(await r.text());
   } catch (e) { document.getElementById('rs-upd').textContent = '긴급 표시 실패 — ' + e.message; }
+  await refresh();
+});
+document.getElementById('rs-list').addEventListener('click', async ev => {   // 보고 확인 → 다음 단계까지 내려감
+  const b = ev.target.closest('.rs-ack'); if (!b) return;
+  ev.preventDefault(); b.disabled = true;
+  try { const r = await fetch('/__report-ack?d=' + encodeURIComponent(b.dataset.d), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); if (!r.ok) throw new Error(await r.text()); }
+  catch (e) { document.getElementById('rs-upd').textContent = '보고 확인 실패 — ' + e.message; }
   await refresh();
 });
 setInterval(refresh, 5000);
@@ -675,6 +734,15 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       });
       return;
     }
+    if (url.pathname === '/__report-ack' && req.method === 'POST') {   // ?d=<시트> — 보고 확인(hero), CORS 없음
+      const name = url.searchParams.get('d') || '';
+      if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'd=<sheet> ([a-z0-9-])');
+      if (!/^application\/json/.test(String(req.headers['content-type'] || ''))) return send(res, 415, 'text/plain', 'application/json');
+      const s = listSheets(root).find(x => !x.error && (x.name === name || x.id === name));
+      if (!s) return send(res, 404, 'text/plain', 'no such sheet');
+      try { return send(res, 200, TYPES['.json'], JSON.stringify(ackReport(root, s.id))); }
+      catch (e) { return send(res, 404, 'text/plain; charset=utf-8', String(e.message || e)); }
+    }
     if (url.pathname === '/hub') { const h = hubChat(root); return h ? send(res, 302, 'text/plain', '', { location: '/chat.html?c=' + encodeURIComponent(h.name) }) : send(res, 302, 'text/plain', '', { location: '/' }); }
     if (url.pathname === '/api/chats') return send(res, 200, TYPES['.json'], JSON.stringify({ chats: listChats(root) }), cors);
     if (url.pathname === '/api/chat') {
@@ -763,6 +831,7 @@ async function main() {
   let dirArg = rest[1], arg2 = rest[2];
   if (needsArg2 && rest.length === 2) { arg2 = rest[1]; dirArg = undefined; }
   if (cmd === 'assign' && rest.length === 4) dirArg = undefined;   // assign <id> <issue> <owner> → inbox
+  if (cmd === 'stage' && rest[2] && STAGES[rest[2]]) dirArg = undefined;   // stage <id> <stage> [note] → inbox
   const dir = path.resolve(dirArg || INBOX);
   const isInbox = !dirArg;
   if (isInbox && cmd !== 'serve') fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
@@ -822,7 +891,7 @@ async function main() {
     fs.mkdirSync(dir, { recursive: true });
     const dst = path.join(dir, arg2 + '-data.js');
     if (fs.existsSync(dst)) { console.error(`${dst} 이미 있음`); process.exit(1); }
-    const from = process.env.REVIEW_SHEET_FROM || process.env.FLEET_SENDER || process.env.TMUX_PANE && `tmux ${process.env.TMUX_PANE}` || `${os.userInfo().username}@${os.hostname()}`;
+    const from = fromId();
     fs.writeFileSync(dst, fs.readFileSync(TEMPLATE, 'utf8')
       .replace(/id: 'example'/, `id: '${arg2}'`)
       .replace(/from: ''/, `from: '${from.replace(/'/g, '')}'`)
@@ -836,8 +905,8 @@ async function main() {
   }
   if (cmd === 'ls') {
     const since = fs.existsSync(path.join(assignDir(dir), '.since')) ? assignSince(dir) : '9';   // 게이트 안 쓰는 폴더는 표시 안 함
-    const tag = { none: '\t배정없음', changed: '\t답바뀜', ok: '' };
-    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}${tag[assignState(dir, s, since)] || ''}`);
+    const tag = (s, st) => st === 'none' ? '\t배정없음' : st === 'changed' ? '\t답바뀜' : s.assign ? `\t${s.assign.stage}${st === 'stalled' ? '(멈춤)' : ''} ${s.assign.issue}` : '';
+    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}${tag(s, assignState(dir, s, since))}`);
     return;
   }
   if (cmd === 'assign') {
@@ -850,12 +919,22 @@ async function main() {
     console.log(`${s.name}\t배정 ${a.issue} → ${a.owner}`);
     return;
   }
+  if (cmd === 'stage') {
+    const [id, stage, ...words] = rest.slice(isInbox ? 1 : 2);
+    if (!id || !stage) usage();
+    const s = listSheets(dir).find(x => !x.error && (x.name === id || x.id === id));
+    if (!s) { console.error(`${dir} 에 ${id} 시트 없음`); process.exit(1); }
+    try { const a = writeStage(dir, s.id, stage, words.join(' ')); console.log(`${s.name}\t${a.stages.at(-1).stage}${words.length ? ' — ' + words.join(' ') : ''}`); }
+    catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
   if (cmd === 'unassigned') {
     const since = assignSince(dir), open = [];
     for (const s of listSheets(dir)) {
       if (flags.prefix && !String(s.name).startsWith(flags.prefix)) continue;
-      const st = assignState(dir, s, since);
+      const st = assignState(dir, s, since, flags.hours || 24);
       if (st === 'none' || st === 'changed') open.push(`${s.name}\t${st === 'none' ? '배정없음' : '답바뀜'}\t${s.savedAt}\t${s.from || '-'}\t${s.title}`);
+      if (st === 'stalled') open.push(`${s.name}\t멈춤\t${s.assign.stageAt}\t${s.assign.owner}\t${s.title} (${s.assign.stage} ${s.assign.issue})`);
     }
     for (const l of open) console.log(l);
     if (open.length) process.exitCode = 5;
