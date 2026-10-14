@@ -238,5 +238,15 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page ul.rs-index li.report a{padding-right:76px}
 .rs-page .rs-ack{position:absolute;right:10px;top:50%;transform:translateY(-50%);min-width:56px;height:40px;border-radius:10px;border:1px solid #5A6B7B;background:#fff;color:#2C3A47;font:700 14px/1 system-ui,sans-serif;cursor:pointer;touch-action:manipulation}
 .rs-page .rs-ack:disabled{opacity:.5}
+.rs-page ul.rs-index li.report:not(.seen){touch-action:pan-y;user-select:none;-webkit-user-select:none}
+.rs-page ul.rs-index li.report.swiping{background:#E3ECE5;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.rs-page ul.rs-index li.report.armed{background:#CFE6D5;border-left-color:#2F7A45}
+.rs-page ul.rs-index li.report.armed .rs-ack{background:#2F7A45;color:#fff;border-color:#2F7A45}
+.rs-page details.rs-seen{margin-top:14px}
+.rs-page details.rs-seen>summary{cursor:pointer;font:700 15px/1.4 system-ui,sans-serif;color:#666;padding:6px 0;list-style-position:inside}
+.rs-page details.rs-seen>summary .rs-n{background:#9AA5AF}
+.rs-page details.rs-seen>summary small{font:500 12px/1 system-ui,sans-serif;color:#999;margin-left:4px}
+.rs-page ul.rs-index li.report.seen{opacity:.75;background:#F6F7F8}
+.rs-page ul.rs-index li.report.seen a{padding-right:14px}
 .rs-page .rs-stage{font-weight:700;color:#2C3A47}
 .rs-page .rs-boardlink{font:700 12px/1 system-ui,sans-serif;padding:8px 10px;border-radius:14px;background:#2B2A27;color:#F3E6C4;text-decoration:none;margin-left:4px;vertical-align:middle;display:inline-block}
