@@ -92,7 +92,7 @@ test('wait: returns when the answers file is saved', async () => {
 
 test('chat: new → page posts as hero → owner reads/says → hero sees 읽음 + unread counts', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-chat-'));
-  const { newChat, listChats, appendChat, readChatLog } = await import('../bin/review-sheet.mjs');
+  const { newChat, listChats, appendChat, readChatLog, chatGate } = await import('../bin/review-sheet.mjs');
   newChat(dir, 'root', 'root 와 대화', 'root:hub');
   const { base, close } = await startServer(dir, 0);
   try {
@@ -107,20 +107,27 @@ test('chat: new → page posts as hero → owner reads/says → hero sees 읽음
     assert.match(out, /hero: 안녕/);
     assert.equal(listChats(dir)[0].unreadOwner, 0);
     execFileSync('node', [BIN, 'chat', 'say', 'root', '답장이다'], { encoding: 'utf8', env });
+    // review material is refused in chat (exit 6) unless --notice
+    assert.throws(() => execFileSync('node', [BIN, 'chat', 'say', 'root', '주둔지 POC http://x:1/p — 재밌는지 말씀 주세요'], { encoding: 'utf8', env, stdio: 'pipe' }), e => e.status === 6 && /시트로/.test(String(e.stderr)));
+    assert.throws(() => execFileSync('node', [BIN, 'chat', 'say', 'root', '가'.repeat(501)], { encoding: 'utf8', env, stdio: 'pipe' }), e => e.status === 6);
+    assert.equal(chatGate('받음 — #2156 버그 창에 맡김'), null);
+    assert.match(chatGate('평가 끝났어요, 괜찮은지 봐 주세요'), /요청/);
+    execFileSync('node', [BIN, 'chat', 'say', 'root', '--notice', '머지됨 http://x/pr/1'], { encoding: 'utf8', env });
+    assert.equal(readChatLog(dir, 'root').filter(m => m.from === 'root:hub').length, 2);
     c = listChats(dir)[0];
-    assert.equal(c.unreadHero, 1); assert.equal(c.last.from, 'root:hub');
+    assert.equal(c.unreadHero, 2); assert.equal(c.last.from, 'root:hub');
     // page: api shows seenAt ≥ hero message ts (읽음), and hero viewing clears unreadHero
     const j = await (await fetch(base + '/api/chat?c=root')).json();
-    assert.ok(j.meta.seenAt >= j.messages[0].ts); assert.equal(j.messages.length, 2);
+    assert.ok(j.meta.seenAt >= j.messages[0].ts); assert.equal(j.messages.length, 3);
     await fetch(base + '/__chat?c=root', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
     assert.equal(listChats(dir)[0].unreadHero, 0);
     // unknown channel → 404, bad id → 400/404
     assert.equal((await fetch(base + '/api/chat?c=nope')).status, 404);
     assert.equal((await fetch(base + '/__chat?c=..', { method: 'POST', body: '{}' })).status, 404);
     // ls via CLI + chat.html served
-    assert.match(execFileSync('node', [BIN, 'chat', 'ls'], { encoding: 'utf8', env }), /^root\troot:hub\t2건/);
+    assert.match(execFileSync('node', [BIN, 'chat', 'ls'], { encoding: 'utf8', env }), /^root\troot:hub\t3건/);
     assert.equal((await fetch(base + '/chat.html?c=root')).status, 200);
-    assert.ok(readChatLog(dir, 'root').length === 2 && appendChat);
+    assert.ok(readChatLog(dir, 'root').length === 3 && appendChat);
     // image attach: upload raw → name → message files; non-image rejected; CLI prints the absolute path
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
     assert.equal((await fetch(base + '/__chat/file?c=root', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: 'x' })).status, 400);
