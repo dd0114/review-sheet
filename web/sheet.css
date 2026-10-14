@@ -200,7 +200,6 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .rs-mic[data-state=busy]{background:#F3EFE6;color:#555;cursor:progress}
 @keyframes rs-mic-pulse{50%{box-shadow:0 0 0 6px rgba(178,71,47,.25)}}
 .rs-mic-toast{position:fixed;left:50%;bottom:84px;transform:translateX(-50%);max-width:90vw;padding:10px 14px;border-radius:10px;background:#2B2A27;color:#fff;font:14px/1.4 system-ui,sans-serif;z-index:50;box-shadow:0 4px 16px rgba(0,0,0,.2)}
-.rs-mic-live{position:fixed;z-index:49;box-sizing:border-box;max-height:40vh;overflow:auto;padding:8px 12px;border-radius:10px;background:#F3EFE6;border:1px dashed #B9B2A3;color:#7A756B;font:15px/1.45 system-ui,sans-serif;white-space:pre-wrap;box-shadow:0 4px 14px rgba(0,0,0,.12);pointer-events:none}
 /* 🔥 긴급 (hero 2026-10-08) — 시트 줄 오른쪽 버튼, 켜지면 빨간 테두리·배지로 자기 묶음 맨 위 */
 .rs-page ul.rs-index li{position:relative}
 .rs-page ul.rs-index li:has(.rs-flag) a{padding-right:62px}
@@ -222,6 +221,7 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page textarea:placeholder-shown + .rs-clear{display:none}
 .rs-page .rs-plus{flex:0 0 auto;width:46px;height:46px;padding:0;border:1px solid #CFCBC2;border-radius:50%;background:#fff;color:#2B2A27;font:400 28px/1 system-ui,sans-serif;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:transform .15s}
 .rs-page .rs-plus.on{background:#2B2A27;color:#fff;border-color:#2B2A27}
+.rs-page .rs-plus.rec{background:#B2472F;border-color:#B2472F;color:#fff;font-size:20px;animation:rs-mic-pulse 1.2s ease-in-out infinite}
 .rs-page .c-tray{flex:0 0 100%;display:flex;flex-wrap:wrap;gap:8px}
 .rs-page .c-tray[hidden]{display:none}
 .rs-page .c-bar .c-tray .c-clip,.rs-page .c-bar .c-tray .c-inbox,.rs-page .c-bar .c-tray .rs-mic{flex:1 1 0;width:auto;min-width:0;height:46px;min-height:46px;margin:0;padding:0 10px;border-radius:12px;font:700 15px system-ui,sans-serif;color:#2B2A27;white-space:nowrap}

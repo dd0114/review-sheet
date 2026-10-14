@@ -17,6 +17,7 @@
       ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true })); ta.focus(); return;
     }
     const p = ev.target.closest && ev.target.closest('.rs-plus');
+    if (p && p.dataset.rec) return;   // 녹음 중 ＋ = ⏹ (mic.js 가 멈춘다) — 묶음은 그대로
     if (p) { const tray = document.getElementById(p.dataset.tray); if (tray) setTray(p, tray, tray.hidden); }
   });
   const init = () => {
