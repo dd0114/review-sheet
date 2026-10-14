@@ -148,7 +148,7 @@ export function ackReport(dir, id) {
 function assignInfo(a) {
   if (!a) return null;
   const last = (a.stages || []).at(-1) || { stage: '배정', note: `${a.issue} → ${a.owner}`, at: a.at };
-  return { issue: a.issue, owner: a.owner, stage: last.stage, note: last.note || '', stageAt: last.at, by: last.by || '',
+  return { issue: a.issue, owner: a.owner, stage: last.stage, note: last.note || '', stageAt: last.at, by: last.by || '', seenAt: a.heroSeenAt || '',
            report: !a.heroSeenAt || String(a.heroSeenAt) < String(last.at) };
 }
 /** 'none' = 제출됐는데 배정 없음 · 'changed' = 배정 뒤 답이 바뀜 · 'ok' = 배정됨 · null = 대상 아님(미제출·게이트 전 답) */
@@ -324,8 +324,12 @@ function listSheets(dir) {   // 배정·단계는 자주 바뀌고 파일이 몇
 const RECENT_DONE = 20;
 function inboxSheets(dir, all) {
   const sheets = listSheets(dir), done = sheets.filter(s => !s.error && s.submitted);
-  const reports = done.filter(s => s.assign && s.assign.report).sort((a, b) => String(b.assign.stageAt).localeCompare(String(a.assign.stageAt)));
-  return { sheets: all ? sheets : sheets.filter(s => s.error || !s.submitted).concat(done.slice(0, RECENT_DONE)), doneTotal: done.length, all: !!all || done.length <= RECENT_DONE, reports };
+  const byStage = (a, b) => String(b.assign.stageAt).localeCompare(String(a.assign.stageAt));
+  const reports = done.filter(s => s.assign && s.assign.report).sort(byStage);
+  // 확인한 보고 — 잘못 밀어 닫은 것도 다시 찾아 들어가게 최근 것부터 (hero 2026-10-14)
+  const seen = done.filter(s => s.assign && !s.assign.report).sort((a, b) => String(b.assign.seenAt).localeCompare(String(a.assign.seenAt)));
+  return { sheets: all ? sheets : sheets.filter(s => s.error || !s.submitted).concat(done.slice(0, RECENT_DONE)), doneTotal: done.length, all: !!all || done.length <= RECENT_DONE,
+           reports, seenReports: all ? seen : seen.slice(0, RECENT_DONE), seenTotal: seen.length };
 }
 
 /* ── 상시 채널 (chat) ───────────────────────────────────────────────────────────
@@ -593,10 +597,13 @@ const row = s => s.error
     (s.submitted ? ' · 제출 ' + when(s.savedAt) : (s.createdAt ? ' · 보냄 ' + when(s.createdAt) : '')) +
     (s.assign ? ' · <span class="rs-stage">' + esc(s.assign.stage) + ' ' + esc(s.assign.issue) + '</span>' : '') + '</small></a>' +
     '<button type="button" class="rs-flag' + (s.urgent ? ' on' : '') + '" data-d="' + esc(s.name) + '" aria-pressed="' + !!s.urgent + '" title="' + (s.urgent ? '긴급 해제' : '긴급으로') + '" aria-label="' + (s.urgent ? '긴급 해제' : '긴급으로') + '">🔥</button></li>';
-const reportRow = s => '<li class="report"><a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
+const reportBody = s => '<a href="/sheet.html?d=' + encodeURIComponent(s.name) + '" draggable="false">' +
   '<span class="rs-badge">' + esc(s.assign.stage) + '</span><b>' + esc(s.title) + '</b>' +
-  '<small>' + esc(s.assign.issue) + ' · ' + esc(s.assign.owner) + (s.assign.note && s.assign.stage !== '배정' ? ' — ' + esc(s.assign.note) : '') + ' · ' + when(s.assign.stageAt) + '</small></a>' +
-  '<button type="button" class="rs-ack" data-d="' + esc(s.name) + '">확인</button></li>';
+  '<small>' + esc(s.assign.issue) + ' · ' + esc(s.assign.owner) + (s.assign.note && s.assign.stage !== '배정' ? ' — ' + esc(s.assign.note) : '') + ' · ' + when(s.assign.stageAt) +
+  (s.assign.report ? '' : ' · 확인 ' + when(s.assign.seenAt)) + '</small></a>';
+const reportRow = s => '<li class="report" data-d="' + esc(s.name) + '">' + reportBody(s) + '<button type="button" class="rs-ack" data-d="' + esc(s.name) + '">확인</button></li>';
+const seenRow = s => '<li class="report seen">' + reportBody(s) + '</li>';
+let seenOpen = false;   // '확인한 보고' 펼침 — 5초 갱신에도 유지
 const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : c.manager ? ' mgr' : ' sess') + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
   '<span class="rs-badge">' + (c.unreadHero ? '새 답장 ' + c.unreadHero : c.hub ? '★ 메인 허브' : c.manager ? '🧭 매니저' : '💬 세션') + '</span><b>' + esc(c.title) + '</b>' +
   '<small>' + esc(c.owner) + (c.last ? ' · ' + esc(c.last.from === 'hero' ? '나' : c.last.from) + ': ' + esc(c.last.text.slice(0, 60)) + (c.last.text.length > 60 ? '…' : '') + ' · ' + when(c.last.ts) : ' · 아직 대화 없음') + '</small></a></li>';
@@ -611,7 +618,9 @@ const render = d => {
     (chats.length ? '<h2>상시 채널 <span class="rs-n rs-n-chat">' + chats.reduce((a, c) => a + c.unreadHero, 0) + '</span></h2><ul class="rs-index">' + chats.map(chatRow).join('') + '</ul>' : '') +
     '<h2>답 기다리는 중 <span class="rs-n">' + wait.length + '</span></h2><ul class="rs-index">' +
     (wait.map(row).join('') || '<li class="empty">기다리는 시트 없음</li>') + '</ul>' +
-    ((d.reports || []).length ? '<h2 class="rs-report-h">보고 <span class="rs-n">' + d.reports.length + '</span> <small>답할 필요 없음 · 확인하면 내려가요</small></h2><ul class="rs-index">' + d.reports.map(reportRow).join('') + '</ul>' : '') +
+    ((d.reports || []).length ? '<h2 class="rs-report-h">보고 <span class="rs-n">' + d.reports.length + '</span> <small>오른쪽으로 밀면 확인</small></h2><ul class="rs-index">' + d.reports.map(reportRow).join('') + '</ul>' : '') +
+    ((d.seenReports || []).length ? '<details class="rs-seen"' + (seenOpen ? ' open' : '') + '><summary>확인한 보고 <span class="rs-n">' + (d.seenTotal ?? d.seenReports.length) + '</span> <small>닫은 것 다시 보기</small></summary><ul class="rs-index">' +
+      d.seenReports.map(seenRow).join('') + '</ul></details>' : '') +
     '<h2 class="rs-done-h">제출됨 <span class="rs-n">' + (d.doneTotal ?? done.length) + '</span></h2><ul class="rs-index">' +
     (done.map(row).join('') || '<li class="empty">아직 없음</li>') + '</ul>' +
     (d.all === false ? '<button type="button" class="rs-refresh rs-more" id="rs-more">지난 시트 더 보기 (' + (d.doneTotal - done.length) + ')</button>' : '');
@@ -621,7 +630,8 @@ const render = d => {
 };
 render(INIT);
 let showAll = false;   // '지난 시트 더 보기' 누르면 그 뒤 새로고침도 전부
-const refresh = async () => { const b = document.getElementById('rs-refresh'); b.disabled = true; try { const r = await fetch('/api/inbox' + (showAll ? '?all=1' : ''), {cache:'no-store'}); if(r.ok) render(await r.json()); } catch(_){ document.getElementById('rs-upd').textContent = '갱신 실패 — 서버 확인'; } b.disabled = false; };
+let swipe = null;   // 보고 밀기 중이면 목록을 다시 그리지 않는다
+const refresh = async () => { if (swipe) return; const b = document.getElementById('rs-refresh'); b.disabled = true; try { const r = await fetch('/api/inbox' + (showAll ? '?all=1' : ''), {cache:'no-store'}); if(r.ok) render(await r.json()); } catch(_){ document.getElementById('rs-upd').textContent = '갱신 실패 — 서버 확인'; } b.disabled = false; };
 document.getElementById('rs-refresh').addEventListener('click', refresh);
 document.getElementById('rs-list').addEventListener('click', ev => { if (ev.target.id === 'rs-more') { ev.target.disabled = true; showAll = true; refresh(); } });
 document.getElementById('rs-list').addEventListener('click', async ev => {   // 🔥 = 긴급 켜기/끄기 (담당 세션 채널에 알림)
@@ -633,13 +643,52 @@ document.getElementById('rs-list').addEventListener('click', async ev => {   // 
   } catch (e) { document.getElementById('rs-upd').textContent = '긴급 표시 실패 — ' + e.message; }
   await refresh();
 });
+const ack = async d => {
+  try { const r = await fetch('/__report-ack?d=' + encodeURIComponent(d), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); if (!r.ok) throw new Error(await r.text()); }
+  catch (e) { document.getElementById('rs-upd').textContent = '보고 확인 실패 — ' + e.message; }
+};
 document.getElementById('rs-list').addEventListener('click', async ev => {   // 보고 확인 → 다음 단계까지 내려감
   const b = ev.target.closest('.rs-ack'); if (!b) return;
   ev.preventDefault(); b.disabled = true;
-  try { const r = await fetch('/__report-ack?d=' + encodeURIComponent(b.dataset.d), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); if (!r.ok) throw new Error(await r.text()); }
-  catch (e) { document.getElementById('rs-upd').textContent = '보고 확인 실패 — ' + e.message; }
-  await refresh();
+  await ack(b.dataset.d); await refresh();
 });
+document.getElementById('rs-list').addEventListener('toggle', ev => { if (ev.target.matches('.rs-seen')) seenOpen = ev.target.open; }, true);
+// 보고 줄을 오른쪽으로 밀면 확인 (hero 2026-10-14). 세로 스크롤은 그대로, 가로로 확실히 밀 때만 잡는다.
+const list = document.getElementById('rs-list');
+let noClick = false;
+list.addEventListener('pointerdown', ev => {
+  const li = ev.target.closest('li.report:not(.seen)');
+  if (!li || ev.target.closest('.rs-ack') || ev.button > 0) return;
+  swipe = { li, id: ev.pointerId, x0: ev.clientX, y0: ev.clientY, dx: 0, on: false };
+});
+list.addEventListener('pointermove', ev => {
+  if (!swipe || ev.pointerId !== swipe.id) return;
+  const dx = ev.clientX - swipe.x0, dy = ev.clientY - swipe.y0;
+  if (!swipe.on) {
+    if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) { swipe = null; return; }
+    if (dx < 12 || dx < Math.abs(dy) * 1.5) return;
+    swipe.on = true; swipe.li.classList.add('swiping'); try { swipe.li.setPointerCapture(ev.pointerId); } catch {}
+  }
+  swipe.dx = Math.max(0, dx);
+  swipe.li.style.transform = 'translateX(' + swipe.dx + 'px)';
+  swipe.li.classList.toggle('armed', swipe.dx > swipe.li.offsetWidth * 0.35);
+});
+const endSwipe = async ev => {
+  if (!swipe || ev.pointerId !== swipe.id) return;
+  const s = swipe;
+  if (!s.on) { swipe = null; return; }
+  noClick = true; setTimeout(() => { noClick = false; }, 400);
+  if (ev.type === 'pointerup' && s.dx > s.li.offsetWidth * 0.35) {
+    s.li.style.transition = 'transform .18s ease-out, opacity .18s'; s.li.style.transform = 'translateX(110%)'; s.li.style.opacity = '0';
+    await ack(s.li.dataset.d); swipe = null; await refresh();
+  } else {
+    s.li.style.transition = 'transform .15s'; s.li.style.transform = ''; s.li.classList.remove('swiping', 'armed');
+    setTimeout(() => { s.li.style.transition = ''; }, 160); swipe = null;
+  }
+};
+list.addEventListener('pointerup', endSwipe);
+list.addEventListener('pointercancel', endSwipe);
+list.addEventListener('click', ev => { if (noClick && ev.target.closest('li.report')) { ev.preventDefault(); ev.stopPropagation(); } }, true);
 setInterval(refresh, 5000);
 document.addEventListener('visibilitychange', () => { if(!document.hidden) refresh(); });  // 폰: 탭 돌아오면 바로
 </script></html>`;

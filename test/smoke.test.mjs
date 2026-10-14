@@ -421,10 +421,13 @@ test('stage: owner reports each step → 보고 group until hero acks; stalled s
     assert.equal((await fetch(base + '/__report-ack?d=example', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 200);
     inbox = await (await fetch(base + '/api/inbox')).json();
     assert.equal(inbox.reports.length, 0);
+    // acked reports stay findable under 확인한 보고 (hero 2026-10-14)
+    assert.deepEqual(inbox.seenReports.map(s => [s.name, s.assign.stage]), [['example', '라이브']]);
+    assert.equal(inbox.seenTotal, 1); assert.ok(inbox.seenReports[0].assign.seenAt);
     assert.equal(inbox.sheets.find(s => s.name === 'example').assign.stage, '라이브');
     run('stage', dir, 'example', '끝');
     inbox = await (await fetch(base + '/api/inbox')).json();
-    assert.equal(inbox.reports.length, 1);
+    assert.equal(inbox.reports.length, 1); assert.equal(inbox.seenTotal, 0);
     assert.match(await (await fetch(base + '/')).text(), /rs-report-h|reportRow/);
   } finally { await close(); }
 });
