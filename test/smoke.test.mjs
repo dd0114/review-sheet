@@ -453,3 +453,25 @@ test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it
     assert.match(await (await fetch(srv.base + '/')).text(), /href="\/board"/);
   } finally { await srv.close(); }
 });
+
+test('추가 질문: _ask memo → owner channel gets one hero notice per new/changed text, read shows it on top, page has the box (hero 2026-10-13)', async () => {
+  const dir = tmpDir();
+  const { newChat, readChatLog } = await import('../bin/review-sheet.mjs');
+  fs.writeFileSync(path.join(dir, 'a-data.js'), `window.SHEET = { id: 'a', title: 'T-a', from: 'infra', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
+  newChat(dir, 'infra', 'infra', 'infra:fleet2');
+  const { base, close } = await startServer(dir, 0);
+  try {
+    const post = answers => fetch(base + '/__answers?sheet=a', { method: 'POST', body: JSON.stringify({ answers }) }).then(r => r.json());
+    let j = await post({ 'S-1': { pick: '① a' } });
+    assert.equal(j.notified, null);                                      // no question → no notice
+    j = await post({ 'S-1': { pick: '① a' }, _ask: { memo: '이거 언제 끝나?' } });
+    assert.equal(j.notified, 'infra');
+    j = await post({ 'S-1': { pick: '① a' }, _ask: { memo: '이거 언제 끝나?' } });
+    assert.equal(j.notified, null);                                      // same text again → no repeat
+    const log = readChatLog(dir, 'infra');
+    assert.equal(log.length, 1); assert.equal(log[0].from, 'hero'); assert.match(log[0].text, /추가 질문 \(시트 a · T-a\): 이거 언제 끝나\?/);
+    const md = execFileSync('node', [BIN, 'read', dir, 'a'], { encoding: 'utf8' });
+    assert.match(md.split('\n').slice(0, 5).join('\n'), /hero 추가 질문.*이거 언제 끝나\?/);
+    assert.match(fs.readFileSync(path.join(path.dirname(BIN), '..', 'web', 'sheet.html'), 'utf8'), /data-q="_ask"/);
+  } finally { await close(); }
+});
