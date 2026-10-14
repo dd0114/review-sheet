@@ -390,7 +390,7 @@ test('cli: assign gate — submitted sheets stay open until an issue/owner is re
   assert.match(run('unassigned', dir).out, /^example\t답바뀜\t/);
 });
 
-test('stage: owner reports each step → 보고 group until hero acks; stalled steps surface in unassigned (hero 2026-10-13)', async () => {
+test('stage: owner reports each step as an end-state tag on the sheet row; stalled steps surface in unassigned (hero 2026-10-13/14)', async () => {
   const dir = tmpDir();
   fs.mkdirSync(path.join(dir, 'answers'));
   const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
@@ -399,7 +399,7 @@ test('stage: owner reports each step → 보고 group until hero acks; stalled s
   let r = run('stage', dir, 'example', '머지');
   assert.equal(r.code, 1); assert.match(r.out, /아직 배정 안 됨/);
   assert.equal(run('assign', dir, 'example', '#7', 'proj:ws1').code, 0);
-  assert.match(run('stage', dir, 'example', 'merged', 'PR', '#9').out, /^example\t머지 — PR #9/);
+  assert.match(run('stage', dir, 'example', 'merged', 'PR', '#9').out, /^example\t메인 반영 · 배포 전 — PR #9/);
   assert.equal(run('stage', dir, 'example', '반쯤').code, 1);
   const a = JSON.parse(fs.readFileSync(path.join(dir, 'assign', 'example.json'), 'utf8'));
   assert.deepEqual(a.stages.map(x => x.stage), ['배정', '머지']);
@@ -412,23 +412,23 @@ test('stage: owner reports each step → 보고 group until hero acks; stalled s
   assert.equal(run('unassigned', dir, '--hours', '48').code, 0);
   run('stage', dir, 'example', '라이브', '16:05 배포');
   assert.equal(run('unassigned', dir).code, 0);
-  // server: report shows in /api/inbox until acked, then drops; next step brings it back
+  // end-state tag on the sheet row (hero 2026-10-14: 메인만? 배포 큐? 배포됨? 어드민 스위치? 언제?)
+  assert.match(run('stage', dir, 'example', '라이브', '--off', '--eta', '다음 시즌', '스위치 켜면 공개').out, /^example\t배포됨 · 어드민 스위치 꺼짐 · 다음 시즌 공개 — 스위치 켜면 공개/);
   const { base, close } = await startServer(dir, 0);
   try {
     let inbox = await (await fetch(base + '/api/inbox')).json();
-    assert.deepEqual(inbox.reports.map(s => [s.name, s.assign.stage, s.assign.note]), [['example', '라이브', '16:05 배포']]);
-    assert.equal((await fetch(base + '/__report-ack?d=example', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' })).status, 415);
-    assert.equal((await fetch(base + '/__report-ack?d=example', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 200);
+    let a = inbox.sheets.find(s => s.name === 'example').assign;
+    assert.deepEqual([a.stage, a.off, a.eta, a.tag], ['라이브', true, '다음 시즌', '배포됨 · 어드민 스위치 꺼짐 · 다음 시즌 공개']);
+    assert.equal(inbox.reports, undefined);
+    assert.equal((await fetch(base + '/__report-ack?d=example', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 404);
+    run('stage', dir, 'example', '배포대기', '--eta', '15:00');
     inbox = await (await fetch(base + '/api/inbox')).json();
-    assert.equal(inbox.reports.length, 0);
-    // acked reports stay findable under 확인한 보고 (hero 2026-10-14)
-    assert.deepEqual(inbox.seenReports.map(s => [s.name, s.assign.stage]), [['example', '라이브']]);
-    assert.equal(inbox.seenTotal, 1); assert.ok(inbox.seenReports[0].assign.seenAt);
-    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.stage, '라이브');
-    run('stage', dir, 'example', '끝');
+    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.tag, '배포 큐 · 15:00 예정');
+    run('stage', dir, 'example', '머지');
     inbox = await (await fetch(base + '/api/inbox')).json();
-    assert.equal(inbox.reports.length, 1); assert.equal(inbox.seenTotal, 0);
-    assert.match(await (await fetch(base + '/')).text(), /rs-report-h|reportRow/);
+    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.tag, '메인 반영 · 배포 전');
+    const html = await (await fetch(base + '/')).text();
+    assert.match(html, /rs-tag/); assert.doesNotMatch(html, /rs-report-h|오른쪽으로 밀면/);
   } finally { await close(); }
 });
 
