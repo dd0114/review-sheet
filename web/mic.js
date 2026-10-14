@@ -5,7 +5,8 @@
    쓰는 법: <button type="button" class="rs-mic" data-for="<textarea id>"> 또는 textarea 의 바로 옆 형제 버튼.
    폰 마이크는 보안 컨텍스트(HTTPS · localhost)에서만 열린다 — 폰은 tailscale serve 의 https 주소로 연다.
    ＋ 묶음 안의 🎤 로 녹음하면 ＋ 자리가 빨간 ⏹ 가 된다 — 말풍선이 묶음 줄의 ⏹ 를 덮어 정지 버튼을 못 찾았다 (hero 2026-10-14).
-   단축키 ⌥M(Alt+M) = 녹음 시작/끝 — 지금 쓰는 칸의 🎤, 없으면 화면 첫 🎤. */
+   단축키 ⌥M(Alt+M) · ⌃M(Control+M) = 녹음 시작/끝 — 지금 쓰는 칸의 🎤, 없으면 화면 첫 🎤.
+   ⌘M 은 macOS 가 '창 최소화'로 먼저 가져가 페이지에 오지 않는다 (hero 2026-10-14 요청 → ⌃M 로 대신). */
 (function () {
   'use strict';
   const MAX_SEC = 120;
@@ -25,13 +26,13 @@
     btn.dataset.state = state;
     btn.textContent = label || (state === 'idle' && btn.dataset.idle) || { idle: '🎤', rec: '⏹', busy: '…' }[state];
     btn.setAttribute('aria-label', { idle: '음성 입력', rec: '녹음 멈추고 전사', busy: '전사 중' }[state]);
-    btn.title = { idle: '음성 입력 (⌥M)', rec: '녹음 멈추기 (⌥M)', busy: '전사 중' }[state];
+    btn.title = { idle: '음성 입력 (⌃M · ⌥M)', rec: '녹음 멈추기 (⌃M · ⌥M)', busy: '전사 중' }[state];
   };
   // ＋ 묶음 안의 🎤 → 녹음 중엔 그 ＋ 가 정지 버튼 노릇을 한다(누르면 다른 버튼 누름과 같아 멈춤)
   const plusOf = btn => { const t = btn.closest('[id]'); return t && t.hidden !== undefined && document.querySelector('.rs-plus[data-tray="' + t.id + '"]'); };
   const plusRec = (me, label) => {
     const p = me.plus; if (!p) return;
-    if (label) { if (!p.dataset.rec) p.dataset.idle = p.textContent; p.dataset.rec = '1'; p.classList.add('rec'); p.textContent = label; p.title = '녹음 멈추기 (⌥M)'; }
+    if (label) { if (!p.dataset.rec) p.dataset.idle = p.textContent; p.dataset.rec = '1'; p.classList.add('rec'); p.textContent = label; p.title = '녹음 멈추기 (⌃M · ⌥M)'; }
     else { delete p.dataset.rec; p.classList.remove('rec'); p.textContent = p.dataset.idle || '＋'; p.title = ''; }
   };
   const targetOf = btn => (btn.dataset.for && document.getElementById(btn.dataset.for)) ||
@@ -142,9 +143,9 @@
   }, true);
   // pointerdown on the button must not steal the caret from the textarea on desktop
   document.addEventListener('mousedown', ev => { if (ev.target.closest && ev.target.closest('.rs-mic')) ev.preventDefault(); });
-  // ⌥M = 녹음 시작/끝 (mac 은 ⌥M 이 'µ' 를 치므로 key 가 아니라 code 로 본다)
+  // ⌥M · ⌃M = 녹음 시작/끝 (mac 은 ⌥M 이 'µ' 를 치므로 key 가 아니라 code 로 본다)
   document.addEventListener('keydown', ev => {
-    if (!ev.altKey || ev.metaKey || ev.ctrlKey || ev.code !== 'KeyM' || ev.repeat) return;
+    if (ev.code !== 'KeyM' || ev.repeat || ev.metaKey || ev.shiftKey || ev.altKey === ev.ctrlKey) return;
     ev.preventDefault();
     if (cur) return stop();
     const a = document.activeElement, all = [...document.querySelectorAll('.rs-mic')];
