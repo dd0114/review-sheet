@@ -7,6 +7,9 @@
 - **메인 허브** — 채널 하나를 메인 세션의 허브로 지정(`--hub`, 첫 채널은 자동). 받은편지함 맨 위에 ★ 고정, `/hub` 가 바로 그 채널. 프로젝트 매니저·워커 채널은 그 아래.
 - **🎤 음성 입력** — 채팅 입력칸·시트 메모칸·메모 옆 마이크(탭 = 녹음, 다시 탭 = 전사). 전사는 **이 맥에서만**(ffmpeg → whisper.cpp `large-v3-turbo`, 한국어, `~/.review-sheet/vocab.txt` 단어장). 폰 마이크는 HTTPS 가 필요해 `bin/tailscale-serve.sh on` 으로 tailnet 안에서만 감싼다.
 - **메모(memo)** — hero 가 자기한테 보내는 답장 없는 1대1 메시지(`/memo.html`). 채널 모양으로 쌓이고, **말풍선을 누르면 복사**된다. 저장·초안 개념 없음, `inbox/memo/hero.jsonl` 한 줄 = 한 메시지. **세션은 읽지도 쓰지도 않는다** — hero 가 자기와 대화하는 칸이다.
+- **추가 질문** — 시트 맨 아래 칸. hero 가 쓰고 저장하면 시트를 보낸 세션 채널에 알림이 가고, 세션은 채팅으로 답한다.
+- **보고** — 답을 받은 세션이 후속 일을 `assign`(이슈·담당)하고 단계마다 `stage`(머지·배포대기·라이브·끝) 한 줄을 남기면, 받은편지함 '보고' 묶음에 뜬다. hero 는 줄을 **오른쪽으로 밀어** 확인하고, 확인한 것은 '확인한 보고' 칸에서 다시 연다.
+- **진행판(`/board`)** — 바깥 스크립트가 넘긴 카드 목록을 할 일 · 하는 중 · 끝 세 칸으로 보여 주는 보기 전용 판(우선도·담당·'직접 작업 / 시스템 대기 / 쉬는 중'). 5초 갱신.
 - **받은편지함 하나, 서버 하나, 탭 하나** — 모든 세션이 `~/.review-sheet/inbox` 에 시트를 넣고, 상주 서버(`:5600`)가 큐처럼 보여 준다(답 기다리는 중 / 제출됨).
 - **폰에서** — [Tailscale](https://tailscale.com) 로 맥과 폰을 같은 tailnet 에 두면 밖에서도 `http://<맥 tailnet 주소>:5600/` 로 열린다.
 
@@ -32,6 +35,9 @@ REVIEW_SHEET_FROM=myproj review-sheet new myproj-v1-rules    # 템플릿 → inb
 review-sheet wait myproj-v1-rules     # 제출될 때까지 블록, 마크다운 출력
 review-sheet read myproj-v1-rules [--json]
 review-sheet ls                       # 대기 / 제출됨
+review-sheet assign myproj-v1-rules '#12' myproj:main     # 후속 일 배정 → 시트가 닫힘
+review-sheet stage myproj-v1-rules 라이브 "16:05 배포"     # 단계 보고 → 받은편지함 '보고'
+review-sheet unassigned               # 배정 없음 · 답 바뀜 · 멈춤 시트
 
 review-sheet chat new main --title "메인 허브" --owner main --hub   # → http://127.0.0.1:5600/hub
 review-sheet chat wait main --timeout 14400   # 세션: 사람이 쓸 때까지 블록 → chat say main "…" 로 답 → 다시 wait
@@ -39,6 +45,27 @@ review-sheet chat say main "답장"
 review-sheet chat say main --re <id> "그 메시지에 대한 답"   # 카톡식 답장 — wait/read 출력 맨 앞 #id. 답장일 때만, 강제 아님
 node --test test/
 ```
+
+## 다른 프로젝트에 붙이기 — hero 쪽 인터페이스 세 가지
+
+어느 프로젝트든 세션은 CLI 만 쓰고, hero 는 받은편지함 탭 하나만 본다.
+
+1. **대답하기** — 세션: `new` → 시트 작성 → `wait`/`read`. hero: 고르고 메모·첨부, 모자라면 '추가 질문'. 세션은 추가 질문 알림을 `chat wait` 로 받아 `chat say` 로 답한다.
+2. **보고 닫기** — 세션: 답을 받으면 `assign <시트> <이슈#> <담당>`, 일이 진행될 때마다 `stage <시트> 머지|배포대기|라이브|끝 "<한 줄>"`. hero: '보고' 줄을 밀어 확인. `unassigned` 는 담당이 안 정해졌거나 24시간 넘게 멈춘 시트를 찾는다(exit 5).
+3. **진행판 보기** — 프로젝트마다 생산자 스크립트를 하나 둔다(이슈 목록·작업 창·CI 상태를 읽어 60초마다):
+
+   ```bash
+   my-board-feed | review-sheet board -      # 검증 후 board.json 원자 교체 → http://127.0.0.1:5600/board
+   ```
+
+   ```json
+   {"title": "진행판", "source": "my-board-feed", "cards": [
+     {"id": "proj#12", "title": "로그인 오류", "status": "doing", "priority": "P1", "group": "proj",
+      "owner": ["proj:main"], "mode": "system", "modeNote": "CI", "url": "https://…/issues/12", "at": "2026-10-14T01:00:00Z"}
+   ]}
+   ```
+
+   `status` = todo · doing · done, `mode` = claude(세션이 직접 작업) · system(테스트·CI 등을 기다림) · idle, `priority` = P0~P3(또는 긴급·높음·중간·낮음). 제목 없는 카드와 http(s) 아닌 url 은 버린다. 판은 보기만 한다 — 일은 이슈에서 바뀐다. 갱신이 10분 넘게 없으면 판에 경고가 뜬다.
 
 시트 데이터 형식·작성 원칙(쉬운 말, 추천 필수, 질문마다 사진)은 [`SKILL.md`](SKILL.md). 무엇을·언제·어떻게 물을지(공통 판단 규칙)도 거기에, 작업 영역별 노하우는 [`domains/visual.md`](domains/visual.md)(화면·연출) · [`domains/backend-ops.md`](domains/backend-ops.md)(백엔드·운영).
 
