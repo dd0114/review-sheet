@@ -68,7 +68,7 @@ function usage(code = 2) {
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
-  review-sheet chat ls | read <ch> [--all] [--json] | say <ch> [--re <id>] <text…|-> | wait <ch> [--timeout SEC]   # --re = 그 메시지에 답장(카톡식 인용)
+  review-sheet chat ls | read <ch> [--all] [--json] | say <ch> [--re <id>] [--notice] <text…|-> | wait <ch> [--timeout SEC]   # --re = 그 메시지에 답장(카톡식 인용)
   (메모: http://127.0.0.1:${INBOX_PORT}/memo.html — hero 가 자기한테 보내는 메시지, CLI 없음·세션은 읽지 않는다)
   [dir] omitted → inbox ${INBOX} (one folder for every session; served on :${INBOX_PORT})`);
   process.exit(code);
@@ -78,13 +78,22 @@ function parseArgs(argv) {
   const flags = {}, rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--off') flags[a.slice(2)] = true;
+    if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--off' || a === '--notice') flags[a.slice(2)] = true;
     else if (a === '--port' || a === '--timeout' || a === '--hours') flags[a.slice(2)] = Number(argv[++i]);
     else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
   return { flags, rest };
+}
+
+/** Chat is for short notices; anything hero must look at or confirm belongs on a sheet (hero 2026-10-14).
+ *  Returns why a chat message looks like review material, or null. `chat say --notice` skips it. */
+export function chatGate(text) {
+  if (/https?:\/\/|\b\d{1,3}(\.\d{1,3}){3}:\d+/.test(text)) return '링크가 들어 있음';
+  if (/말씀\s*(해\s*)?주세요|알려\s*주세요|확인\s*(해\s*)?주세요|봐\s*주세요|골라\s*주세요|정해\s*주세요|컨펌|괜찮은지|괜찮을까요|어떠세요|어떤가요|할까요\?|될까요\?|맞나요\?/.test(text)) return '확인·결정 요청이 들어 있음';
+  if (text.length > 500) return `긴 글(${text.length}자 — 결과 보고는 시트로)`;
+  return null;
 }
 
 /** Load `<dir>/<name>-data.js` the way the browser does (it assigns window.SHEET). Trusted local file. */
@@ -875,6 +884,8 @@ async function main() {
     if (sub === 'say') {
       const text = words[0] === '-' || !words.length ? fs.readFileSync(0, 'utf8').trim() : words.join(' ');
       if (!text) { console.error('text 없음'); process.exit(2); }
+      const why = flags.notice ? null : chatGate(text);
+      if (why) { console.error(`보내지 않음 — ${why}. hero 가 보고 맞는지 정할 것(결과물·링크·질문)은 시트로: review-sheet new <이름>\n받음·담당·머지/배포 한 줄처럼 꼭 채팅이어야 하는 알림이면 --notice 를 붙여 다시 보낸다.`); process.exit(6); }
       const meta = readChatMeta(root, ch); const m = appendChat(root, ch, meta.owner, text, undefined, flags.re); markSeen(root, ch, 'owner');
       console.log(fmt(m)); return;
     }
