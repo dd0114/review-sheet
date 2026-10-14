@@ -95,6 +95,8 @@ const draft = { get: () => { try { return localStorage.getItem(LS); } catch (_) 
 let sending = false;   // one send at a time — iOS Korean IME can fire submit twice (see chat.html)
 const submit = async () => {
   if (sending) return;
+  const mic = window.RSMic && window.RSMic.finish(input);   // 녹음 중 Enter = 녹음 끝내고 최종 전사로 보낸다
+  if (mic) { sending = true; sendBtn.disabled = true; try { await mic; } finally { sending = false; sendBtn.disabled = false; } }
   const text = input.value.trim(); if (!text) return;
   sending = true; sendBtn.disabled = true;
   try {

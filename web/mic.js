@@ -6,6 +6,7 @@
    폰 마이크는 보안 컨텍스트(HTTPS · localhost)에서만 열린다 — 폰은 tailscale serve 의 https 주소로 연다.
    ＋ 묶음 안의 🎤 로 녹음하면 ＋ 자리가 빨간 ⏹ 가 된다 — 말풍선이 묶음 줄의 ⏹ 를 덮어 정지 버튼을 못 찾았다 (hero 2026-10-14).
    단축키 ⌥M(Alt+M) · ⌃M(Control+M) = 녹음 시작/끝 — 지금 쓰는 칸의 🎤, 없으면 화면 첫 🎤.
+   녹음 중 Enter(보내기) = 녹음 멈추고 깨끗한 전사가 칸에 들어온 뒤 보낸다 — RSMic.finish(textarea) (hero 2026-10-14).
    ⌘M 은 macOS 가 '창 최소화'로 먼저 가져가 페이지에 오지 않는다 (hero 2026-10-14 요청 → ⌃M 로 대신). */
 (function () {
   'use strict';
@@ -92,13 +93,15 @@
     const type = pickType();
     const rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
     const me = cur = { btn, ta, rec, stream, chunks: [], t0: Date.now(), timer: null, live: { text: '', at: 0, busy: false, done: false }, plus: plusOf(btn), base: ta.value, at };
+    ta._rsMicDone = new Promise(res => { me.resolve = () => { if (ta._rsMicDone === me.done) ta._rsMicDone = null; res(); }; });
+    me.done = ta._rsMicDone;
     rec.ondataavailable = ev => { if (ev.data && ev.data.size) me.chunks.push(ev.data); };
     rec.onstop = async () => {
       clearInterval(me.timer); clearInterval(me.liveTimer); stream.getTracks().forEach(t => t.stop());
       if (cur === me) cur = null;
       plusRec(me, null);
       const blob = new Blob(me.chunks, { type: (rec.mimeType || type || 'audio/webm').split(';')[0] });
-      if (!blob.size || Date.now() - me.t0 < 400) { me.live.done = true; if (me.live.text) restore(me); setState(btn, 'idle'); return; }
+      if (!blob.size || Date.now() - me.t0 < 400) { me.live.done = true; if (me.live.text) restore(me); setState(btn, 'idle'); me.resolve(); return; }
       setState(btn, 'busy'); btn.disabled = true;
       try {
         const r = await fetch('/api/stt', { method: 'POST', headers: { 'content-type': blob.type }, body: blob });
@@ -106,7 +109,7 @@
         if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
         if (j.text) insert(ta, j.text, at, me.base); else { restore(me); toast('들린 말이 없다'); }
       } catch (err) { toast('전사 실패 — ' + err.message + (me.live.text ? ' (칸의 글은 미리 들은 것)' : '')); }
-      finally { me.live.done = true; btn.disabled = false; setState(btn, 'idle'); }
+      finally { me.live.done = true; btn.disabled = false; setState(btn, 'idle'); me.resolve(); }
     };
     rec.start(1000);
     setState(btn, 'rec', '⏹ 0'); plusRec(me, '⏹');
@@ -154,5 +157,7 @@
     if (!supported) { toast(window.isSecureContext ? '이 브라우저는 녹음을 지원하지 않는다' : '마이크는 HTTPS 에서만 — tailscale https 주소로 열 것'); return; }
     start(btn);
   });
-  window.RSMic = { supported, stop };
+  /** 그 칸이 녹음·전사 중이면 멈추고 최종 전사가 칸에 들어올 때까지 기다리는 promise, 아니면 null */
+  const finish = ta => { const p = ta && ta._rsMicDone; if (!p) return null; if (cur && cur.ta === ta) stop(); return p; };
+  window.RSMic = { supported, stop, finish };
 }());
