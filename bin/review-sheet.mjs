@@ -217,12 +217,13 @@ export function cleanDash(j) {
       values: s.values.slice(-2000).map(v => Number.isFinite(v) ? v : null) };
   }
   const refs = a => (Array.isArray(a) ? a : []).filter(k => typeof k === 'string' && series[k]).slice(0, 4);
-  const cols = a => (Array.isArray(a) ? a : []).slice(0, 4).map(c => ({ label: str(c && c.label, 30), value: str(c && c.value, 30) }));
+  const num = v => Number.isFinite(v) ? v : undefined;
+  const cols = a => (Array.isArray(a) ? a : []).slice(0, 4).map(c => ({ label: str(c && c.label, 30), value: str(c && c.value, 30), n: num(c && c.n) }));
   const cards = j.cards.slice(0, 16).filter(c => c && str(c.label)).map(c => ({ key: str(c.key), label: str(c.label, 40), value: str(c.value, 20), unit: str(c.unit, 8),
-    sub: str(c.sub, 120), level: DASH_LEVELS.includes(c.level) ? c.level : 'ok', series: refs(c.series) }));
+    sub: str(c.sub, 120), n: num(c.n), level: DASH_LEVELS.includes(c.level) ? c.level : 'ok', series: refs(c.series) }));
   const groups = j.groups.slice(0, 12).filter(g => g && Array.isArray(g.rows)).map(g => ({ title: str(g.title, 80),
     rows: g.rows.slice(0, 80).filter(r => r && str(r.label)).map(r => ({ key: str(r.key), label: str(r.label, 80), sub: str(r.sub, 160), cols: cols(r.cols), series: refs(r.series) })) }));
-  return { title: str(j.title, 80), source: str(j.source, 80), note: str(j.note, 200), updatedAt: str(j.updatedAt, 40) || new Date().toISOString(), cards, groups, series };
+  return { title: str(j.title, 80), source: str(j.source, 80), note: str(j.note, 200), scale: { week: num(j.scale && j.scale.week) }, updatedAt: str(j.updatedAt, 40) || new Date().toISOString(), cards, groups, series };
 }
 export function writeDash(dir, j) {
   const d = cleanDash(j), f = dashFile(dir), tmp = f + '.' + process.pid + '.tmp';
