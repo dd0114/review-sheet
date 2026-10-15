@@ -110,6 +110,11 @@ test('chat: new → page posts as hero → owner reads/says → hero sees 읽음
     // review material is refused in chat (exit 6) unless --notice
     assert.throws(() => execFileSync('node', [BIN, 'chat', 'say', 'root', '주둔지 POC http://x:1/p — 재밌는지 말씀 주세요'], { encoding: 'utf8', env, stdio: 'pipe' }), e => e.status === 6 && /시트로/.test(String(e.stderr)));
     assert.throws(() => execFileSync('node', [BIN, 'chat', 'say', 'root', '가'.repeat(501)], { encoding: 'utf8', env, stdio: 'pipe' }), e => e.status === 6);
+    // hero 메시지에 다는 답장은 2000자까지(물은 걸 다 답하게, hero 2026-10-15) — 링크 막기는 그대로
+    assert.equal(chatGate('가'.repeat(1500), { heroReply: true }), null);
+    assert.match(chatGate('가'.repeat(2001), { heroReply: true }), /나눠/);
+    assert.match(chatGate('가'.repeat(501)), /--re/);
+    assert.match(chatGate('http://x:1/p 참고', { heroReply: true }), /링크/);
     assert.equal(chatGate('받음 — #2156 버그 창에 맡김'), null);
     assert.match(chatGate('평가 끝났어요, 괜찮은지 봐 주세요'), /요청/);
     execFileSync('node', [BIN, 'chat', 'say', 'root', '--notice', '머지됨 http://x/pr/1'], { encoding: 'utf8', env });
@@ -156,6 +161,11 @@ test('chat reply (hero 2026-10-09): say --re quotes an earlier message, page may
     let log = readChatLog(dir, 'root');
     assert.equal(log[2].re, m1.id); assert.equal(log[2].text, '1번 답');
     assert.match(execFileSync('node', [BIN, 'chat', 'read', 'root', '--all'], { encoding: 'utf8', env }), new RegExp('root:hub: ↩#' + m1.id + ' 1번 답'));
+    // hero 메시지에 다는 긴 답장(700자)은 통과, 세션 자기 글에 단 답장·평문은 500자 그대로(hero 2026-10-15)
+    execFileSync('node', [BIN, 'chat', 'say', 'root', '--re', m2.id, '가'.repeat(700)], { encoding: 'utf8', env });
+    assert.equal(readChatLog(dir, 'root').at(-1).text.length, 700);
+    assert.throws(() => execFileSync('node', [BIN, 'chat', 'say', 'root', '--re', log[2].id, '가'.repeat(700)], { encoding: 'utf8', env, stdio: 'pipe' }), e => e.status === 6);
+    fs.writeFileSync(path.join(dir, 'chat', 'root.jsonl'), readChatLog(dir, 'root').slice(0, 3).map(m => JSON.stringify(m) + '\n').join(''));
     // unknown original → CLI refuses, nothing stored
     assert.throws(() => execFileSync('node', [BIN, 'chat', 'say', 'root', '--re', 'zzzzzzzz', 'x'], { encoding: 'utf8', env, stdio: 'pipe' }), /답장 원문/);
     assert.equal(readChatLog(dir, 'root').length, 3);

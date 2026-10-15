@@ -89,11 +89,15 @@ function parseArgs(argv) {
 }
 
 /** Chat is for short notices; anything hero must look at or confirm belongs on a sheet (hero 2026-10-14).
- *  Returns why a chat message looks like review material, or null. `chat say --notice` skips it. */
-export function chatGate(text) {
+ *  Returns why a chat message looks like review material, or null. `chat say --notice` skips it.
+ *  heroReply = hero 메시지에 다는 답장(--re): 물은 걸 다 답하라고 2000자까지(hero 2026-10-15, 시트 root-terse-answers-1015 —
+ *  500자에 막혀 답을 깎아 보내 "왜 대충 답하냐"가 나왔다). 링크·확인 요청 막기는 그대로. */
+export const CHAT_MAX = 500, CHAT_REPLY_MAX = 2000;
+export function chatGate(text, { heroReply = false } = {}) {
   if (/https?:\/\/|\b\d{1,3}(\.\d{1,3}){3}:\d+/.test(text)) return '링크가 들어 있음';
   if (/말씀\s*(해\s*)?주세요|알려\s*주세요|확인\s*(해\s*)?주세요|봐\s*주세요|골라\s*주세요|정해\s*주세요|컨펌|괜찮은지|괜찮을까요|어떠세요|어떤가요|할까요\?|될까요\?|맞나요\?/.test(text)) return '확인·결정 요청이 들어 있음';
-  if (text.length > 500) return `긴 글(${text.length}자 — 결과 보고는 시트로)`;
+  const max = heroReply ? CHAT_REPLY_MAX : CHAT_MAX;
+  if (text.length > max) return heroReply ? `긴 글(${text.length}자 > ${max}) — 답을 줄이지 말고 메시지 두 개로 나눠 보내거나 시트로` : `긴 글(${text.length}자 — 결과 보고는 시트로. hero 질문에 답하는 거면 --re <그 메시지 id> 로 답장하면 ${CHAT_REPLY_MAX}자까지)`;
   return null;
 }
 
@@ -317,7 +321,7 @@ const askOf = saved => (saved && saved.answers && saved.answers._ask && typeof s
 function notifyAsk(root, id, text) {
   const s = listSheets(root).find(x => !x.error && x.id === id); if (!s) return null;
   const c = chatFor(path.resolve(root), s.from, s.name); if (!c) return null;
-  appendChat(path.resolve(root), c.name, 'hero', `추가 질문 (시트 ${s.name} · ${s.title}): ${text}\n— 채팅으로 답할 것. 답이 일을 바꾸면 SoT 이슈에도 한 줄.`);
+  appendChat(path.resolve(root), c.name, 'hero', `추가 질문 (시트 ${s.name} · ${s.title}): ${text}\n— 채팅 답장(--re 이 메시지)으로 답할 것. 물은 것마다 빠짐없이 — 짧게 줄이지 말 것(답장은 ${CHAT_REPLY_MAX}자까지). 질문이 여럿이면 번호 매겨 하나씩. 답이 일을 바꾸면 SoT 이슈에도 한 줄.`);
   return c.name;
 }
 
@@ -975,7 +979,8 @@ async function main() {
     if (sub === 'say') {
       const text = words[0] === '-' || !words.length ? fs.readFileSync(0, 'utf8').trim() : words.join(' ');
       if (!text) { console.error('text 없음'); process.exit(2); }
-      const why = flags.notice ? null : chatGate(text);
+      const heroReply = !!flags.re && readChatLog(root, ch).some(m => m.id === flags.re && m.from === 'hero');
+      const why = flags.notice ? null : chatGate(text, { heroReply });
       if (why) { console.error(`보내지 않음 — ${why}. hero 가 보고 맞는지 정할 것(결과물·링크·질문)은 시트로: review-sheet new <이름>\n받음·담당·머지/배포 한 줄처럼 꼭 채팅이어야 하는 알림이면 --notice 를 붙여 다시 보낸다.`); process.exit(6); }
       const meta = readChatMeta(root, ch); const m = appendChat(root, ch, meta.owner, text, undefined, flags.re); markSeen(root, ch, 'owner');
       console.log(fmt(m)); return;
