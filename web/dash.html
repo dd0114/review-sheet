@@ -1,0 +1,116 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>자원</title><link rel="stylesheet" href="/sheet.css">
+<style>
+.ds-stale{padding:8px 12px;border-radius:8px;background:#F6DED6;color:#8E3320;font-size:13.5px;margin:0 0 12px}
+.ds-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:0 0 6px}
+.ds-card{box-sizing:border-box;border:0;background:#fff;border-radius:10px;padding:10px 12px;box-shadow:0 1px 2px rgba(0,0,0,.08);border-top:4px solid #8FB89A;cursor:pointer;text-align:left;font:inherit;color:#222;min-width:0}
+.ds-card.warn{border-top-color:#D08A2E}.ds-card.bad{border-top-color:#B2472F}
+.ds-card.on{outline:2px solid #2B2A27}
+.ds-card small{display:block;font:700 12px/1.3 system-ui,sans-serif;color:#666}
+.ds-card b{display:block;font:800 22px/1.25 system-ui,sans-serif;margin:3px 0 2px}
+.ds-card b i{font-style:normal;font-size:14px;font-weight:700;color:#666;margin-left:2px}
+.ds-card span{display:block;font-size:12px;color:#666;line-height:1.35;overflow-wrap:anywhere}
+.ds-panel{background:#fff;border-radius:10px;padding:8px 10px 10px;margin:0 0 14px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.ds-group{margin:18px 0 0}
+.ds-group h2{font-size:15px;margin:0 2px 8px}
+.ds-row{display:block;width:100%;box-sizing:border-box;text-align:left;background:#fff;border:0;border-radius:10px;padding:9px 12px;margin:0 0 6px;box-shadow:0 1px 2px rgba(0,0,0,.08);font:inherit;color:#222;cursor:pointer}
+.ds-row.on{outline:2px solid #2B2A27}
+.ds-row b{display:block;font-size:14.5px;line-height:1.35;overflow-wrap:anywhere}
+.ds-sub{font-size:12.5px;color:#666;margin-top:2px;overflow-wrap:anywhere}
+.ds-cols{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:5px;font-size:13px;color:#444}
+.ds-cols em{font-style:normal;color:#888;margin-right:3px}
+.ds-cols strong{font-weight:800}
+.ds-row .ds-chart{margin-top:8px;cursor:default}
+.ds-chart h3{font:700 12.5px/1.3 system-ui,sans-serif;color:#444;margin:8px 0 2px;display:flex;justify-content:space-between;gap:8px}
+.ds-chart h3 span{color:#888;font-weight:600}
+.ds-chart svg{display:block;width:100%;height:84px}
+.ds-axis{display:flex;justify-content:space-between;font-size:11px;color:#888}
+.ds-note{font-size:12px;color:#888;margin-top:16px}
+.ds-i{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;margin-left:8px;border-radius:50%;border:1.5px solid #2B2A27;background:#fff;color:#2B2A27;font:italic 800 15px/1 Georgia,serif;cursor:pointer;vertical-align:middle;padding:0}
+.ds-i.on{background:#2B2A27;color:#fff}
+.ds-info{background:#EEF2F7;border-radius:8px;padding:8px 12px;font-size:13px;color:#2B3A4F;margin:0 0 12px;line-height:1.45}
+.ds-empty{color:#888;font-size:13px;padding:6px 4px}
+</style>
+<body class="rs-page"><main>
+<div class="eyebrow"><a href="/">REVIEW-SHEET</a> · 자원</div><h1><span id="ds-title">자원</span><button type="button" class="ds-i" id="ds-i" aria-label="토큰을 주간 % 로 보기" title="토큰을 주간 % 로 보기">i</button></h1>
+<p class="lede">보기 전용 — 숫자나 줄을 누르면 지난 시간 추이. <span id="ds-upd"></span></p>
+<div id="ds-info" class="ds-info" hidden></div>
+<div id="ds-stale" class="ds-stale" hidden></div>
+<div class="ds-cards" id="ds-cards"></div>
+<div id="ds-panel"></div>
+<div id="ds-groups"></div>
+<p class="ds-note" id="ds-note"></p>
+</main>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const when = iso => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}); };
+const hm = t => new Date(t * 1000).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit', hour12:false});
+const num = (v, u) => {
+  if (v == null) return '–';
+  if (u === 'MB') return v >= 1024 ? (v / 1024).toFixed(1) + 'GB' : Math.round(v) + 'MB';
+  if (u === 'tok') return v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? Math.round(v / 1e3) + 'K' : Math.round(v) + '';
+  return (Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 10) / 10) + (u || '');
+};
+let last = null, open = '', pct = false;
+try { open = localStorage.getItem('ds-open') || ''; pct = localStorage.getItem('ds-pct') === '1'; } catch {}
+const wk = () => pct && last && last.scale && last.scale.week > 0 ? last.scale.week : 0;
+const pcts = v => v == null ? '–' : v >= 10 ? Math.round(v) + '%' : v >= 1 ? v.toFixed(1) + '%' : v.toFixed(2) + '%';
+const tokv = (n, txt) => wk() && n != null ? pcts(n / wk() * 100) : txt;
+
+function chart(s0) {
+  const s = wk() && s0.unit === 'tok' ? { ...s0, unit: '%w', values: s0.values.map(v => v == null ? v : v / wk() * 100) } : s0;
+  const vals = s.values, n = vals.length, ok = vals.filter(v => v != null);
+  if (!ok.length) return '<div class="ds-chart"><h3>' + esc(s.label) + '<span>기록 없음</span></h3></div>';
+  const bars = s.unit === 'tok' || s.unit === '%w', W = 300, H = 80, max = Math.max(...ok, bars ? 1 : -Infinity), min = bars ? 0 : Math.min(...ok);
+  const span = max - min || 1, x = i => i / Math.max(1, n - 1) * W, y = v => H - 2 - (v - min) / span * (H - 6);
+  let g = '';
+  if (bars) { const bw = Math.max(0.6, W / n - 0.4); vals.forEach((v, i) => { if (v) g += '<rect x="' + (i * W / n).toFixed(1) + '" y="' + y(v).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + (H - 2 - y(v)).toFixed(1) + '" fill="#6E8FB8"/>'; }); }
+  else { let d = '', pen = false; vals.forEach((v, i) => { if (v == null) { pen = false; return; } d += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); pen = true; });
+    g = '<path d="' + d + '" fill="none" stroke="#2F6B45" stroke-width="1.6" vector-effect="non-scaling-stroke"/>'; }
+  const nowV = [...vals].reverse().find(v => v != null), tot = bars ? ok.reduce((a, b) => a + b, 0) : null;
+  const hrs = Math.round(n * s.step / 3600);
+  return '<div class="ds-chart"><h3>' + esc(s.label) + '<span>' + (bars ? hrs + '시간 합 ' + (s.unit === '%w' ? '주간의 ' + pcts(tot) : num(tot, 'tok')) + ' · 칸당 ' + Math.round(s.step / 60) + '분' : '지금 ' + num(nowV, s.unit) + ' · 최저 ' + num(min, s.unit) + ' · 최고 ' + num(max, s.unit)) + '</span></h3>' +
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' + '<line x1="0" x2="' + W + '" y1="' + (H - 1) + '" y2="' + (H - 1) + '" stroke="#DDD" vector-effect="non-scaling-stroke"/>' + g + '</svg>' +
+    '<div class="ds-axis"><span>' + hm(s.start) + '</span><span>' + hm(s.start + n * s.step / 2) + '</span><span>지금</span></div></div>';
+}
+const charts = (d, keys) => (keys || []).map(k => d.series[k]).filter(Boolean).map(chart).join('') || '<p class="ds-empty">그래프 없음</p>';
+
+function render(d) {
+  const cardsEl = document.getElementById('ds-cards'), groupsEl = document.getElementById('ds-groups'), stale = document.getElementById('ds-stale');
+  if (!d) { cardsEl.innerHTML = '<p class="ds-empty">아직 자원판이 없다 — 생산자가 <code>review-sheet dash</code> 로 dash.json 을 써야 한다.</p>'; return; }
+  document.getElementById('ds-title').textContent = d.title || '자원';
+  document.getElementById('ds-upd').textContent = '갱신 ' + when(d.updatedAt) + (d.source ? ' · ' + d.source : '');
+  document.getElementById('ds-note').textContent = d.note || '';
+  const ib = document.getElementById('ds-i'), info = document.getElementById('ds-info'), w = d.scale && d.scale.week;
+  ib.classList.toggle('on', pct);
+  info.hidden = !pct;
+  if (pct) info.textContent = w ? '토큰을 주간 총량(추정 ' + num(w, 'tok') + ') 대비 % 로 보여요 — 위 "주간 사용량 %" 와 같은 단위예요. 하루 몫은 그 1/7 (' + pcts(100 / 7) + '). i 를 다시 누르면 토큰 수로.' : '주간 총량 추정이 아직 없어요 — 주간 사용량 % 를 읽은 뒤 생겨요.';
+  const age = (Date.now() - new Date(d.updatedAt)) / 60000;
+  stale.hidden = !(age > 5);
+  if (age > 5) stale.textContent = Math.round(age) + '분째 갱신 없음 — 생산자가 멈췄을 수 있다. 아래는 그때 상태다.';
+  cardsEl.innerHTML = d.cards.map((c, i) => '<button type="button" class="ds-card ' + c.level + (open === 'c' + i ? ' on' : '') + '" data-o="c' + i + '"><small>' + esc(c.label) + '</small><b>' + (wk() && c.n != null && c.unit !== '%' ? esc(tokv(c.n)) + '<i>주간</i>' : esc(c.value) + (c.unit ? '<i>' + esc(c.unit) + '</i>' : '')) + '</b>' + (c.sub ? '<span>' + esc(c.sub) + '</span>' : '') + '</button>').join('');
+  const oc = /^c(\d+)$/.exec(open), card = oc && d.cards[+oc[1]];
+  document.getElementById('ds-panel').innerHTML = card ? '<div class="ds-panel">' + charts(d, card.series) + '</div>' : '';
+  groupsEl.innerHTML = d.groups.map((g, gi) => '<section class="ds-group"><h2>' + esc(g.title) + '</h2>' + (g.rows.length ? g.rows.map((r, ri) => {
+    const id = 'r' + gi + '.' + ri, on = open === id || (r.key && open === 'k' + r.key);
+    return '<div class="ds-row' + (on ? ' on' : '') + '" role="button" tabindex="0" data-o="' + (r.key ? 'k' + esc(r.key) : id) + '"><b>' + esc(r.label) + '</b>' +
+      (r.sub ? '<div class="ds-sub">' + esc(r.sub) + '</div>' : '') +
+      (r.cols.length ? '<div class="ds-cols">' + r.cols.map(c => '<span><em>' + esc(c.label) + '</em><strong>' + esc(tokv(c.n, c.value)) + '</strong></span>').join('') + '</div>' : '') +
+      (on ? '<div class="ds-chart-wrap">' + charts(d, r.series) + '</div>' : '') + '</div>';
+  }).join('') : '<p class="ds-empty">없음</p>') + '</section>').join('');
+}
+
+document.addEventListener('click', e => {
+  if (e.target.closest('#ds-i')) { pct = !pct; try { localStorage.setItem('ds-pct', pct ? '1' : ''); } catch {} render(last); return; }
+  const t = e.target.closest('[data-o]'); if (!t || e.target.closest('.ds-chart')) return;
+  open = open === t.dataset.o ? '' : t.dataset.o;
+  try { localStorage.setItem('ds-open', open); } catch {}
+  render(last);
+});
+async function load() {
+  try { const r = await fetch('/api/dash', { cache: 'no-store' }); last = (await r.json()).dash; render(last); }
+  catch { document.getElementById('ds-upd').textContent = '서버 연결 안 됨 — 다시 시도 중'; }
+}
+load(); setInterval(() => { if (!document.hidden) load(); }, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+</script>
