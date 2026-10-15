@@ -64,6 +64,7 @@ function usage(code = 2) {
   review-sheet assign [dir] <id> <issue#> <owner>   # 제출된 시트의 후속 일 담당 기록 → 닫힘
   review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [--off] [--eta <언제>] [메모…]   # 담당 세션이 끝난 상태 보고 → 시트 줄 맨 앞 태그
   review-sheet unassigned [dir] [--prefix P] [--hours N]  # 담당 없음·배정 뒤 답 바뀜·N시간(기본 24) 단계 멈춤 시트 — 있으면 exit 5
+  review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
   review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|done,priority,owner,mode:claude|system|idle,modeNote,url}]} 쓰기, 인자 없으면 요약
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
@@ -203,6 +204,32 @@ export function writeBoard(dir, j) {
   return b;
 }
 export function readBoard(dir) { try { return JSON.parse(fs.readFileSync(boardFile(dir), 'utf8')); } catch { return null; } }
+// 자원판 — 바깥 생산자(예: fleet dash-collect)가 만든 dash.json 을 그대로 보여 주는 보기 전용 층. 숫자 카드 + 줄 목록, 줄을 누르면 그 줄의 시계열.
+export const dashFile = dir => path.join(dir, 'dash.json');
+const DASH_LEVELS = ['ok', 'warn', 'bad'];
+export function cleanDash(j) {
+  if (!j || !Array.isArray(j.cards) || !Array.isArray(j.groups)) throw new Error('dash: {cards:[…], groups:[…]} 필요');
+  const str = (v, n = 120) => typeof v === 'string' ? v.slice(0, n) : typeof v === 'number' ? String(v) : undefined;
+  const series = {}, src = j.series && typeof j.series === 'object' ? j.series : {};
+  for (const [k, s] of Object.entries(src).slice(0, 400)) {
+    if (!s || !Array.isArray(s.values) || !Number.isFinite(s.start) || !(s.step > 0)) continue;
+    series[k.slice(0, 120)] = { label: str(s.label), unit: str(s.unit, 12), start: s.start, step: s.step,
+      values: s.values.slice(-2000).map(v => Number.isFinite(v) ? v : null) };
+  }
+  const refs = a => (Array.isArray(a) ? a : []).filter(k => typeof k === 'string' && series[k]).slice(0, 4);
+  const cols = a => (Array.isArray(a) ? a : []).slice(0, 4).map(c => ({ label: str(c && c.label, 30), value: str(c && c.value, 30) }));
+  const cards = j.cards.slice(0, 16).filter(c => c && str(c.label)).map(c => ({ key: str(c.key), label: str(c.label, 40), value: str(c.value, 20), unit: str(c.unit, 8),
+    sub: str(c.sub, 120), level: DASH_LEVELS.includes(c.level) ? c.level : 'ok', series: refs(c.series) }));
+  const groups = j.groups.slice(0, 12).filter(g => g && Array.isArray(g.rows)).map(g => ({ title: str(g.title, 80),
+    rows: g.rows.slice(0, 80).filter(r => r && str(r.label)).map(r => ({ key: str(r.key), label: str(r.label, 80), sub: str(r.sub, 160), cols: cols(r.cols), series: refs(r.series) })) }));
+  return { title: str(j.title, 80), source: str(j.source, 80), note: str(j.note, 200), updatedAt: str(j.updatedAt, 40) || new Date().toISOString(), cards, groups, series };
+}
+export function writeDash(dir, j) {
+  const d = cleanDash(j), f = dashFile(dir), tmp = f + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(d)); fs.renameSync(tmp, f);
+  return d;
+}
+export function readDash(dir) { try { return JSON.parse(fs.readFileSync(dashFile(dir), 'utf8')); } catch { return null; } }
 
 export function saveSheetFile(dir, id, type, orig, buf) {
   if (!buf.length) throw new Error('빈 파일');
@@ -599,7 +626,7 @@ function indexHtml(dir) {
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>review-sheet</title><link rel="stylesheet" href="/sheet.css">
 <body class="rs-page"><main><div class="eyebrow">REVIEW-SHEET · 받은편지함</div><h1>답변 시트</h1>
-<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a></p><div id="rs-list"></div></main>
+<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a> <a class="rs-boardlink" href="/dash">자원 →</a></p><div id="rs-list"></div></main>
 <script>
 const INIT = ${init};
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -776,6 +803,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       });
       return;
     }
+    if (url.pathname === '/dash') return serveFile(res, path.join(WEB, 'dash.html'));
+    if (url.pathname === '/api/dash') return send(res, 200, TYPES['.json'], JSON.stringify({ dash: readDash(root) }), cors);
     if (url.pathname === '/board') return serveFile(res, path.join(WEB, 'board.html'));
     if (url.pathname === '/api/board') return send(res, 200, TYPES['.json'], JSON.stringify({ board: readBoard(root) }), cors);
     if (url.pathname === '/hub') { const h = hubChat(root); return h ? send(res, 302, 'text/plain', '', { location: '/chat.html?c=' + encodeURIComponent(h.name) }) : send(res, 302, 'text/plain', '', { location: '/' }); }
@@ -824,7 +853,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
-    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/mic.js', '/compose.js'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/dash.html', '/mic.js', '/compose.js'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
     serveFile(res, file);
@@ -867,7 +896,7 @@ async function main() {
   if (needsArg2 && rest.length === 2) { arg2 = rest[1]; dirArg = undefined; }
   if (cmd === 'assign' && rest.length === 4) dirArg = undefined;   // assign <id> <issue> <owner> → inbox
   if (cmd === 'stage' && rest[2] && STAGES[rest[2]]) dirArg = undefined;   // stage <id> <stage> [note] → inbox
-  if (cmd === 'board' && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
+  if ((cmd === 'board' || cmd === 'dash') && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
   const dir = path.resolve(dirArg || INBOX);
   const isInbox = !dirArg;
   if (isInbox && cmd !== 'serve') fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
@@ -963,6 +992,14 @@ async function main() {
     const s = listSheets(dir).find(x => !x.error && (x.name === id || x.id === id));
     if (!s) { console.error(`${dir} 에 ${id} 시트 없음`); process.exit(1); }
     try { const a = writeStage(dir, s.id, stage, words.join(' '), undefined, { off: flags.off, eta: flags.eta }); console.log(`${s.name}\t${stageTag(a.stages.at(-1))}${words.length ? ' — ' + words.join(' ') : ''}`); }
+    catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'dash') {
+    const src = rest.at(-1);
+    if (rest.length < 2 || (dirArg && rest.length === 2)) { const d = readDash(dir); if (!d) { console.error('자원판 없음'); process.exit(1); } console.log(`cards\t${d.cards.length}\nrows\t${d.groups.reduce((n, g) => n + g.rows.length, 0)}\nupdatedAt\t${d.updatedAt}`); return; }
+    let j; try { j = JSON.parse(src === '-' ? await (async () => { let t = ''; process.stdin.setEncoding('utf8'); for await (const c of process.stdin) t += c; return t; })() : fs.readFileSync(src, 'utf8')); } catch (e) { console.error('dash: JSON 읽기 실패 — ' + e.message); process.exit(1); }
+    try { const d = writeDash(dir, j); console.log(`${dashFile(dir)}\t카드 ${d.cards.length}\t→ http://127.0.0.1:${INBOX_PORT}/dash`); }
     catch (e) { console.error(e.message); process.exit(1); }
     return;
   }

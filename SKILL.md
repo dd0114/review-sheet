@@ -99,6 +99,7 @@ hero 는 탭 하나만 둔다(5초마다 자동 갱신). 세션마다 서버·�
 4c. 상태  … stage <이름> 머지|배포대기|라이브|끝 [--off] [--eta <언제>] "<한 줄>"  — 담당 세션이 단계마다 남긴다(끝났다는 보고를 채팅에 쌓지 않는다).
           '제출됨' 목록의 그 시트 줄 맨 앞에 끝난 상태 태그로 붙는다(2026-10-14). 태그는 `머지`=메인 반영·배포 전, `배포대기`=배포 큐, `라이브`=배포됨·켜짐, `--off`=어드민 스위치 꺼짐(켜야 보임), `--eta <언제>`=배포·공개 예정(시각이나 '다음 시즌'). 라이브 또는 끝 이 마지막 단계.
 4d. 진행판 … board - < board.json  — 바깥 생산자(이슈 트래커·작업 창 상태를 읽는 스크립트)가 주기적으로 넘기면 /board 가 할 일·하는 중·끝으로 보여 준다. 보기 전용(아래 CLI 표의 형식).
+4e. 자원판 … dash - < dash.json  — 바깥 생산자(머신 자원·토큰 사용을 재는 스크립트)가 주기적으로 넘기면 /dash 가 숫자 카드 + 줄 목록 + 눌러서 시계열로 보여 준다. 보기 전용(아래 CLI 표의 형식).
           매시 점검: … unassigned [--prefix <도메인>-]  → 나오는 시트(배정없음·답바뀜)는 담당을 정해 assign, 멈춤 은 담당 창에 다시 묻는다. 게이트 시작 전 답한 시트는 대상 아님(assign/.since).
 5. 진행   답에 따라 구현. 시트 파일은 inbox 에 남긴다 — "제출됨" 묶음이 곧 결정 기록이다.
 ```
@@ -244,6 +245,7 @@ hero 체크리스트 (1회): Tailscale admin 콘솔 → **DNS → HTTPS Certific
 | `assign [dir] <name|id> <issue#> <owner>` | 제출된 시트의 후속 일 담당(이슈#·창) 기록 → 그 시트는 닫힘. 미제출이면 거부 |
 | `stage [dir] <name|id> <머지\|배포대기\|라이브\|끝> [--off] [--eta <언제>] [메모…]` | 배정된 시트의 끝난 상태(한 줄 메모) → 시트 줄 맨 앞 태그. 배정 전이면 거부 |
 | `board [dir] [<file\|->]` | 진행판(보기 전용, `/board`) — 바깥 생산자가 `{cards:[{title, status: todo\|doing\|done, priority, owner, mode: claude\|system\|idle, modeNote, group, url, note, at}]}` 를 넘기면 검증해 `board.json` 으로 원자 교체. 인자 없으면 칸별 개수. 판은 일을 바꾸지 않는다 |
+| `dash [dir] [<file\|->]` | 자원판(보기 전용, `/dash`) — `{cards:[{label, value, unit, sub, level: ok\|warn\|bad, series:[키]}], groups:[{title, rows:[{key, label, sub, cols:[{label, value}], series:[키]}]}], series:{키:{label, unit, start, step, values:[…]}}}` 를 넘기면 검증해 `dash.json` 으로 원자 교체. unit `tok` 은 막대(칸 합), 그 밖은 선. 인자 없으면 개수 요약 |
 | `unassigned [dir] [--prefix P] [--hours N]` | 제출됐는데 담당이 없거나(`배정없음`) 배정 뒤 답이 바뀐(`답바뀜`) 시트, 라이브·끝 전 단계가 N시간(기본 24) 안 움직인 시트(`멈춤`) — 하나라도 있으면 exit 5. 매시 점검용 |
 | `read [dir] <name|id> [--json]` | 제출된 답을 질문과 합쳐 마크다운(없으면 exit 4) |
 | `wait [dir] <name|id> [--timeout SEC]` | 제출될 때까지 블록(기본 1h, 타임아웃 exit 3) → 제출되면 `read` 와 같은 출력 |
