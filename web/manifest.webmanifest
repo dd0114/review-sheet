@@ -1,0 +1,13 @@
+{
+  "name": "리뷰시트",
+  "short_name": "리뷰시트",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F4F2EE",
+  "theme_color": "#2F5D50",
+  "icons": [
+    { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

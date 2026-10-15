@@ -582,3 +582,73 @@ test('추가 질문: _ask memo → owner channel gets one hero notice per new/ch
     assert.match(fs.readFileSync(path.join(path.dirname(BIN), '..', 'web', 'sheet.html'), 'utf8'), /data-q="_ask"/);
   } finally { await close(); }
 });
+
+test('push: 폰 알림 — RFC 8291 시험값, VAPID 서명, 구독 → 새 시트·세션 글만 알림(hero 글·보고 시트 X) → 410 이면 구독 삭제 (hero 2026-10-16)', async () => {
+  const crypto = await import('node:crypto');
+  const { encrypt, vapidAuth, vapidKeys, readSubs } = await import('../bin/push.mjs');
+  const { newChat, appendChat } = await import('../bin/review-sheet.mjs');
+  // RFC 8291 §5 시험값
+  const ct = encrypt('When I grow up, I want to be a watermelon', { p256dh: 'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4', auth: 'BTBZMqHH6r4Tts7J_aSIgg' },
+    { salt: Buffer.from('DGv6ra1nlYgDCS1FRnbzlw', 'base64url'), asPrivate: 'yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw' });
+  assert.equal(ct.toString('base64url'), 'DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN');
+  const dir = tmpDir();
+  const k = vapidKeys(dir);
+  assert.equal(vapidKeys(dir).publicKey, k.publicKey);                     // 한 번 만들면 그대로
+  assert.equal(fs.statSync(path.join(dir, 'push', 'vapid.json')).mode & 0o777, 0o600);
+  const auth = vapidAuth('https://web.push.apple.com/abc', k, 'mailto:x@y');
+  const [, h, p, sig] = /^vapid t=([^.]+)\.([^.]+)\.([^,]+), k=/.exec(auth);
+  const pub = Buffer.from(k.publicKey, 'base64url');
+  const pubKey = crypto.createPublicKey({ key: { kty: 'EC', crv: 'P-256', x: pub.subarray(1, 33).toString('base64url'), y: pub.subarray(33).toString('base64url') }, format: 'jwk' });
+  assert.ok(crypto.verify('sha256', Buffer.from(h + '.' + p), { key: pubKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(sig, 'base64url')));
+  assert.equal(JSON.parse(Buffer.from(p, 'base64url')).aud, 'https://web.push.apple.com');
+  // 폰 쪽 키 + 가짜 푸시 서버
+  const ua = crypto.createECDH('prime256v1'); ua.generateKeys(); const uaAuth = crypto.randomBytes(16);
+  const hk = (salt, ikm, info, n) => Buffer.from(crypto.hkdfSync('sha256', ikm, salt, info, n));
+  const decrypt = b => { const salt = b.subarray(0, 16), idlen = b[20], asPub = b.subarray(21, 21 + idlen), body = b.subarray(21 + idlen);
+    const ikm = hk(uaAuth, ua.computeSecret(asPub), Buffer.concat([Buffer.from('WebPush: info\0'), ua.getPublicKey(), asPub]), 32);
+    const d = crypto.createDecipheriv('aes-128-gcm', hk(salt, ikm, Buffer.from('Content-Encoding: aes128gcm\0'), 16), hk(salt, ikm, Buffer.from('Content-Encoding: nonce\0'), 12));
+    d.setAuthTag(body.subarray(-16)); const pt = Buffer.concat([d.update(body.subarray(0, -16)), d.final()]);
+    return JSON.parse(pt.subarray(0, pt.lastIndexOf(2)).toString()); };
+  const got = []; let reply = 201;
+  const http = await import('node:http');
+  const fake = http.createServer((req, res) => { const c = []; req.on('data', x => c.push(x)); req.on('end', () => { got.push({ h: req.headers, msg: decrypt(Buffer.concat(c)) }); res.writeHead(reply); res.end(); }); });
+  await new Promise(r => fake.listen(0, '127.0.0.1', r));
+  const endpoint = `http://127.0.0.1:${fake.address().port}/push/1`;
+  const sheet = (id, extra) => fs.writeFileSync(path.join(dir, id + '-data.js'), 'window.SHEET = ' + JSON.stringify({ id, title: id + ' 제목', from: 'infra', sections: [{ id: 'a', code: 'A', title: 's', questions: [] }], ...extra }) + ';');
+  sheet('old');
+  newChat(dir, 'infra', '인프라', 'infra:fleet2');
+  const saved = process.env.REVIEW_SHEET_PUSH_MS; process.env.REVIEW_SHEET_PUSH_MS = '80';
+  const { base, close } = await startServer(dir, 0);
+  const until = async f => { for (let i = 0; i < 60 && !f(); i++) await new Promise(r => setTimeout(r, 50)); };
+  try {
+    assert.equal((await (await fetch(base + '/api/push')).json()).publicKey, k.publicKey);
+    const subscription = { endpoint, keys: { p256dh: ua.getPublicKey().toString('base64url'), auth: uaAuth.toString('base64url') } };
+    assert.equal((await fetch(base + '/__push/sub', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify({ subscription }) })).status, 415);
+    assert.equal((await fetch(base + '/__push/sub', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ subscription: { endpoint: 'ftp://x/y', keys: subscription.keys } }) })).status, 400);
+    assert.equal((await (await fetch(base + '/__push/sub', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ subscription }) })).json()).subs, 1);
+    await new Promise(r => setTimeout(r, 250));                               // 감시가 지금 있는 것을 '본 것'으로 잡는다 — old 는 안 알림
+    sheet('new1'); sheet('rep1', { report: 'merged' });
+    appendChat(dir, 'infra', 'hero', 'hero 글은 안 알림'); appendChat(dir, 'infra', 'infra:fleet2', '답장: 다 끝났어요');
+    await until(() => got.length >= 2); await new Promise(r => setTimeout(r, 200));
+    assert.deepEqual(got.map(g => g.msg.title).sort(), ['💬 인프라', '📝 새 시트 · infra']);
+    assert.equal(got.find(g => g.msg.url.startsWith('/sheet')).msg.url, '/sheet.html?d=new1');
+    assert.equal(got.find(g => g.msg.url.startsWith('/chat')).msg.body, '답장: 다 끝났어요');
+    assert.equal(got[0].h['content-encoding'], 'aes128gcm'); assert.match(got[0].h.authorization, /^vapid t=.+, k=/); assert.ok(got[0].h.ttl);
+    reply = 410;                                                             // 폰에서 앱 지움 → 구독 빠짐
+    const t = await (await fetch(base + '/__push/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
+    assert.equal(t.sent[0].status, 410); assert.equal(readSubs(dir).length, 0);
+    for (const f of ['/sw.js', '/push.js', '/manifest.webmanifest', '/icon-180.png']) assert.equal((await fetch(base + f)).status, 200, f);
+    assert.match(await (await fetch(base + '/')).text(), /rel="manifest".*push\.js/);
+  } finally { if (saved === undefined) delete process.env.REVIEW_SHEET_PUSH_MS; else process.env.REVIEW_SHEET_PUSH_MS = saved; await close(); fake.close(); }
+});
+
+test('chat say 는 읽음 처리하지 않는다 — 보내는 순간 막 온 hero 글을 놓치지 않게 (hero 2026-10-16)', () => {
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_SHEET_INBOX: dir };
+  execFileSync('node', [BIN, 'chat', 'new', 'root', '--owner', 'root:x'], { encoding: 'utf8', env });
+  return import('../bin/review-sheet.mjs').then(({ appendChat }) => {
+    appendChat(dir, 'root', 'hero', '방금 온 질문');
+    execFileSync('node', [BIN, 'chat', 'say', 'root', '다른 답'], { encoding: 'utf8', env });
+    assert.match(execFileSync('node', [BIN, 'chat', 'read', 'root'], { encoding: 'utf8', env }), /hero: 방금 온 질문/);
+  });
+});

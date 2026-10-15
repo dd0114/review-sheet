@@ -38,6 +38,7 @@ import process from 'node:process';
 import { execFile, spawn } from 'node:child_process';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { vapidKeys, readSubs, addSub, removeSub, pushAll } from './push.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, '..', 'web');
@@ -48,7 +49,7 @@ const TYPES = {
   '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.heic': 'image/heic',
-  '.woff2': 'font/woff2', '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
+  '.woff2': 'font/woff2', '.webmanifest': 'application/manifest+json', '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8',
 };
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const INBOX = process.env.REVIEW_SHEET_INBOX || path.join(os.homedir(), '.review-sheet', 'inbox');
@@ -699,10 +700,10 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 
 function indexHtml(dir) {
   const init = JSON.stringify({ dir, ...inboxSheets(dir, false), chats: listChats(path.resolve(dir)), memos: listMemos(path.resolve(dir)) }).replace(/</g, '\\u003c');
-  return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="리뷰시트"><script src="/push.js" defer></script>
 <title>review-sheet</title><link rel="stylesheet" href="/sheet.css">
 <body class="rs-page"><main><div class="eyebrow">REVIEW-SHEET · 받은편지함</div><h1>답변 시트</h1>
-<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a> <a class="rs-boardlink" href="/dash">자원 →</a></p><div id="rs-list"></div></main>
+<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a> <a class="rs-boardlink" href="/dash">자원 →</a> <span id="rs-push"></span></p><div id="rs-list"></div></main>
 <script>
 const INIT = ${init};
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -768,6 +769,36 @@ document.getElementById('rs-list').addEventListener('click', async ev => {   // 
 setInterval(refresh, 5000);
 document.addEventListener('visibilitychange', () => { if(!document.hidden) refresh(); });  // 폰: 탭 돌아오면 바로
 </script></html>`;
+}
+
+/* 폰 알림 감시 (hero 2026-10-16) — 구독이 있을 때만 몇 초마다 받은편지함을 훑어, 새로 온 결정 시트와 세션이 채널에 쓴 글을 알린다.
+   보고 시트(✓ 확인용)·hero 자신이 쓴 글·제출된 시트는 안 알린다. 서버를 켠 뒤 생긴 것만(켜기 전 것은 한꺼번에 몰려오지 않게). 5건 넘게 몰리면 한 건으로 묶는다. */
+export function pushWatch(root, ms = Number(process.env.REVIEW_SHEET_PUSH_MS) || 8000) {
+  let since = new Date().toISOString(), seen = null, busy = false;
+  const tick = async () => {
+    if (busy) return; busy = true;
+    try {
+      const now = new Date().toISOString();
+      if (!readSubs(root).length) { seen = null; since = now; return; }   // 구독 없으면 훑지도 않는다
+      const sheets = listSheetsRaw(root).filter(x => !x.error);
+      if (!seen) { seen = new Set(sheets.map(x => x.name)); since = now; return; }
+      const ev = [];
+      for (const x of sheets) {
+        if (seen.has(x.name)) continue; seen.add(x.name);
+        if (!x.report && !x.submitted) ev.push({ title: '📝 새 시트' + (x.from ? ' · ' + x.from : ''), body: x.title, url: '/sheet.html?d=' + encodeURIComponent(x.name), tag: 'sheet-' + x.name });
+      }
+      for (const c of listChats(root)) for (const m of readChatLog(root, c.name)) {
+        if (m.from === 'hero' || !(m.ts > since) || m.ts > now) continue;
+        ev.push({ title: '💬 ' + (c.title || c.name), body: String(m.text).replace(/\s+/g, ' ').slice(0, 160), url: '/chat.html?c=' + encodeURIComponent(c.name), tag: 'chat-' + c.name });
+      }
+      since = now;
+      if (!ev.length) return;
+      const msgs = ev.length > 5 ? [{ title: '리뷰시트 새 소식 ' + ev.length + '건', body: ev.slice(0, 3).map(e => e.title + ' ' + e.body).join(' / ').slice(0, 160), url: '/', tag: 'many' }] : ev;
+      for (const m of msgs) await pushAll(root, m);
+    } catch (e) { console.error('push:', e.message || e); } finally { busy = false; }
+  };
+  const t = setInterval(tick, ms); t.unref(); tick();
+  return () => clearInterval(t);
 }
 
 export function startServer(dir, port = 0, host = '127.0.0.1') {
@@ -881,6 +912,22 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       });
       return;
     }
+    if (url.pathname === '/api/push' && req.method === 'GET') return send(res, 200, TYPES['.json'], JSON.stringify({ publicKey: vapidKeys(root).publicKey, subs: readSubs(root).length }));
+    if (/^\/__push\/(sub|unsub|test)$/.test(url.pathname)) {   // 폰 알림 구독 — 페이지(hero) 전용, CORS 없음
+      if (req.method !== 'POST') return send(res, 405, 'text/plain', 'POST');
+      if (!/^application\/json/.test(String(req.headers['content-type'] || ''))) return send(res, 415, 'text/plain', 'application/json');
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 1e4) req.destroy(); });
+      req.on('end', async () => {
+        try {
+          const j = JSON.parse(body || '{}'), op = url.pathname.slice(8);
+          if (op === 'sub') return send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, subs: addSub(root, j.subscription, { origin: req.headers.origin || '', ua: req.headers['user-agent'] || '' }) }));
+          if (op === 'unsub') return send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, subs: removeSub(root, String(j.endpoint || '')) }));
+          send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, sent: await pushAll(root, { title: '🔔 리뷰시트 알림 시험', body: '이 알림이 보이면 켜진 거예요.', url: '/', tag: 'test' }) }));
+        } catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
+      });
+      return;
+    }
     if (url.pathname === '/__check') {   // ?d=<보고 시트> GET → {checkedAt} · POST {on} — 페이지(hero) 전용, CORS 없음, 알림 없음
       const name = url.searchParams.get('d') || '';
       if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'd=<sheet> ([a-z0-9-])');
@@ -957,7 +1004,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
-    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/dash.html', '/mic.js', '/compose.js'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/dash.html', '/mic.js', '/compose.js', '/push.js', '/sw.js', '/manifest.webmanifest', '/icon-180.png', '/icon-512.png'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
     serveFile(res, file);
@@ -966,7 +1013,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     server.on('error', reject);
     server.listen(port, host, () => {
       const p = server.address().port;
-      resolve({ port: p, base: `http://127.0.0.1:${p}`, close: () => new Promise(r => server.close(r)) });
+      const stop = pushWatch(root);
+      resolve({ port: p, base: `http://127.0.0.1:${p}`, close: () => { stop(); return new Promise(r => server.close(r)); } });
     });
   });
 }
@@ -1020,7 +1068,7 @@ async function main() {
       const heroReply = !!flags.re && readChatLog(root, ch).some(m => m.id === flags.re && m.from === 'hero');
       const why = flags.notice ? null : chatGate(text, { heroReply });
       if (why) { console.error(`보내지 않음 — ${why}. hero 가 보고 맞는지 정할 것(결과물·링크·질문)은 시트로: review-sheet new <이름>\n받음·담당·머지/배포 한 줄처럼 꼭 채팅이어야 하는 알림이면 --notice 를 붙여 다시 보낸다.`); process.exit(6); }
-      const meta = readChatMeta(root, ch); const m = appendChat(root, ch, meta.owner, text, undefined, flags.re); markSeen(root, ch, 'owner');
+      const meta = readChatMeta(root, ch); const m = appendChat(root, ch, meta.owner, text, undefined, flags.re);   // 읽음은 read/wait 만 — 보내는 순간 막 온 hero 글까지 읽음 처리돼 놓쳤다(hero 2026-10-16)
       console.log(fmt(m)); return;
     }
     if (sub === 'read' || sub === 'wait') {
