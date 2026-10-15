@@ -548,9 +548,19 @@ function quiet(wav) {
    전사 전체가 이것뿐이면 버리고, 진짜 말 끝에 붙은 방송 인사(시청·구독)는 떼어낸다. ‘감사합니다’ 는 진짜 말일 수 있어 혼자일 때만 버린다. */
 const HALLU_ONLY = /^(?:(?:감사합니다|고맙습니다|네|아|음|MBC 뉴스 [가-힣]+입니다|시청해\s*주셔서 감사합니다|구독과 좋아요(?: 부탁드립니다)?|다음 영상에서 만나요|자막 제공[^.!?]*)[.!?~\s]*)+$/;
 const HALLU_TAIL = /\s*(?:시청해\s*주셔서 감사합니다|구독과 좋아요(?: 부탁드립니다)?|다음 영상에서 만나요)[.!?~\s]*$/;
-export function dropHallucination(text) {
+const editDist = (a, b) => { const d = [...Array(b.length + 1).keys()];
+  for (let i = 1; i <= a.length; i++) { let p = d[0]; d[0] = i;
+    for (let j = 1; j <= b.length; j++) { const t = d[j]; d[j] = Math.min(d[j] + 1, d[j - 1] + 1, p + (a[i - 1] === b[j - 1] ? 0 : 1)); p = t; } }
+  return d[b.length]; };
+/* 잡음에 단어장(--prompt)을 그대로 읊는 경우 — "히어로, 플릿, 에피어로, 플릿". 쉼표로 늘어놓은 낱말이 전부 단어장 낱말(또는 3자 이상이면 2자 이내로 비슷)일 때만 버린다. */
+const vocabEcho = (t, vocab) => {
+  if (!vocab.length || !t.includes(',')) return false;
+  const w = t.split(/[,.\s]+/).filter(Boolean);
+  return w.length > 0 && w.every(x => vocab.includes(x) || (x.length >= 3 && vocab.some(v => v.length >= 2 && editDist(x, v) <= 2)));
+};
+export function dropHallucination(text, vocab = []) {
   const t = String(text || '').trim();
-  if (!t || HALLU_ONLY.test(t)) return '';
+  if (!t || HALLU_ONLY.test(t) || vocabEcho(t, vocab)) return '';
   return t.replace(HALLU_TAIL, '').trim();
 }
 const sttThreads = () => String(Math.max(4, Math.min(8, os.cpus().length - 2)));
@@ -620,7 +630,7 @@ export function transcribe(buf, c = sttConfig(), { from = 0, live = false } = {}
         if (c.vocab.length && !live) args.push('--prompt', c.vocab.join(', '));
         out = await run(c.whisper, args, 300e3);
       }
-      return { text: dropHallucination(out.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ')), end };
+      return { text: dropHallucination(out.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' '), c.vocab), end };
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
   sttQueue = job.catch(() => {});

@@ -324,6 +324,10 @@ test('stt: dropHallucination — 지어낸 말만이면 비우고, 진짜 말은
   assert.equal(dropHallucination('리뷰시트 열어줘'), '리뷰시트 열어줘');
   assert.equal(dropHallucination('도와줘서 정말 감사합니다'), '도와줘서 정말 감사합니다');
   assert.equal(dropHallucination('배포 끝났어. 시청해주셔서 감사합니다.'), '배포 끝났어.');
+  const vocab = ['리뷰시트', '스파이더', '히어로', '플릿', '이슈', 'PR'];
+  assert.equal(dropHallucination('히어로, 플릿, 에피어로, 플릿', vocab), '');   // 잡음에 단어장 읊기
+  assert.equal(dropHallucination('히어로 이슈 봐줘', vocab), '히어로 이슈 봐줘');   // 쉼표 없는 진짜 말
+  assert.equal(dropHallucination('PR, 이슈 확인', vocab), 'PR, 이슈 확인');         // 단어장 밖 낱말이 섞이면 진짜 말
 });
 
 test('stt: binary lookup skips a same-named directory on PATH (launchd PATH=/opt/homebrew/Cellar → Cellar/ffmpeg/)', async () => {
