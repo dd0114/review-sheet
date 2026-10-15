@@ -478,7 +478,7 @@ test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세
     assert.deepEqual([by('rep-old').report, by('rep-old').title], ['🔀 머지됨', '마이크 단축키 (PR #13)']);
     assert.deepEqual([by('plain').report, by('plain').title], ['', '머지 순서 정하기']);
     assert.deepEqual([by('plan').report, by('plan').title], ['📌 보고', '부분 제출 표시']);   // 해놓겠습니다 = 보고, 진행(hero 2026-10-15)
-    assert.equal(by('plan-ask').report, '');
+    assert.equal(by('plan-ask').report, '📌 보고');                         // 해놓겠습니다 시트의 '승인 요청 = …' 첫 줄은 결정 신호 아님
     assert.equal(by('plan-go').report, '📌 보고');                         // '① 머지' 는 진행 알림
     assert.equal(by('plan-pick').report, '');                              // 진짜 고를 게 있으면 결정                               // 승인 요청은 답 기다림
     assert.notEqual(by('mixed').report, '');                               // 머지했습니다 · 해놓겠습니다 + '① 머지' = 보고(hero 2026-10-15, #21 뒤집음)
