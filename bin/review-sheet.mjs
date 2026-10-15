@@ -159,10 +159,12 @@ export const REPORTS = { merged: '🔀 머지됨', deployed: '🚀 배포됨', d
 const REPORT_ALIAS = { 머지: 'merged', 배포: 'deployed', 끝: 'done', 보고: 'note' };
 const REPORT_TITLE = [
   [/^\s*(?:(?:✅|🔀|📌)\s*)?머지(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'merged'],
-  [/^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'deployed'],
+  [/^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'deployed'],  [/^\s*(?:📌\s*)?(?:이렇게\s*)?해\s*놓겠습니다\s*[—:·-]?\s*/, 'note'],
 ];
-/** 결정할 게 있는 시트: 첫 선택지가 '확인'·'그대로' 류가 아닌 질문이 있거나, lede·제목에 승인 요청/이렇게 해놓겠습니다 */
-const decides = sheet => /승인 요청|해놓겠습니다|해 놓겠습니다/.test(String(sheet.title || '') + String(sheet.lede || '')) ||
+const PLAN_RE = /해\s*놓겠습니다/;
+/** 결정할 게 있는 시트: 첫 선택지가 '확인'·'그대로' 류가 아닌 질문이 있거나, lede·제목에 승인 요청.
+ *  '이렇게 해놓겠습니다'는 답 기다림이 아니라 보고(hero 2026-10-15 "진행해놓고") — 고를 질문이 없으면 📌 보고. */
+const decides = sheet => /승인 요청/.test(String(sheet.title || '') + String(sheet.lede || '')) ||
   (sheet.sections || []).some(s => (s.questions || []).some(q => { const o = Array.isArray(q) ? q[2] : q.opts; const f = o && o[0]; const l = Array.isArray(f) ? f[0] : f; return l && !/확인|그대로/.test(String(l)); }));
 export function reportOf(sheet) {
   const t = String(sheet.title || sheet.id || '');
@@ -170,6 +172,7 @@ export function reportOf(sheet) {
   // 제목만 보고 고를 땐 결정할 게 없는 시트만 — '머지했습니다 · 이렇게 해놓겠습니다'(승인 요청)가 ✓ 로 끝나면 세션이 답을 못 받는다
   if (!kind && decides(sheet)) return null;
   for (const [re, k] of REPORT_TITLE) if (re.test(t)) { title = t.replace(re, '') || t; kind = kind || k; break; }
+  if (!kind && PLAN_RE.test(t + String(sheet.lede || ''))) kind = 'note';
   return kind ? { kind, label: REPORTS[kind], title } : null;
 }
 const checkedFile = dir => path.join(dir, 'checked.json');

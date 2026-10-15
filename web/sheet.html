@@ -54,10 +54,11 @@ const REPORTS = { merged: '🔀 머지됨', deployed: '🚀 배포됨', done: '�
 const REP = (() => {
   const t = String(D.title || D.id);
   let k = D.report ? (REPORTS[D.report] ? D.report : RALIAS[D.report] || 'note') : '', title = t;
-  const decides = /승인 요청|해놓겠습니다|해 놓겠습니다/.test(t + String(D.lede || '')) || (D.sections || []).some(s => (s.questions || []).some(q => { const o = Array.isArray(q) ? q[2] : q.opts; const f = o && o[0]; const l = Array.isArray(f) ? f[0] : f; return l && !/확인|그대로/.test(String(l)); }));
+  const decides = /승인 요청/.test(t + String(D.lede || '')) || (D.sections || []).some(s => (s.questions || []).some(q => { const o = Array.isArray(q) ? q[2] : q.opts; const f = o && o[0]; const l = Array.isArray(f) ? f[0] : f; return l && !/확인|그대로/.test(String(l)); }));
   if (!k && decides) return null;
-  for (const [re, kk] of [[/^\s*(?:(?:✅|🔀|📌)\s*)?머지(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'merged'], [/^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'deployed']])
+  for (const [re, kk] of [[/^\s*(?:(?:✅|🔀|📌)\s*)?머지(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'merged'], [/^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'deployed'], [/^\s*(?:📌\s*)?(?:이렇게\s*)?해\s*놓겠습니다\s*[—:·-]?\s*/, 'note']])
     if (re.test(t)) { title = t.replace(re, '') || t; k = k || kk; break; }
+  if (!k && /해\s*놓겠습니다/.test(t + String(D.lede || ''))) k = 'note';   // '이렇게 해놓겠습니다' = 보고(hero 2026-10-15)
   return k ? { label: REPORTS[k], title } : null;
 })();
 if (REP) document.body.classList.add('rs-report');
