@@ -446,6 +446,7 @@ test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세
   sheet('rep-new', { report: 'merged', title: '제출 버튼 위치' });
   sheet('rep-old', { title: '✅ 머지했습니다 — 마이크 단축키 (PR #13)' });
   sheet('plain', { title: '머지 순서 정하기' });
+  sheet('mixed', { title: '머지했습니다(위키) · 이렇게 해놓겠습니다(장치)', sections: [{ id: 'b', code: 'B', title: 's', questions: [{ k: '1', q: '머지?', opts: [['① 머지 + 시험'], ['② 보류']] }] }] });
   const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
   const { base, close } = await startServer(dir, 0);
   try {
@@ -454,6 +455,7 @@ test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세
     assert.deepEqual([by('rep-new').report, by('rep-new').title], ['🔀 머지됨', '제출 버튼 위치']);
     assert.deepEqual([by('rep-old').report, by('rep-old').title], ['🔀 머지됨', '마이크 단축키 (PR #13)']);
     assert.deepEqual([by('plain').report, by('plain').title], ['', '머지 순서 정하기']);
+    assert.equal(by('mixed').report, '');                                  // 승인 요청이 섞이면 보고 아님 — 제출로 답한다
     const post = (d, on) => fetch(base + '/__check?d=' + d, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) });
     assert.equal((await post('plain', true)).status, 400);                 // 보고 시트만
     assert.equal((await fetch(base + '/__check?d=rep-new', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' })).status, 415);
