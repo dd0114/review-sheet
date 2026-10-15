@@ -511,6 +511,31 @@ test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세
   } finally { await close(); }
 });
 
+test('partial: 부분 제출 — 안 고른 문항(메모만 포함)이 남으면 배지·read 안내·unassigned 에 뜬다, hero 답 기다림 칸엔 안 올림 (hero 2026-10-15)', async () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const q = k => ({ k, q: '질문' + k, opts: [['① 가'], ['② 나']] });
+  const sheet = (id, extra) => fs.writeFileSync(path.join(dir, id + '-data.js'), 'window.SHEET = ' + JSON.stringify({ id, title: id, sections: [{ id: 'a', code: 'A', title: 's', questions: [q('1'), q('2'), q('3')] }], ...extra }) + ';');
+  const ans = (id, answers) => fs.writeFileSync(path.join(dir, 'answers', id + '.json'), JSON.stringify({ savedAt: new Date().toISOString(), answers }));
+  const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
+  run('unassigned', dir);   // 배정 게이트 시작 — 그 뒤 답만 대상
+  await new Promise(r => setTimeout(r, 5));
+  sheet('part'); ans('part', { 'A-1': { pick: '① 가' }, 'A-2': { memo: '이거 왜 필요해? 이게 막혀서 3번은 못 고름' } });
+  sheet('full'); ans('full', { 'A-1': { pick: '① 가' }, 'A-2': { pick: '② 나' }, 'A-3': { pick: '① 가' } });
+  const { base, close } = await startServer(dir, 0);
+  try {
+    const inbox = await (await fetch(base + '/api/inbox')).json();
+    const by = n => inbox.sheets.find(s => s.name === n);
+    assert.equal(by('part').partial, 2); assert.equal(by('full').partial, undefined);
+    assert.equal(by('part').submitted, true);
+    assert.match(run('read', dir, 'part').out, /부분 제출 — 안 고른 문항 2개 \(A-2, A-3\).*남은 문항만 새 id 시트로/);
+    assert.doesNotMatch(run('read', dir, 'full').out, /부분 제출/);
+    const u = run('unassigned', dir);
+    assert.match(u.out, /^part\t배정없음\t.*부분제출\(미선택 2\)$/m); assert.match(u.out, /^full\t배정없음\t.*\tfull$/m);
+    assert.match(await (await fetch(base + '/')).text(), /부분 제출/);
+  } finally { await close(); }
+});
+
 test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it, /board page loads, index links it (hero 2026-10-13)', async () => {
   const dir = tmpDir();
   const src = path.join(dir, 'in.json');
