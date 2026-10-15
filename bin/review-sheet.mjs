@@ -63,6 +63,7 @@ function usage(code = 2) {
   review-sheet ls    [dir]
   review-sheet assign [dir] <id> <issue#> <owner>   # 제출된 시트의 후속 일 담당 기록 → 닫힘
   review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [--off] [--eta <언제>] [메모…]   # 담당 세션이 끝난 상태 보고 → 시트 줄 맨 앞 태그
+  review-sheet checks [dir] [--open] [--since ISO] [--prefix P]   # 보고 시트(report:) — hero 가 ✓ 확인한 것 / --open 아직 안 한 것. 체크는 세션을 깨우지 않는다
   review-sheet unassigned [dir] [--prefix P] [--hours N]  # 담당 없음·배정 뒤 답 바뀜·N시간(기본 24) 단계 멈춤 시트 — 있으면 exit 5
   review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|done,priority,owner,mode:claude|system|idle,modeNote,url}]} 쓰기, 인자 없으면 요약
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
@@ -78,9 +79,9 @@ function parseArgs(argv) {
   const flags = {}, rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--off' || a === '--notice') flags[a.slice(2)] = true;
+    if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--off' || a === '--notice' || a === '--open') flags[a.slice(2)] = true;
     else if (a === '--port' || a === '--timeout' || a === '--hours') flags[a.slice(2)] = Number(argv[++i]);
-    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta') flags[a.slice(2)] = String(argv[++i] || '');
+    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
@@ -140,14 +141,41 @@ export function fromId() {
 }
 /** 시트 줄 맨 앞 태그 — 끝난 일이 '어떻게' 끝났는지 (hero 2026-10-14: 메인만? 배포 큐? 배포됨? 어드민 스위치 꺼짐? 언제 공개?)
     off = 코드는 들어갔지만 어드민 스위치가 꺼져 있어 켜야 보임, eta = 배포·공개 예정(시각 또는 '다음 시즌' 같은 말). */
-export function stageTag(x) {
-  const off = x.off ? ' · 어드민 스위치 꺼짐' : '', eta = x.eta ? ' · ' + x.eta + (x.stage === '라이브' ? ' 공개' : ' 예정') : '';
+export function stageTag(x) {   // 아이콘 + 한 단어 (hero 2026-10-15 "문장 너무 길어 — 아이콘+ 간결하게 머지됨")
+  const off = x.off ? ' · 스위치 꺼짐' : '', eta = x.eta ? ' · ' + x.eta + (x.stage === '라이브' ? ' 공개' : ' 예정') : '';
   switch (x.stage) {
-    case '머지': return '메인 반영 · 배포 전' + off + eta;
-    case '배포대기': return '배포 큐' + off + eta;
-    case '라이브': return x.off ? '배포됨' + off + eta : '배포됨 · 켜짐';
+    case '머지': return '🔀 머지됨' + off + eta;
+    case '배포대기': return '⏳ 배포 대기' + off + eta;
+    case '라이브': return '🚀 배포됨' + (x.off ? off + eta : '');
+    case '끝': return '✅ 끝';
     default: return x.stage;
   }
+}
+/* 보고 시트 (hero 2026-10-15) — 결정할 게 없는 알림(머지·배포·끝). 시트 데이터에 report: 'merged'|'deployed'|'done'|'note'
+   (또는 '머지'·'배포'·'끝'·'보고'). 받은편지함 줄·시트 맨 위에 아이콘+한 단어 배지, 제출 대신 ✓ 확인 체크.
+   체크는 answers 가 아니라 inbox/checked.json 에만 남는다 → wait 가 안 깨고 세션 토큰을 안 쓴다. 세션은 나중에 `checks` 로 한 번에 본다.
+   report 가 없는 옛 시트도 제목이 '✅ 머지했습니다 — …' 처럼 시작하면 보고로 보고, 그 긴 머리는 배지로 옮긴다. */
+export const REPORTS = { merged: '🔀 머지됨', deployed: '🚀 배포됨', done: '✅ 끝남', note: '📌 보고' };
+const REPORT_ALIAS = { 머지: 'merged', 배포: 'deployed', 끝: 'done', 보고: 'note' };
+const REPORT_TITLE = [
+  [/^\s*(?:(?:✅|🔀|📌)\s*)?머지(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'merged'],
+  [/^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'deployed'],
+];
+export function reportOf(sheet) {
+  const t = String(sheet.title || sheet.id || '');
+  let kind = sheet.report ? (REPORTS[sheet.report] ? sheet.report : REPORT_ALIAS[sheet.report] || 'note') : '', title = t;
+  for (const [re, k] of REPORT_TITLE) if (re.test(t)) { title = t.replace(re, '') || t; kind = kind || k; break; }
+  return kind ? { kind, label: REPORTS[kind], title } : null;
+}
+const checkedFile = dir => path.join(dir, 'checked.json');
+export function readChecked(dir) { try { return JSON.parse(fs.readFileSync(checkedFile(dir), 'utf8')) || {}; } catch { return {}; } }
+export function setChecked(dir, name, on) {
+  const s = listSheets(dir).find(x => !x.error && x.name === name); if (!s) throw new Error(`시트 ${name} 없음`);
+  if (!s.report) throw new Error(`${name}: 보고 시트가 아님 (report 없음)`);
+  const c = readChecked(dir);
+  if (on) c[name] = c[name] || new Date().toISOString(); else delete c[name];
+  fs.writeFileSync(checkedFile(dir) + '.tmp', JSON.stringify(c, null, 2) + '\n'); fs.renameSync(checkedFile(dir) + '.tmp', checkedFile(dir));
+  return { ok: true, name, checkedAt: c[name] || null };
 }
 export function writeStage(dir, id, stage, note = '', by = fromId(), opt = {}) {
   const st = STAGES[stage];
@@ -302,12 +330,13 @@ export function setUrgent(dir, name, on) {
 const summaryCache = new Map();   // <dir>/<name> → { key, sum }
 const mtimeOf = f => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } };
 function listSheetsRaw(dir) {
-  const urgent = readUrgent(dir);
+  const urgent = readUrgent(dir), checked = readChecked(dir);
+  const live = (name, sum) => ({ ...sum, urgent: !!urgent[name], urgentAt: urgent[name] || null, checkedAt: sum.report && checked[name] || null });
   return fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).sort().map(f => {
     const name = f.slice(0, -'-data.js'.length);
     const ck = path.join(path.resolve(dir), name), hit = summaryCache.get(ck), dataM = mtimeOf(path.join(dir, f));
     if (hit && hit.dataM === dataM && (hit.sum.error || hit.ansM === mtimeOf(answersFile(dir, hit.sum.id))))
-      return hit.sum.error ? hit.sum : { ...hit.sum, urgent: !!urgent[name], urgentAt: urgent[name] || null };
+      return hit.sum.error ? hit.sum : live(name, hit.sum);
     try {
       const sheet = loadSheet(dir, name);
       const saved = readAnswers(dir, sheet.id);
@@ -316,10 +345,11 @@ function listSheetsRaw(dir) {
       let createdAt = sheet.createdAt || null;
       if (!createdAt) { try { createdAt = fs.statSync(path.join(dir, f)).mtime.toISOString(); } catch { /* ignore */ } }
       const savedAt = saved && saved.savedAt || null;
-      const sum = { name, id: sheet.id, title: sheet.title || sheet.id, from: sheet.from || '', createdAt,
-               total: qs.length, picked, savedAt, submitted: !!savedAt };
+      const rep = reportOf(sheet);
+      const sum = { name, id: sheet.id, title: rep ? rep.title : sheet.title || sheet.id, from: sheet.from || '', createdAt,
+               total: qs.length, picked, savedAt, submitted: !!savedAt, report: rep ? rep.label : '' };
       summaryCache.set(ck, { dataM, ansM: mtimeOf(answersFile(dir, sheet.id)), sum });
-      return { ...sum, urgent: !!urgent[name], urgentAt: urgent[name] || null };
+      return live(name, sum);
     } catch (e) { const sum = { name, error: String(e.message || e) }; summaryCache.set(ck, { dataM, sum }); return sum; }
   }).sort((a, b) => {
     // queue order: errors first (they need fixing), then pending (newest first), then submitted (latest first)
@@ -339,11 +369,12 @@ function listSheets(dir) {   // 배정·단계는 자주 바뀌고 파일이 몇
 /* 받은편지함 첫 화면: 답 기다리는 시트는 전부, 제출된 시트는 최근 RECENT_DONE 개만. 나머지는 '지난 시트 더 보기'(all=1) 때. */
 const RECENT_DONE = 20;
 function inboxSheets(dir, all) {
-  const sheets = listSheets(dir), done = sheets.filter(s => !s.error && s.submitted);
-  // 제출된 시트는 마지막 움직임(제출 또는 단계 보고) 최신순 — 상태가 바뀐 시트가 위로 (hero 2026-10-14)
-  const act = s => String(s.assign && s.assign.stageAt > s.savedAt ? s.assign.stageAt : s.savedAt);
+  const handled = s => !s.error && (s.submitted || !!s.checkedAt);   // 보고 시트는 ✓ 확인 체크도 끝남
+  const sheets = listSheets(dir), done = sheets.filter(handled);
+  // 제출된 시트는 마지막 움직임(제출·확인 또는 단계 보고) 최신순 — 상태가 바뀐 시트가 위로 (hero 2026-10-14)
+  const act = s => { const t = String(s.checkedAt && !(s.savedAt > s.checkedAt) ? s.checkedAt : s.savedAt); return String(s.assign && s.assign.stageAt > t ? s.assign.stageAt : t); };
   done.sort((a, b) => (!!b.urgent - !!a.urgent) || act(b).localeCompare(act(a)));
-  const open = sheets.filter(s => s.error || !s.submitted);
+  const open = sheets.filter(s => !handled(s));
   return { sheets: open.concat(all ? done : done.slice(0, RECENT_DONE)), doneTotal: done.length, all: !!all || done.length <= RECENT_DONE };
 }
 
@@ -605,12 +636,15 @@ const INIT = ${init};
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const when = iso => { if(!iso) return ''; const d = new Date(iso); return d.toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}); };
 const tagKind = a => a.off ? 'off' : a.stage === '라이브' ? 'live' : a.stage === '배포대기' ? 'queue' : a.stage === '머지' ? 'main' : '';
+const handled = s => !s.error && (s.submitted || !!s.checkedAt);
+// 보고 시트 (hero 2026-10-15): 왼쪽 ✓ = 확인 체크(제목만 보고 바로) — 세션을 깨우지 않는다. 배지는 아이콘+한 단어
+const check = s => s.report ? '<button type="button" class="rs-check' + (s.checkedAt ? ' on' : '') + '" data-d="' + esc(s.name) + '" aria-pressed="' + !!s.checkedAt + '" title="' + (s.checkedAt ? '확인 취소' : '확인') + '" aria-label="' + (s.checkedAt ? '확인 취소' : '확인') + '">✓</button>' : '';
 const row = s => s.error
   ? '<li class="bad"><b>' + esc(s.name) + '</b> — ' + esc(s.error) + '</li>'
-  : '<li class="' + (s.submitted ? 'done' : 'wait') + (s.urgent ? ' urgent' : '') + '"><a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
-    '<span class="rs-badge' + (s.assign ? ' rs-tag ' + tagKind(s.assign) : '') + '">' + (s.urgent ? '🔥 긴급 · ' : '') + (s.assign ? esc(s.assign.tag) : s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
-    '<small>' + (s.from ? esc(s.from) + ' · ' : '') + s.picked + '/' + s.total + ' 답함' +
-    (s.submitted ? ' · 제출 ' + when(s.savedAt) : (s.createdAt ? ' · 보냄 ' + when(s.createdAt) : '')) +
+  : '<li class="' + (handled(s) ? 'done' : 'wait') + (s.report ? ' rep' : '') + (s.urgent ? ' urgent' : '') + '">' + check(s) + '<a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
+    '<span class="rs-badge' + (s.assign ? ' rs-tag ' + tagKind(s.assign) : s.report ? ' rs-rep' : '') + '">' + (s.urgent ? '🔥 긴급 · ' : '') + (s.assign ? esc(s.assign.tag) : s.report ? esc(s.report) : s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
+    '<small>' + (s.from ? esc(s.from) + ' · ' : '') + (s.report ? '' : s.picked + '/' + s.total + ' 답함 · ') +
+    (s.checkedAt ? '확인 ' + when(s.checkedAt) : s.submitted ? '제출 ' + when(s.savedAt) : (s.createdAt ? '보냄 ' + when(s.createdAt) : '')) +
     (s.assign ? ' · <span class="rs-stage">' + esc(s.assign.issue) + (s.assign.note && s.assign.stage !== '배정' ? ' — ' + esc(s.assign.note) : '') + ' · ' + when(s.assign.stageAt) + '</span>' : '') + '</small></a>' +
     '<button type="button" class="rs-flag' + (s.urgent ? ' on' : '') + '" data-d="' + esc(s.name) + '" aria-pressed="' + !!s.urgent + '" title="' + (s.urgent ? '긴급 해제' : '긴급으로') + '" aria-label="' + (s.urgent ? '긴급 해제' : '긴급으로') + '">🔥</button></li>';
 const chatRow = c => '<li class="chat' + (c.hub ? ' hub' : c.manager ? ' mgr' : ' sess') + (c.unreadHero ? ' new' : '') + '"><a href="/chat.html?c=' + encodeURIComponent(c.name) + '">' +
@@ -620,13 +654,15 @@ const memoRow = m => '<li class="memo"><a href="/memo.html?m=' + encodeURICompon
   '<span class="rs-badge">📝 메모</span><b>' + esc(m.name === 'hero' ? '나와의 메시지' : m.name) + '</b>' +
   '<small>' + (m.count ? m.count + '건 · 마지막 ' + when(m.lastAt) + ' · 누르면 복사' : '아직 없음 — 나한테 보내는 메시지, 세션은 읽지 않는다') + '</small></a></li>';
 const render = d => {
-  const wait = d.sheets.filter(s => s.error || !s.submitted), done = d.sheets.filter(s => !s.error && s.submitted);
+  const open = d.sheets.filter(s => !handled(s)), done = d.sheets.filter(handled);
+  const wait = open.filter(s => !s.report), reps = open.filter(s => s.report);
   const chats = d.chats || [], memos = d.memos || [];
   document.getElementById('rs-list').innerHTML =
     (memos.length ? '<ul class="rs-index rs-memos">' + memos.map(memoRow).join('') + '</ul>' : '') +
     (chats.length ? '<h2>상시 채널 <span class="rs-n rs-n-chat">' + chats.reduce((a, c) => a + c.unreadHero, 0) + '</span></h2><ul class="rs-index">' + chats.map(chatRow).join('') + '</ul>' : '') +
     '<h2>답 기다리는 중 <span class="rs-n">' + wait.length + '</span></h2><ul class="rs-index">' +
     (wait.map(row).join('') || '<li class="empty">기다리는 시트 없음</li>') + '</ul>' +
+    (reps.length ? '<h2 class="rs-rep-h">확인할 보고 <span class="rs-n">' + reps.length + '</span></h2><ul class="rs-index">' + reps.map(row).join('') + '</ul>' : '') +
     '<h2 class="rs-done-h">제출됨 <span class="rs-n">' + (d.doneTotal ?? done.length) + '</span></h2><ul class="rs-index">' +
     (done.map(row).join('') || '<li class="empty">아직 없음</li>') + '</ul>' +
     (d.all === false ? '<button type="button" class="rs-refresh rs-more" id="rs-more">지난 시트 더 보기 (' + (d.doneTotal - done.length) + ')</button>' : '');
@@ -639,6 +675,15 @@ let showAll = false;   // '지난 시트 더 보기' 누르면 그 뒤 새로고
 const refresh = async () => { const b = document.getElementById('rs-refresh'); b.disabled = true; try { const r = await fetch('/api/inbox' + (showAll ? '?all=1' : ''), {cache:'no-store'}); if(r.ok) render(await r.json()); } catch(_){ document.getElementById('rs-upd').textContent = '갱신 실패 — 서버 확인'; } b.disabled = false; };
 document.getElementById('rs-refresh').addEventListener('click', refresh);
 document.getElementById('rs-list').addEventListener('click', ev => { if (ev.target.id === 'rs-more') { ev.target.disabled = true; showAll = true; refresh(); } });
+document.getElementById('rs-list').addEventListener('click', async ev => {   // ✓ = 보고 확인 체크 (알림 없음)
+  const b = ev.target.closest('.rs-check'); if (!b) return;
+  ev.preventDefault(); b.disabled = true;
+  try {
+    const r = await fetch('/__check?d=' + encodeURIComponent(b.dataset.d), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on: !b.classList.contains('on') }) });
+    if (!r.ok) throw new Error(await r.text());
+  } catch (e) { document.getElementById('rs-upd').textContent = '확인 체크 실패 — ' + e.message; }
+  await refresh();
+});
 document.getElementById('rs-list').addEventListener('click', async ev => {   // 🔥 = 긴급 켜기/끄기 (담당 세션 채널에 알림)
   const b = ev.target.closest('.rs-flag'); if (!b) return;
   ev.preventDefault(); b.disabled = true;
@@ -761,6 +806,20 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
           if (typeof j.del === 'string') { const ok = deleteMemo(root, name, j.del); return send(res, ok ? 200 : 404, TYPES['.json'], JSON.stringify({ ok, del: j.del })); }
           send(res, 200, TYPES['.json'], JSON.stringify(sendMemo(root, name, j.text)));
         } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
+      });
+      return;
+    }
+    if (url.pathname === '/__check') {   // ?d=<보고 시트> GET → {checkedAt} · POST {on} — 페이지(hero) 전용, CORS 없음, 알림 없음
+      const name = url.searchParams.get('d') || '';
+      if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'd=<sheet> ([a-z0-9-])');
+      if (req.method === 'GET') return send(res, 200, TYPES['.json'], JSON.stringify({ name, checkedAt: readChecked(root)[name] || null }));
+      if (req.method !== 'POST') return send(res, 405, 'text/plain', 'GET|POST');
+      if (!/^application\/json/.test(String(req.headers['content-type'] || ''))) return send(res, 415, 'text/plain', 'application/json');
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 1e4) req.destroy(); });
+      req.on('end', () => {
+        try { send(res, 200, TYPES['.json'], JSON.stringify(setChecked(root, name, !!JSON.parse(body || '{}').on))); }
+        catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
       });
       return;
     }
@@ -972,6 +1031,15 @@ async function main() {
     let j; try { j = JSON.parse(src === '-' ? await (async () => { let t = ''; process.stdin.setEncoding('utf8'); for await (const c of process.stdin) t += c; return t; })() : fs.readFileSync(src, 'utf8')); } catch (e) { console.error('board: JSON 읽기 실패 — ' + e.message); process.exit(1); }
     try { const b = writeBoard(dir, j); console.log(`${boardFile(dir)}\t카드 ${b.cards.length}\t→ http://127.0.0.1:${INBOX_PORT}/board`); }
     catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'checks') {   // 보고 시트 확인 현황 — hero 가 ✓ 한 것(기본) / --open 아직 안 한 것. 세션이 나중에 한 번에 본다
+    for (const s of listSheets(dir)) {
+      if (s.error || !s.report || (flags.prefix && !String(s.name).startsWith(flags.prefix))) continue;
+      if (flags.open ? s.checkedAt || s.submitted : !s.checkedAt) continue;
+      if (flags.since && String(s.checkedAt) < String(flags.since)) continue;
+      console.log(`${s.name}\t${s.checkedAt || '확인 안 함'}\t${s.report} ${s.title}`);
+    }
     return;
   }
   if (cmd === 'unassigned') {

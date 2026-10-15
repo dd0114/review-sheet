@@ -209,6 +209,24 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .rs-flag:disabled{cursor:progress}
 .rs-page ul.rs-index li.urgent{border-left:8px solid #D12E1F;background:#FFF0EE;box-shadow:0 0 0 2px #D12E1F inset,0 1px 3px rgba(0,0,0,.08);opacity:1}
 .rs-page ul.rs-index li.urgent .rs-badge{background:#D12E1F;color:#fff}
+/* ✓ 보고 확인 (hero 2026-10-15) — 보고 시트 줄 왼쪽 체크 · 시트 아래 줄 체크. 체크는 세션을 깨우지 않는다 */
+.rs-page ul.rs-index li:has(.rs-check) a{padding-left:64px}
+.rs-page .rs-check{position:absolute;left:10px;top:50%;transform:translateY(-50%);width:44px;height:44px;border-radius:10px;border:2px solid #9AA59C;background:#fff;color:transparent;font:900 24px/1 system-ui,sans-serif;cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent;z-index:1}
+.rs-page .rs-check.on{background:#1F6B3A;border-color:#1F6B3A;color:#fff}
+.rs-page .rs-check:not(.on):hover{color:#9AA59C}
+.rs-page .rs-check:disabled{cursor:progress}
+.rs-page ul.rs-index li.rep.wait{border-left-color:#5A6B7B}
+.rs-page ul.rs-index .rs-badge.rs-rep,.rs-page ul.rs-index li.wait .rs-badge.rs-rep{background:#5A6B7B;color:#fff}
+.rs-page ul.rs-index li.done .rs-badge.rs-rep{background:#1F6B3A}
+.rs-page h2.rs-rep-h{margin-top:22px;color:#4A5866}
+.rs-page h2.rs-rep-h .rs-n{background:#5A6B7B}
+.rs-page .rs-repbadge{display:inline-block;font:800 13px/1.8 system-ui,sans-serif;padding:0 9px;border-radius:6px;background:#5A6B7B;color:#fff;margin-right:8px;vertical-align:4px}
+.rs-page .v-bar .chk{order:-2;background:#fff;color:#1F6B3A;border:2px solid #1F6B3A}
+.rs-page .v-bar .chk.on{background:#1F6B3A;color:#fff}
+.rs-page.rs-report .v-bar .save{order:0;background:#fff;color:#1F6B3A;border:1px solid #1F6B3A;font-weight:700}
+.rs-page.rs-report .v-bar .all{display:none}
+body.rs-page.rs-checked{background:#DCE8DF}
+@media (max-width:420px){.rs-page .v-bar .chk{flex:1}.rs-page.rs-report .v-bar .save{flex:0 0 auto}.rs-page.rs-report .v-bar .st{display:none}}
 
 /* ✕ 지우기 · ＋ 묶음 (web/compose.js, hero 2026-10-09) — 입력칸이 한 줄을 다 쓰고, 📎·🎤 은 ＋ 줄(채팅) 또는 아래 줄(시트) */
 .rs-page .c-field,.rs-page .v-memo-row{position:relative}

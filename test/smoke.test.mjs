@@ -406,7 +406,7 @@ test('stage: owner reports each step as an end-state tag on the sheet row; stall
   let r = run('stage', dir, 'example', '머지');
   assert.equal(r.code, 1); assert.match(r.out, /아직 배정 안 됨/);
   assert.equal(run('assign', dir, 'example', '#7', 'proj:ws1').code, 0);
-  assert.match(run('stage', dir, 'example', 'merged', 'PR', '#9').out, /^example\t메인 반영 · 배포 전 — PR #9/);
+  assert.match(run('stage', dir, 'example', 'merged', 'PR', '#9').out, /^example\t🔀 머지됨 — PR #9/);
   assert.equal(run('stage', dir, 'example', '반쯤').code, 1);
   const a = JSON.parse(fs.readFileSync(path.join(dir, 'assign', 'example.json'), 'utf8'));
   assert.deepEqual(a.stages.map(x => x.stage), ['배정', '머지']);
@@ -420,22 +420,56 @@ test('stage: owner reports each step as an end-state tag on the sheet row; stall
   run('stage', dir, 'example', '라이브', '16:05 배포');
   assert.equal(run('unassigned', dir).code, 0);
   // end-state tag on the sheet row (hero 2026-10-14: 메인만? 배포 큐? 배포됨? 어드민 스위치? 언제?)
-  assert.match(run('stage', dir, 'example', '라이브', '--off', '--eta', '다음 시즌', '스위치 켜면 공개').out, /^example\t배포됨 · 어드민 스위치 꺼짐 · 다음 시즌 공개 — 스위치 켜면 공개/);
+  assert.match(run('stage', dir, 'example', '라이브', '--off', '--eta', '다음 시즌', '스위치 켜면 공개').out, /^example\t🚀 배포됨 · 스위치 꺼짐 · 다음 시즌 공개 — 스위치 켜면 공개/);
   const { base, close } = await startServer(dir, 0);
   try {
     let inbox = await (await fetch(base + '/api/inbox')).json();
     let a = inbox.sheets.find(s => s.name === 'example').assign;
-    assert.deepEqual([a.stage, a.off, a.eta, a.tag], ['라이브', true, '다음 시즌', '배포됨 · 어드민 스위치 꺼짐 · 다음 시즌 공개']);
+    assert.deepEqual([a.stage, a.off, a.eta, a.tag], ['라이브', true, '다음 시즌', '🚀 배포됨 · 스위치 꺼짐 · 다음 시즌 공개']);
     assert.equal(inbox.reports, undefined);
     assert.equal((await fetch(base + '/__report-ack?d=example', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 404);
     run('stage', dir, 'example', '배포대기', '--eta', '15:00');
     inbox = await (await fetch(base + '/api/inbox')).json();
-    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.tag, '배포 큐 · 15:00 예정');
+    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.tag, '⏳ 배포 대기 · 15:00 예정');
     run('stage', dir, 'example', '머지');
     inbox = await (await fetch(base + '/api/inbox')).json();
-    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.tag, '메인 반영 · 배포 전');
+    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.tag, '🔀 머지됨');
     const html = await (await fetch(base + '/')).text();
     assert.match(html, /rs-tag/); assert.doesNotMatch(html, /rs-report-h|오른쪽으로 밀면/);
+  } finally { await close(); }
+});
+
+test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세션 안 깨움), 확인할 보고 묶음, 옛 머지 제목은 배지로 (hero 2026-10-15)', async () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const sheet = (id, extra) => fs.writeFileSync(path.join(dir, id + '-data.js'), 'window.SHEET = ' + JSON.stringify({ id, title: 't', sections: [{ id: 'a', code: 'A', title: 's', questions: [] }], ...extra }) + ';');
+  sheet('rep-new', { report: 'merged', title: '제출 버튼 위치' });
+  sheet('rep-old', { title: '✅ 머지했습니다 — 마이크 단축키 (PR #13)' });
+  sheet('plain', { title: '머지 순서 정하기' });
+  const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
+  const { base, close } = await startServer(dir, 0);
+  try {
+    let inbox = await (await fetch(base + '/api/inbox')).json();
+    const by = n => inbox.sheets.find(s => s.name === n);
+    assert.deepEqual([by('rep-new').report, by('rep-new').title], ['🔀 머지됨', '제출 버튼 위치']);
+    assert.deepEqual([by('rep-old').report, by('rep-old').title], ['🔀 머지됨', '마이크 단축키 (PR #13)']);
+    assert.deepEqual([by('plain').report, by('plain').title], ['', '머지 순서 정하기']);
+    const post = (d, on) => fetch(base + '/__check?d=' + d, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) });
+    assert.equal((await post('plain', true)).status, 400);                 // 보고 시트만
+    assert.equal((await fetch(base + '/__check?d=rep-new', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' })).status, 415);
+    const j = await (await post('rep-new', true)).json();
+    assert.ok(j.checkedAt);
+    assert.equal(fs.existsSync(path.join(dir, 'answers', 'rep-new.json')), false);   // wait 가 안 깬다
+    assert.equal((await (await fetch(base + '/__check?d=rep-new')).json()).checkedAt, j.checkedAt);
+    inbox = await (await fetch(base + '/api/inbox')).json();
+    assert.equal(by('rep-new').checkedAt, j.checkedAt);
+    assert.match(run('checks', dir).out, /^rep-new\t.+\t🔀 머지됨 제출 버튼 위치$/m);
+    assert.match(run('checks', dir, '--open').out, /^rep-old\t확인 안 함\t/m);
+    assert.doesNotMatch(run('checks', dir, '--open').out, /rep-new|plain/);
+    await post('rep-new', false);
+    assert.equal(run('checks', dir).out, '');
+    const html = await (await fetch(base + '/')).text();
+    assert.match(html, /rs-check/); assert.match(html, /확인할 보고/);
   } finally { await close(); }
 });
 
