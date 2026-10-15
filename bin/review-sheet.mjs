@@ -544,6 +544,15 @@ function quiet(wav) {
   for (let i = 44; i + 1 < b.length; i += 2) { const v = b.readInt16LE(i); sum += v * v; n++; }
   return !n || Math.sqrt(sum / n) < 180;
 }
+/* whisper 가 무음·잡음에 지어내는 말(유튜브 자막 학습 흔적, hero 2026-10-15 "계속 감사합니다가 찍혀").
+   전사 전체가 이것뿐이면 버리고, 진짜 말 끝에 붙은 방송 인사(시청·구독)는 떼어낸다. ‘감사합니다’ 는 진짜 말일 수 있어 혼자일 때만 버린다. */
+const HALLU_ONLY = /^(?:(?:감사합니다|고맙습니다|네|아|음|MBC 뉴스 [가-힣]+입니다|시청해\s*주셔서 감사합니다|구독과 좋아요(?: 부탁드립니다)?|다음 영상에서 만나요|자막 제공[^.!?]*)[.!?~\s]*)+$/;
+const HALLU_TAIL = /\s*(?:시청해\s*주셔서 감사합니다|구독과 좋아요(?: 부탁드립니다)?|다음 영상에서 만나요)[.!?~\s]*$/;
+export function dropHallucination(text) {
+  const t = String(text || '').trim();
+  if (!t || HALLU_ONLY.test(t)) return '';
+  return t.replace(HALLU_TAIL, '').trim();
+}
 const sttThreads = () => String(Math.max(4, Math.min(8, os.cpus().length - 2)));
 /* 상주 whisper-server — whisper-cli 는 부를 때마다 모델을 새로 읽느라 2초쯤 쓴다(3초 말도 3초 걸림). whisper-cli 옆에 whisper-server 가
    있으면 127.0.0.1 빈 포트에 한 번 띄워 두고 재사용(짧은 말 ~0.8초), 10분 놀면 내린다(메모리). 없거나 실패하면 whisper-cli 로 떨어진다. */
@@ -602,7 +611,7 @@ export function transcribe(buf, c = sttConfig(), { from = 0, live = false } = {}
       await run(c.ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-y', '-i', inp, ...(from > 0 ? ['-ss', String(from)] : []), '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav], 60e3);
       const sec = Math.max(0, (fs.statSync(wav).size - 44) / 32000), end = Math.round((from + sec) * 100) / 100;
       if (live && sec < 0.8) return { text: '', end: from };   // 새로 쌓인 소리가 너무 짧다 — 다음 번에
-      if (live && quiet(wav)) return { text: '', end };          // 조용한 조각 — whisper 가 ‘감사합니다’ 를 지어낸다
+      if (quiet(wav)) return { text: '', end };                  // 조용한 녹음·조각 — whisper 가 ‘감사합니다’ 를 지어낸다(최종 전사도)
       let out = null;
       const srv = await sttServer(c).catch(() => null);
       if (srv) out = await sttServerInfer(srv, wav, c, live).catch(() => null);
@@ -611,7 +620,7 @@ export function transcribe(buf, c = sttConfig(), { from = 0, live = false } = {}
         if (c.vocab.length && !live) args.push('--prompt', c.vocab.join(', '));
         out = await run(c.whisper, args, 300e3);
       }
-      return { text: out.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ').trim(), end };
+      return { text: dropHallucination(out.split('\n').map(l => l.trim()).filter(Boolean).join(' ').replace(/\s+/g, ' ')), end };
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
   sttQueue = job.catch(() => {});

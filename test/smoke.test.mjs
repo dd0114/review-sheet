@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { startServer, loadSheet, readAnswers, renderMarkdown } from '../bin/review-sheet.mjs';
+import { startServer, loadSheet, readAnswers, renderMarkdown, dropHallucination } from '../bin/review-sheet.mjs';
 
 const BIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'review-sheet.mjs');
 const TEMPLATE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'example-data.js');
@@ -278,7 +278,7 @@ test('stt: /api/stt → ffmpeg → whisper-cli with vocab as --prompt (fake bina
   const dir = tmpDir();
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-stt-bin-'));
   const ff = path.join(bin, 'ffmpeg'), wh = path.join(bin, 'whisper-cli'), model = path.join(bin, 'model.bin'), vocab = path.join(bin, 'vocab.txt');
-  fs.writeFileSync(ff, '#!/bin/sh\nfor a; do last="$a"; done\nprintf wav > "$last"\n', { mode: 0o755 });   // ffmpeg … <out.wav>
+  fs.writeFileSync(ff, '#!/bin/sh\nfor a; do last="$a"; done\nif [ -f "$(dirname "$0")/silent" ]; then printf wav > "$last"; else head -c 16044 /dev/urandom > "$last"; fi\n', { mode: 0o755 });   // ffmpeg … <out.wav> (0.5초 잡음, silent 면 빈 소리)
   fs.writeFileSync(wh, '#!/bin/sh\necho "  안녕하세요 $*"\necho\n', { mode: 0o755 });                       // echoes its args
   fs.writeFileSync(model, 'x');
   fs.writeFileSync(vocab, '# 주석\n스파이더\n\n리뷰시트\n');
@@ -305,11 +305,25 @@ test('stt: /api/stt → ffmpeg → whisper-cli with vocab as --prompt (fake bina
     const lv = await (await fetch(base + '/api/stt?live=1&from=3.5', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: Buffer.from('fake-opus') })).json();
     assert.deepEqual([lv.text, lv.end], ['', 3.5]);
     assert.ok(!/\n/.test(j.text));
+    // 무음이면 whisper 를 안 돌린다 — 최종 전사도(‘감사합니다’ 지어내기 방지)
+    fs.writeFileSync(path.join(bin, 'silent'), '');
+    assert.equal((await (await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: Buffer.from('fake-opus') })).json()).text, '');
+    fs.rmSync(path.join(bin, 'silent'));
+    // whisper 가 지어낸 말만 나오면 버린다
+    fs.writeFileSync(wh, '#!/bin/sh\necho " 감사합니다."\necho " 감사합니다."\n', { mode: 0o755 });
+    assert.equal((await (await fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: Buffer.from('fake-opus') })).json()).text, '');
     assert.equal((await fetch(base + '/mic.js')).status, 200);
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     await close();
   }
+});
+
+test('stt: dropHallucination — 지어낸 말만이면 비우고, 진짜 말은 남기고 방송 인사 꼬리만 뗀다', () => {
+  for (const t of ['감사합니다', '감사합니다. 감사합니다.', '시청해주셔서 감사합니다.', '구독과 좋아요 부탁드립니다', ' 네. ', 'MBC 뉴스 김철수입니다.']) assert.equal(dropHallucination(t), '', t);
+  assert.equal(dropHallucination('리뷰시트 열어줘'), '리뷰시트 열어줘');
+  assert.equal(dropHallucination('도와줘서 정말 감사합니다'), '도와줘서 정말 감사합니다');
+  assert.equal(dropHallucination('배포 끝났어. 시청해주셔서 감사합니다.'), '배포 끝났어.');
 });
 
 test('stt: binary lookup skips a same-named directory on PATH (launchd PATH=/opt/homebrew/Cellar → Cellar/ffmpeg/)', async () => {
