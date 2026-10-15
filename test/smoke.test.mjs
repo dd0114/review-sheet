@@ -465,6 +465,8 @@ test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세
   sheet('rep-old', { title: '✅ 머지했습니다 — 마이크 단축키 (PR #13)' });
   sheet('plain', { title: '머지 순서 정하기' });
   sheet('plan', { title: '이렇게 해놓겠습니다 — 부분 제출 표시', sections: [{ id: 'a', code: 'A', title: 's', questions: [{ k: '1', q: '확인', opts: [['확인'], ['의견']] }] }] });
+  sheet('plan-go', { title: '이렇게 해놓겠습니다 — 러너 연결', sections: [{ id: 'a', code: 'A', title: 's', questions: [{ k: '1', q: '머지할까', opts: [['① 머지'], ['② 보류']] }] }] });
+  sheet('plan-pick', { title: '위키 고치기 — 1번 방식 고르기 · 2번 이렇게 해놓겠습니다', sections: [{ id: 'a', code: 'A', title: 's', questions: [{ k: '1', q: '방식', opts: [['① 규칙 문구만'], ['② 코드까지']] }] }] });
   sheet('plan-ask', { title: '승인 요청 — 이렇게 해놓겠습니다' });
   sheet('mixed', { title: '머지했습니다(위키) · 이렇게 해놓겠습니다(장치)', sections: [{ id: 'b', code: 'B', title: 's', questions: [{ k: '1', q: '머지?', opts: [['① 머지 + 시험'], ['② 보류']] }] }] });
   const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
@@ -476,8 +478,10 @@ test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세
     assert.deepEqual([by('rep-old').report, by('rep-old').title], ['🔀 머지됨', '마이크 단축키 (PR #13)']);
     assert.deepEqual([by('plain').report, by('plain').title], ['', '머지 순서 정하기']);
     assert.deepEqual([by('plan').report, by('plan').title], ['📌 보고', '부분 제출 표시']);   // 해놓겠습니다 = 보고, 진행(hero 2026-10-15)
-    assert.equal(by('plan-ask').report, '');                               // 승인 요청은 답 기다림
-    assert.equal(by('mixed').report, '');                                  // 승인 요청이 섞이면 보고 아님 — 제출로 답한다
+    assert.equal(by('plan-ask').report, '');
+    assert.equal(by('plan-go').report, '📌 보고');                         // '① 머지' 는 진행 알림
+    assert.equal(by('plan-pick').report, '');                              // 진짜 고를 게 있으면 결정                               // 승인 요청은 답 기다림
+    assert.notEqual(by('mixed').report, '');                               // 머지했습니다 · 해놓겠습니다 + '① 머지' = 보고(hero 2026-10-15, #21 뒤집음)
     const post = (d, on) => fetch(base + '/__check?d=' + d, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) });
     assert.equal((await post('plain', true)).status, 400);                 // 보고 시트만
     assert.equal((await fetch(base + '/__check?d=rep-new', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' })).status, 415);

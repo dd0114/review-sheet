@@ -159,20 +159,24 @@ export const REPORTS = { merged: '🔀 머지됨', deployed: '🚀 배포됨', d
 const REPORT_ALIAS = { 머지: 'merged', 배포: 'deployed', 끝: 'done', 보고: 'note' };
 const REPORT_TITLE = [
   [/^\s*(?:(?:✅|🔀|📌)\s*)?머지(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'merged'],
-  [/^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'deployed'],  [/^\s*(?:📌\s*)?(?:이렇게\s*)?해\s*놓겠습니다\s*[—:·-]?\s*/, 'note'],
+  [/^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'deployed'],
+  [/^\s*(?:📌\s*)?(?:이렇게\s*)?해\s*놓겠습니다\s*[—:·-]?\s*/, 'note'],
 ];
+/* '이렇게 해놓겠습니다'는 답 기다림이 아니라 보고(hero 2026-10-15 "보고 라고 라벨을 띄워줘도 될거같은데 진행해놓고").
+   이런 시트의 '① 머지·진행·이대로 실행' 같은 첫 선택지는 고르는 게 아니라 진행 알림 — 결정으로 치지 않는다. */
 const PLAN_RE = /해\s*놓겠습니다/;
-/** 결정할 게 있는 시트: 첫 선택지가 '확인'·'그대로' 류가 아닌 질문이 있거나, lede·제목에 승인 요청.
- *  '이렇게 해놓겠습니다'는 답 기다림이 아니라 보고(hero 2026-10-15 "진행해놓고") — 고를 질문이 없으면 📌 보고. */
-const decides = sheet => /승인 요청/.test(String(sheet.title || '') + String(sheet.lede || '')) ||
-  (sheet.sections || []).some(s => (s.questions || []).some(q => { const o = Array.isArray(q) ? q[2] : q.opts; const f = o && o[0]; const l = Array.isArray(f) ? f[0] : f; return l && !/확인|그대로/.test(String(l)); }));
+const GO_OPT = /확인|그대로|진행|머지|이대로|실행/;
+/** 결정할 게 있는 시트: 첫 선택지가 '확인'·'그대로' 류(해놓겠습니다 시트면 진행 알림 류까지)가 아닌 질문이 있거나, lede·제목에 승인 요청 */
+const decides = (sheet, ok = /확인|그대로/) => /승인 요청/.test(String(sheet.title || '') + String(sheet.lede || '')) ||
+  (sheet.sections || []).some(s => (s.questions || []).some(q => { const o = Array.isArray(q) ? q[2] : q.opts; const f = o && o[0]; const l = Array.isArray(f) ? f[0] : f; return l && !ok.test(String(l)); }));
 export function reportOf(sheet) {
   const t = String(sheet.title || sheet.id || '');
   let kind = sheet.report ? (REPORTS[sheet.report] ? sheet.report : REPORT_ALIAS[sheet.report] || 'note') : '', title = t;
   // 제목만 보고 고를 땐 결정할 게 없는 시트만 — '머지했습니다 · 이렇게 해놓겠습니다'(승인 요청)가 ✓ 로 끝나면 세션이 답을 못 받는다
-  if (!kind && decides(sheet)) return null;
+  const plan = PLAN_RE.test(t + String(sheet.lede || ''));
+  if (!kind && decides(sheet, plan ? GO_OPT : undefined)) return null;
   for (const [re, k] of REPORT_TITLE) if (re.test(t)) { title = t.replace(re, '') || t; kind = kind || k; break; }
-  if (!kind && PLAN_RE.test(t + String(sheet.lede || ''))) kind = 'note';
+  if (!kind && plan) kind = 'note';
   return kind ? { kind, label: REPORTS[kind], title } : null;
 }
 const checkedFile = dir => path.join(dir, 'checked.json');
