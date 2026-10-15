@@ -165,9 +165,10 @@ const REPORT_TITLE = [
 /* '이렇게 해놓겠습니다'는 답 기다림이 아니라 보고(hero 2026-10-15 "보고 라고 라벨을 띄워줘도 될거같은데 진행해놓고").
    이런 시트의 '① 머지·진행·이대로 실행' 같은 첫 선택지는 고르는 게 아니라 진행 알림 — 결정으로 치지 않는다. */
 const PLAN_RE = /해\s*놓겠습니다/;
-const GO_OPT = /확인|그대로|진행|머지|이대로|실행/;
-/** 결정할 게 있는 시트: 첫 선택지가 '확인'·'그대로' 류(해놓겠습니다 시트면 진행 알림 류까지)가 아닌 질문이 있거나, lede·제목에 승인 요청 */
-const decides = (sheet, ok = /확인|그대로/) => /승인 요청/.test(String(sheet.title || '') + String(sheet.lede || '')) ||
+const GO_OPT = /확인|그대로|진행|머지|이대로|실행|적용/;
+/** 결정할 게 있는 시트: 첫 선택지가 '확인'·'그대로' 류(해놓겠습니다 시트면 진행 알림 류까지)가 아닌 질문이 있거나, lede·제목에 승인 요청.
+ *  해놓겠습니다 시트는 lede 첫 줄이 늘 '승인 요청 = …' 이라(시트 규칙) 그 문구로는 가르지 않고 진짜 고를 질문으로만 가른다. */
+const decides = (sheet, ok = /확인|그대로/) => (ok !== GO_OPT && /승인 요청/.test(String(sheet.title || '') + String(sheet.lede || ''))) ||
   (sheet.sections || []).some(s => (s.questions || []).some(q => { const o = Array.isArray(q) ? q[2] : q.opts; const f = o && o[0]; const l = Array.isArray(f) ? f[0] : f; return l && !ok.test(String(l)); }));
 export function reportOf(sheet) {
   const t = String(sheet.title || sheet.id || '');
