@@ -45,6 +45,7 @@ review-sheet chat wait main --timeout 14400   # 세션: 사람이 쓸 때까지 
 review-sheet chat say main "답장"
 review-sheet chat say main --re <id> "그 메시지에 대한 답"   # 카톡식 답장 — wait/read 출력 맨 앞 #id. 답장일 때만, 강제 아님
 # 링크·"말씀 주세요" 같은 확인 요청·500자 넘는 글은 막힘(exit 6) — 결과물은 시트로. 꼭 채팅인 알림만 --notice
+# hero 메시지에 다는 답장(--re)은 2000자까지 — 물은 건 줄이지 말고 다 답한다(hero 2026-10-15)
 node --test test/
 ```
 
