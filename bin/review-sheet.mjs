@@ -298,6 +298,10 @@ export function renderMarkdown(sheet, saved, dir) {
     out.push('');
   }
   out.push(`${picked}/${n} 선택됨`);
+  if (saved && saved.savedAt && picked < n && !reportOf(sheet)) {
+    const left = sheet.sections.flatMap(s => (s.questions || []).map(q => `${s.code}-${normQ(q).k}`)).filter(k => !(A[k] || {}).pick);
+    out.splice(2, 0, `> ⚠ **부분 제출 — 안 고른 문항 ${left.length}개 (${left.join(', ')}).** 메모만 온 문항도 미결이다. 막힌 이유(메모·추가 질문)에 먼저 답하고, **남은 문항만 새 id 시트로 다시 묻는다**(전부 다시 보내지 않는다). 메모로 답이 충분하면 그대로 진행.`, '');
+  }
   return out.join('\n');
 }
 /* Table cell: the small markup set the page tolerates (<b> <i> <code> <br>) becomes markdown, so a sheet written with
@@ -359,12 +363,16 @@ function listSheetsRaw(dir) {
       const saved = readAnswers(dir, sheet.id);
       const qs = sheet.sections.flatMap(s => (s.questions || []).map(q => `${s.code}-${normQ(q).k}`));
       const picked = qs.filter(k => saved && saved.answers && saved.answers[k] && (saved.answers[k].pick || saved.answers[k].memo || (saved.answers[k].files || []).length)).length;
+      const unpicked = qs.filter(k => !(saved && saved.answers && saved.answers[k] && saved.answers[k].pick)).length;
       let createdAt = sheet.createdAt || null;
       if (!createdAt) { try { createdAt = fs.statSync(path.join(dir, f)).mtime.toISOString(); } catch { /* ignore */ } }
       const savedAt = saved && saved.savedAt || null;
       const rep = reportOf(sheet);
       const sum = { name, id: sheet.id, title: rep ? rep.title : sheet.title || sheet.id, from: sheet.from || '', createdAt,
                total: qs.length, picked, savedAt, submitted: !!savedAt, report: rep ? rep.label : '' };
+      // 부분 제출 (hero 2026-10-15) — 제출됐는데 고르지 않은 문항(메모만 포함)이 남음 = 미결. 배지로만 보이고(hero 의 '답 기다림' 칸엔 안 올림 —
+      // 남은 문항은 세션 몫), read/wait 출력과 unassigned 가 세션에게 '남은 문항만 새 시트로' 를 알린다
+      if (savedAt && !rep && unpicked) sum.partial = unpicked;
       summaryCache.set(ck, { dataM, ansM: mtimeOf(answersFile(dir, sheet.id)), sum });
       return live(name, sum);
     } catch (e) { const sum = { name, error: String(e.message || e) }; summaryCache.set(ck, { dataM, sum }); return sum; }
@@ -678,7 +686,7 @@ const check = s => s.report ? '<button type="button" class="rs-check' + (s.check
 const row = s => s.error
   ? '<li class="bad"><b>' + esc(s.name) + '</b> — ' + esc(s.error) + '</li>'
   : '<li class="' + (handled(s) ? 'done' : 'wait') + (s.report ? ' rep' : '') + (s.urgent ? ' urgent' : '') + '">' + check(s) + '<a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
-    '<span class="rs-badge' + (s.assign ? ' rs-tag ' + tagKind(s.assign) : s.report ? ' rs-rep' : '') + '">' + (s.urgent ? '🔥 긴급 · ' : '') + (s.assign ? esc(s.assign.tag) : s.report ? esc(s.report) : s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
+    '<span class="rs-badge' + (s.assign ? ' rs-tag ' + tagKind(s.assign) : s.report ? ' rs-rep' : '') + '">' + (s.urgent ? '🔥 긴급 · ' : '') + (s.assign ? esc(s.assign.tag) : s.report ? esc(s.report) : s.partial ? '◐ 부분 제출 · 미선택 ' + s.partial : s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
     '<small>' + (s.from ? esc(s.from) + ' · ' : '') + (s.report ? '' : s.picked + '/' + s.total + ' 답함 · ') +
     (s.checkedAt ? '확인 ' + when(s.checkedAt) : s.submitted ? '제출 ' + when(s.savedAt) : (s.createdAt ? '보냄 ' + when(s.createdAt) : '')) +
     (s.assign ? ' · <span class="rs-stage">' + esc(s.assign.issue) + (s.assign.note && s.assign.stage !== '배정' ? ' — ' + esc(s.assign.note) : '') + ' · ' + when(s.assign.stageAt) + '</span>' : '') + '</small></a>' +
@@ -1084,7 +1092,7 @@ async function main() {
     for (const s of listSheets(dir)) {
       if (flags.prefix && !String(s.name).startsWith(flags.prefix)) continue;
       const st = assignState(dir, s, since, flags.hours || 24);
-      if (st === 'none' || st === 'changed') open.push(`${s.name}\t${st === 'none' ? '배정없음' : '답바뀜'}\t${s.savedAt}\t${s.from || '-'}\t${s.title}`);
+      if (st === 'none' || st === 'changed') open.push(`${s.name}\t${st === 'none' ? '배정없음' : '답바뀜'}\t${s.savedAt}\t${s.from || '-'}\t${s.title}${s.partial ? ` · 부분제출(미선택 ${s.partial})` : ''}`);
       if (st === 'stalled') open.push(`${s.name}\t멈춤\t${s.assign.stageAt}\t${s.assign.owner}\t${s.title} (${s.assign.stage} ${s.assign.issue})`);
     }
     for (const l of open) console.log(l);
