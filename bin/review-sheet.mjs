@@ -775,27 +775,22 @@ document.addEventListener('visibilitychange', () => { if(!document.hidden) refre
 </script></html>`;
 }
 
-/* 폰 알림 감시 (hero 2026-10-16) — 구독이 있을 때만 몇 초마다 받은편지함을 훑어, 새로 온 시트와 세션이 채널에 쓴 글을 알린다.
-   보고 시트도 알린다(제목 앞에 🔀 머지됨 등 배지, hero 2026-10-16). hero 자신이 쓴 글·이미 제출된 시트는 안 알린다. 서버를 켠 뒤 생긴 것만(켜기 전 것은 한꺼번에 몰려오지 않게). 5건 넘게 몰리면 한 건으로 묶는다. */
+/* 폰 알림 감시 (hero 2026-10-16) — 구독이 있을 때만 몇 초마다 받은편지함을 훑어, 새로 온 시트만 알린다(보고 시트는 🔀 머지됨 같은 배지를 앞에).
+   채널 글은 안 알린다(hero 2026-10-16 "모든 메세지에 알림 보내지 말고 리뷰 시트 올때만"). 이미 제출된 시트도 안 알린다.
+   서버를 켠 뒤 생긴 것만(켜기 전 것은 한꺼번에 몰려오지 않게). 5건 넘게 몰리면 한 건으로 묶는다. */
 export function pushWatch(root, ms = Number(process.env.REVIEW_SHEET_PUSH_MS) || 8000) {
-  let since = new Date().toISOString(), seen = null, busy = false;
+  let seen = null, busy = false;
   const tick = async () => {
     if (busy) return; busy = true;
     try {
-      const now = new Date().toISOString();
-      if (!readSubs(root).length) { seen = null; since = now; return; }   // 구독 없으면 훑지도 않는다
+      if (!readSubs(root).length) { seen = null; return; }   // 구독 없으면 훑지도 않는다
       const sheets = listSheetsRaw(root).filter(x => !x.error);
-      if (!seen) { seen = new Set(sheets.map(x => x.name)); since = now; return; }
+      if (!seen) { seen = new Set(sheets.map(x => x.name)); return; }
       const ev = [];
       for (const x of sheets) {
         if (seen.has(x.name)) continue; seen.add(x.name);
         if (!x.submitted) ev.push({ title: (x.report || '📝 새 시트') + (x.from ? ' · ' + x.from : ''), body: x.title, url: '/sheet.html?d=' + encodeURIComponent(x.name), tag: 'sheet-' + x.name });
       }
-      for (const c of listChats(root)) for (const m of readChatLog(root, c.name)) {
-        if (m.from === 'hero' || !(m.ts > since) || m.ts > now) continue;
-        ev.push({ title: '💬 ' + (c.title || c.name), body: String(m.text).replace(/\s+/g, ' ').slice(0, 160), url: '/chat.html?c=' + encodeURIComponent(c.name), tag: 'chat-' + c.name });
-      }
-      since = now;
       if (!ev.length) return;
       const msgs = ev.length > 5 ? [{ title: '리뷰시트 새 소식 ' + ev.length + '건', body: ev.slice(0, 3).map(e => e.title + ' ' + e.body).join(' / ').slice(0, 160), url: '/', tag: 'many' }] : ev;
       for (const m of msgs) await pushAll(root, m);
