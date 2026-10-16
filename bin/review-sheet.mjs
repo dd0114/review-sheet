@@ -775,8 +775,8 @@ document.addEventListener('visibilitychange', () => { if(!document.hidden) refre
 </script></html>`;
 }
 
-/* 폰 알림 감시 (hero 2026-10-16) — 구독이 있을 때만 몇 초마다 받은편지함을 훑어, 새로 온 결정 시트와 세션이 채널에 쓴 글을 알린다.
-   보고 시트(✓ 확인용)·hero 자신이 쓴 글·제출된 시트는 안 알린다. 서버를 켠 뒤 생긴 것만(켜기 전 것은 한꺼번에 몰려오지 않게). 5건 넘게 몰리면 한 건으로 묶는다. */
+/* 폰 알림 감시 (hero 2026-10-16) — 구독이 있을 때만 몇 초마다 받은편지함을 훑어, 새로 온 시트와 세션이 채널에 쓴 글을 알린다.
+   보고 시트도 알린다(제목 앞에 🔀 머지됨 등 배지, hero 2026-10-16). hero 자신이 쓴 글·이미 제출된 시트는 안 알린다. 서버를 켠 뒤 생긴 것만(켜기 전 것은 한꺼번에 몰려오지 않게). 5건 넘게 몰리면 한 건으로 묶는다. */
 export function pushWatch(root, ms = Number(process.env.REVIEW_SHEET_PUSH_MS) || 8000) {
   let since = new Date().toISOString(), seen = null, busy = false;
   const tick = async () => {
@@ -789,7 +789,7 @@ export function pushWatch(root, ms = Number(process.env.REVIEW_SHEET_PUSH_MS) ||
       const ev = [];
       for (const x of sheets) {
         if (seen.has(x.name)) continue; seen.add(x.name);
-        if (!x.report && !x.submitted) ev.push({ title: '📝 새 시트' + (x.from ? ' · ' + x.from : ''), body: x.title, url: '/sheet.html?d=' + encodeURIComponent(x.name), tag: 'sheet-' + x.name });
+        if (!x.submitted) ev.push({ title: (x.report || '📝 새 시트') + (x.from ? ' · ' + x.from : ''), body: x.title, url: '/sheet.html?d=' + encodeURIComponent(x.name), tag: 'sheet-' + x.name });
       }
       for (const c of listChats(root)) for (const m of readChatLog(root, c.name)) {
         if (m.from === 'hero' || !(m.ts > since) || m.ts > now) continue;
