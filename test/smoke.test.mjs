@@ -628,11 +628,11 @@ test('push: 폰 알림 — RFC 8291 시험값, VAPID 서명, 구독 → 새 시�
     assert.equal((await (await fetch(base + '/__push/sub', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ subscription }) })).json()).subs, 1);
     await new Promise(r => setTimeout(r, 250));                               // 감시가 지금 있는 것을 '본 것'으로 잡는다 — old 는 안 알림
     sheet('new1'); sheet('rep1', { report: 'merged' });
-    appendChat(dir, 'infra', 'hero', 'hero 글은 안 알림'); appendChat(dir, 'infra', 'infra:fleet2', '답장: 다 끝났어요');
-    await until(() => got.length >= 3); await new Promise(r => setTimeout(r, 200));
-    assert.deepEqual(got.map(g => g.msg.title).sort(), ['💬 인프라', '📝 새 시트 · infra', '🔀 머지됨 · infra']);
+    appendChat(dir, 'infra', 'hero', 'hero 글은 안 알림'); appendChat(dir, 'infra', 'infra:fleet2', '세션 글도 안 알림 — 시트만');
+    await until(() => got.length >= 2); await new Promise(r => setTimeout(r, 200));
+    assert.deepEqual(got.map(g => g.msg.title).sort(), ['📝 새 시트 · infra', '🔀 머지됨 · infra']);
     assert.deepEqual(got.filter(g => g.msg.url.startsWith('/sheet')).map(g => g.msg.url).sort(), ['/sheet.html?d=new1', '/sheet.html?d=rep1']);
-    assert.equal(got.find(g => g.msg.url.startsWith('/chat')).msg.body, '답장: 다 끝났어요');
+    assert.ok(!got.some(g => g.msg.url.startsWith('/chat')));                // 채널 글은 안 알림
     assert.equal(got[0].h['content-encoding'], 'aes128gcm'); assert.match(got[0].h.authorization, /^vapid t=.+, k=/); assert.ok(got[0].h.ttl);
     reply = 410;                                                             // 폰에서 앱 지움 → 구독 빠짐
     const t = await (await fetch(base + '/__push/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
