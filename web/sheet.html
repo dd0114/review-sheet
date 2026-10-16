@@ -80,6 +80,10 @@ if (!REP) h += '<section class="box" id="summary"><h2>한눈에 — 추천</h2>'
 const CLR = '<button type="button" class="rs-clear" title="모두 지우기" aria-label="메모 모두 지우기">✕</button>';   // web/compose.js — 글 있을 때만 보임
 // 메모칸은 한 줄을 다 쓰고, 📎·🎤 은 그 아래 줄에(hero 2026-10-09 — 칸 옆에 붙어 칸이 쪼개지던 것)
 const ATT = '<div class="v-att"><label class="v-clip" title="파일 첨부 (붙여넣기·끌어놓기도 된다)">📎 파일<input type="file" multiple hidden></label>' + MIC + '<span class="v-files"></span></div>';
+/* 문항 질문 (hero 2026-10-16) — '＋ 이것만 묻기': 그 문항 하나만 담당 세션에 묻고(제출 아님), 답은 그 문항 밑에 바로 뜬다. */
+const ASKQ = label => '<button type="button" class="v-askq-b" data-label="' + e(String(label || '').replace(/<[^>]*>/g, '').slice(0, 120)) + '" aria-expanded="false">＋ 이것만 묻기</button>';
+const ASKBOX = '<div class="v-askq-log"></div><div class="v-askq" hidden><textarea class="v-askq-t" rows="2" placeholder="이 문항에 대해서만 묻기 — 고른 답·메모는 안 보내요"></textarea><div class="v-att"><button type="button" class="save v-askq-go">묻기</button><span class="v-askq-msg"></span></div></div>';
+const attAsk = label => ATT.replace('<span class="v-files"></span>', ASKQ(label) + '<span class="v-files"></span>') + ASKBOX;
 const media = o => {
   let m = '';
   if(o.links && o.links.length) m += '<div class="v-links">' + o.links.map(([t, u]) => '<button type="button" class="v-link" data-u="' + e(u) + '" data-t="' + e(t) + '">' + e(t) + ' ▾</button>').join('') + '</div>';
@@ -106,8 +110,8 @@ for(const s of D.sections){
       opts.map(([lb, ex, img], i) => '<li data-i="' + i + '" data-t="' + e(lb) + '"' + (opts.length > 1 && tok && String(lb).startsWith(tok + ' ') ? ' class="on"' : '') + '><span class="dot"></span><span>' + m(lb) +
         (ex ? '<span class="ex">예: ' + m(ex) + '</span>' : '') + '</span>' + (img ? '<img src="' + e(img) + '" alt="">' : '') + '</li>').join('') + '</ul>' +
       (why ? '<p class="v-why">' + m(why) + '</p>' : '') +
-      '<div class="v-memo-row"><textarea class="v-memo" rows="1" placeholder="메모 · 다른 안 (선택 안 하고 여기만 써도 된다)"></textarea>' + CLR + '</div>' + ATT + '</div>';
-  }).join('') + '<div class="v-q" data-q="' + e(s.code + '-memo') + '"><div class="v-qh"><span>' + e(s.code) + ' 전체 메모</span></div><div class="v-memo-row"><textarea class="v-memo" rows="2" placeholder="이 항목 전체에 대한 말"></textarea>' + CLR + '</div>' + ATT + '</div></section>';
+      '<div class="v-memo-row"><textarea class="v-memo" rows="1" placeholder="메모 · 다른 안 (선택 안 하고 여기만 써도 된다)"></textarea>' + CLR + '</div>' + attAsk(k + ' ' + t) + '</div>';
+  }).join('') + '<div class="v-q" data-q="' + e(s.code + '-memo') + '"><div class="v-qh"><span>' + e(s.code) + ' 전체 메모</span></div><div class="v-memo-row"><textarea class="v-memo" rows="2" placeholder="이 항목 전체에 대한 말"></textarea>' + CLR + '</div>' + attAsk((s.code ? s.code + ' ' : '') + s.title) + '</div></section>';
 }
 /* 추가 질문 (hero 2026-10-13) — 시트에 없는 것을 hero 가 되묻는 칸. 저장하면 보낸 세션 채널에 알림이 가고, 세션은 채팅으로 답한다. */
 h += '<section class="box v-askbox"><h2>추가 질문</h2><p class="v-now">위 항목에 없는 것을 물어보세요. 저장하면 이 시트를 보낸 세션에 알림이 가고, 채팅으로 답이 옵니다.</p>' +
@@ -291,6 +295,40 @@ saveBtn.addEventListener('click', async () => {
   st.textContent = count() + (saved && saved.savedAt ? ' · 제출 ' + new Date(saved.savedAt).toLocaleString('ko-KR') : ' · 아직 제출 안 함');
   if(chkBtn){ try { const r = await fetch('/__check?d=' + encodeURIComponent(SHEET_NAME), { cache: 'no-store' }); if(r.ok) markChecked((await r.json()).checkedAt); } catch(_){} }
 })();
+/* 문항 질문 — 열기·보내기·답 불러오기. 질문이 있으면 화면이 보일 때 5초마다 다시 읽는다(답 기다리는 게 없으면 30초). */
+const askEsc = t => e(t).replace(/\n/g, '<br>');
+const askAgo = ts => new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+let askTimer = null;
+const askLoad = async () => {
+  let list = [];
+  try { const r = await fetch('/api/asks?d=' + encodeURIComponent(SHEET_NAME), { cache: 'no-store' }); if(r.ok) list = await r.json(); } catch(_){ return; }
+  document.querySelectorAll('.v-q[data-q]').forEach(q => {
+    const log = q.querySelector('.v-askq-log'); if(!log) return;
+    const mine = list.filter(a => a.q === q.dataset.q);
+    log.innerHTML = mine.map(a => '<div class="v-askq-item"><div class="me"><b>❓ 질문</b> <span class="t">' + askAgo(a.ts) + '</span><div>' + askEsc(a.text) + '</div></div>' +
+      (a.replies.length ? a.replies.map(r => '<div class="re"><b>💬 ' + e(r.from) + '</b> <span class="t">' + askAgo(r.ts) + '</span><div>' + askEsc(r.text) + '</div></div>').join('')
+        : '<div class="re wait">답 기다리는 중… (' + e(a.ch) + ' 채널로 감)</div>') + '</div>').join('');
+  });
+  clearTimeout(askTimer);
+  if(list.length) askTimer = setTimeout(() => { if(!document.hidden) askLoad(); }, list.some(a => !a.replies.length) ? 5000 : 30000);
+};
+document.addEventListener('visibilitychange', () => { if(!document.hidden) askLoad(); });
+document.getElementById('app').addEventListener('click', async ev => {
+  const b = ev.target.closest && ev.target.closest('.v-askq-b');
+  if(b){ const box = b.closest('.v-q').querySelector('.v-askq'); box.hidden = !box.hidden; b.setAttribute('aria-expanded', String(!box.hidden)); if(!box.hidden) box.querySelector('textarea').focus(); return; }
+  const go = ev.target.closest && ev.target.closest('.v-askq-go'); if(!go) return;
+  const q = go.closest('.v-q'), box = q.querySelector('.v-askq'), ta = box.querySelector('textarea'), msg = box.querySelector('.v-askq-msg');
+  const text = ta.value.trim(); if(!text){ msg.textContent = '질문이 비었습니다'; return; }
+  go.disabled = true; msg.textContent = '보내는 중…';
+  try {
+    const r = await fetch('/__ask?d=' + encodeURIComponent(SHEET_NAME), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ q: q.dataset.q, label: q.querySelector('.v-askq-b').dataset.label, text }) });
+    const t = await r.text(); if(!r.ok) throw new Error(t);
+    ta.value = ''; box.hidden = true; q.querySelector('.v-askq-b').setAttribute('aria-expanded', 'false'); msg.textContent = '';
+    askLoad();
+  } catch(err){ msg.textContent = '✗ ' + err.message; }
+  finally { go.disabled = false; }
+});
+askLoad();
 document.getElementById('rs-refresh').addEventListener('click', () => location.reload());
 const go = new URLSearchParams(location.search).get('s') || location.hash.slice(1);
 if(go){ const t = document.getElementById(go); if(t) t.scrollIntoView(); }

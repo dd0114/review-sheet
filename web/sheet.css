@@ -255,3 +255,16 @@ body.rs-page.rs-checked{background:#DCE8DF}
 .rs-page ul.rs-index .rs-badge.rs-tag.main{background:#8A6D2E}
 .rs-page ul.rs-index .rs-badge.rs-tag.off{background:#B26B1F}
 .rs-page .rs-boardlink{font:700 12px/1 system-ui,sans-serif;padding:8px 10px;border-radius:14px;background:#2B2A27;color:#F3E6C4;text-decoration:none;margin-left:4px;vertical-align:middle;display:inline-block}
+
+/* 문항 질문 (hero 2026-10-16) */
+.rs-page .v-askq-b{min-height:40px;padding:0 12px;border:1px dashed #CFCBC2;border-radius:8px;background:#FFFDF8;font-size:13px;color:#6B675E;cursor:pointer;white-space:nowrap}
+.rs-page .v-askq-b[aria-expanded="true"]{border-style:solid;border-color:#C96442;color:#C96442}
+.rs-page .v-askq{margin-top:8px}
+.rs-page .v-askq-t{width:100%;box-sizing:border-box;font:inherit;font-size:15px;padding:8px 10px;border:1px solid #C96442;border-radius:8px;background:#fff}
+.rs-page .v-askq-msg{font-size:13px;color:#6B675E}
+.rs-page .v-askq-log:empty{display:none}
+.rs-page .v-askq-log{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.rs-page .v-askq-item{border-left:3px solid #C96442;padding:4px 0 4px 10px;display:flex;flex-direction:column;gap:6px;font-size:14px;line-height:1.5}
+.rs-page .v-askq-item .t{font-size:12px;color:#8A857A}
+.rs-page .v-askq-item .re{background:#F4F1EA;border-radius:8px;padding:6px 10px}
+.rs-page .v-askq-item .re.wait{color:#8A857A;font-style:italic}

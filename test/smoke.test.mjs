@@ -583,6 +583,39 @@ test('추가 질문: _ask memo → owner channel gets one hero notice per new/ch
   } finally { await close(); }
 });
 
+test('문항 질문: ＋ 이것만 묻기 → 담당 채널로 그 문항만, 시트는 제출 안 됨, ask-reply/↩ 답장이 시트에 뜸, 답 없으면 허브에 한 번 (hero 2026-10-16)', async () => {
+  const dir = tmpDir();
+  const { newChat, readChatLog, appendChat, askReply, askWatch, setHub } = await import('../bin/review-sheet.mjs');
+  fs.writeFileSync(path.join(dir, 'infra-x-data.js'), `window.SHEET = { id: 'infra-x', title: 'T-x', from: 'infra', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a', '② b'], '①', 'w']] }] };`);
+  newChat(dir, 'root', 'root', 'root:fleet2', true); newChat(dir, 'infra', 'infra', 'infra:fleet2');
+  const { base, close } = await startServer(dir, 0);
+  try {
+    const ask = (body, ct = 'application/json') => fetch(base + '/__ask?d=infra-x', { method: 'POST', headers: { 'content-type': ct }, body: JSON.stringify(body) });
+    assert.equal((await ask({ q: 'S-1', text: 'x' }, 'text/plain')).status, 415);
+    assert.equal((await ask({ q: 'S-1', text: '  ' })).status, 400);
+    const j = await (await ask({ q: 'S-1', label: '1 <b>q</b>', text: '② 고르면 뭐가 달라져?' })).json();
+    assert.equal(j.ch, 'infra');                                            // 담당 세션 직행
+    const m = readChatLog(dir, 'infra').at(-1);
+    assert.equal(m.from, 'hero'); assert.deepEqual(m.ask, { d: 'infra-x', q: 'S-1', text: '② 고르면 뭐가 달라져?', label: '1 q' });
+    assert.match(m.text, /문항 질문 \(시트 infra-x · S-1 「1 q」\): ② 고르면/);
+    assert.equal((await (await fetch(base + '/__answers?sheet=infra-x', { cache: 'no-store' })).json()).savedAt, undefined);   // 제출 안 됨
+    let asks = await (await fetch(base + '/api/asks?d=infra-x')).json();
+    assert.equal(asks.length, 1); assert.deepEqual(asks[0].replies, []);
+    appendChat(dir, 'infra', 'infra:fleet2', '② 면 배포가 하루 늦어요', null, m.id);          // chat say --re 와 같은 길
+    execFileSync('node', [BIN, 'ask-reply', dir, 'infra-x', 'S-1', '덧붙여: 비용은 같아요'], { encoding: 'utf8' });
+    asks = await (await fetch(base + '/api/asks?d=infra-x')).json();
+    assert.deepEqual(asks[0].replies.map(r => r.text), ['② 면 배포가 하루 늦어요', '덧붙여: 비용은 같아요']);
+    assert.match(execFileSync('node', [BIN, 'asks', dir, 'infra-x'], { encoding: 'utf8' }), /S-1\t#\w+\t답 2/);
+    // 답 없는 질문 → stale 지나면 허브(root)에 한 번만
+    await ask({ q: 'S-memo', text: '이건 언제?' });
+    const stop = askWatch(dir, 30, 0); await new Promise(r => setTimeout(r, 150)); stop();
+    const hub = readChatLog(dir, 'root').filter(x => x.askStale);
+    assert.equal(hub.length, 1); assert.match(hub[0].text, /답 없음.*S-memo.*이건 언제\?/);
+    const page = fs.readFileSync(path.join(path.dirname(BIN), '..', 'web', 'sheet.html'), 'utf8');
+    assert.match(page, /＋ 이것만 묻기/); assert.match(page, /\/__ask\?d=/);
+  } finally { await close(); }
+});
+
 test('push: 폰 알림 — RFC 8291 시험값, VAPID 서명, 구독 → 새 시트·세션 글만 알림(hero 글·보고 시트 X) → 410 이면 구독 삭제 (hero 2026-10-16)', async () => {
   const crypto = await import('node:crypto');
   const { encrypt, vapidAuth, vapidKeys, readSubs } = await import('../bin/push.mjs');

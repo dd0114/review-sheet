@@ -64,6 +64,8 @@ function usage(code = 2) {
   review-sheet ls    [dir]
   review-sheet assign [dir] <id> <issue#> <owner>   # 제출된 시트의 후속 일 담당 기록 → 닫힘
   review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [--off] [--eta <언제>] [메모…]   # 담당 세션이 끝난 상태 보고 → 시트 줄 맨 앞 태그
+  review-sheet asks [dir] [<시트>] [--open] [--prefix P]   # 문항 질문(시트 안 '＋ 이것만 묻기')과 답 수 — --open 답 없는 것만
+  review-sheet ask-reply [dir] <시트> <문항> "답" [--notice]   # 그 문항 질문에 ↩ 답장 → 시트 그 문항 밑에 바로 뜬다(chat say --re 와 같음)
   review-sheet checks [dir] [--open] [--since ISO] [--prefix P]   # 보고 시트(report:) — hero 가 ✓ 확인한 것 / --open 아직 안 한 것. 체크는 세션을 깨우지 않는다
   review-sheet unassigned [dir] [--prefix P] [--hours N]  # 담당 없음·배정 뒤 답 바뀜·N시간(기본 24) 단계 멈춤 시트 — 있으면 exit 5
   review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
@@ -362,6 +364,65 @@ function notifyAsk(root, id, text) {
   return c.name;
 }
 
+/* 문항 질문 (hero 2026-10-16) — 시트 안 '＋ 이것만 묻기'. 그 문항 하나만 담당 세션 채널로 hero 이름으로 보낸다(제출·다른 답과 무관 —
+   시트는 계속 '답 기다리는 중'). 메시지에 ask:{d,q,text} 를 달아 두고, 세션의 ↩ 답장(chat say --re 또는 ask-reply)을 시트가 그 문항 밑에 보여 준다.
+   담당 세션 직행(맥락 가진 쪽이 바로 답) — 담당 채널이 없으면 허브. 답 없이 ASK_STALE_MS 지나면 허브에 한 번 '답 없음' 알림(askWatch). */
+const ASK_MAX = 2000;
+const sheetByName = (root, name) => listSheets(root).find(x => !x.error && x.name === name) || null;
+const askChans = (root, s) => [chatFor(root, s.from, s.name), hubChat(root)].filter((c, i, a) => c && a.findIndex(x => x && x.name === c.name) === i);
+export function askItem(root, name, q, label, text) {
+  root = path.resolve(root);
+  const s = sheetByName(root, name); if (!s) throw new Error(`시트 ${name} 없음`);
+  q = String(q || '').trim(); text = String(text || '').trim();
+  if (!/^[^\s]{1,64}$/.test(q)) throw new Error('문항 키가 이상합니다');
+  if (!text) throw new Error('질문이 비었습니다'); if (text.length > ASK_MAX) throw new Error(`질문은 ${ASK_MAX}자까지`);
+  const c = askChans(root, s)[0]; if (!c) throw new Error('보낼 채널 없음');
+  const where = String(label || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const msg = appendChat(root, c.name, 'hero', `문항 질문 (시트 ${s.name} · ${q}${where ? ` 「${where}」` : ''}): ${text}\n— 이 문항 하나만 묻는 것(시트는 제출 안 됨). 답장(chat say ${c.name} --re 이 메시지 또는 review-sheet ask-reply ${s.name} ${q} "…")으로 답하면 시트 그 문항 밑에 바로 뜬다. 시트를 다시 보내지 말 것. 물은 것에 빠짐없이(${CHAT_REPLY_MAX}자까지).`,
+    null, null, { ask: { d: s.name, q, text, label: where } });
+  return { ch: c.name, id: msg.id };
+}
+export function asksFor(root, name) {
+  root = path.resolve(root);
+  const s = sheetByName(root, name); if (!s) return [];
+  const out = [];
+  for (const c of askChans(root, s)) {
+    const log = readChatLog(root, c.name);
+    for (const m of log) if (m.from === 'hero' && m.ask && m.ask.d === name)
+      out.push({ id: m.id, ch: c.name, q: m.ask.q, label: m.ask.label || '', text: m.ask.text, ts: m.ts,
+        replies: log.filter(r => r.re === m.id && r.from !== 'hero' && !r.askStale).map(r => ({ from: r.from, ts: r.ts, text: r.text })) });
+  }
+  return out.sort((a, b) => a.ts < b.ts ? -1 : 1);
+}
+/** 세션이 답할 때: 그 문항의 가장 최근 질문(답 없는 것 우선)에 ↩ 답장으로 붙인다. from = 그 채널 owner */
+export function askReply(root, name, q, text) {
+  root = path.resolve(root);
+  const all = asksFor(root, name).filter(a => a.q === q); if (!all.length) throw new Error(`시트 ${name} 문항 ${q} 에 온 질문 없음 — asks ${name} 로 확인`);
+  const a = [...all].reverse().find(x => !x.replies.length) || all.at(-1);
+  const meta = readChatMeta(root, a.ch);
+  return { ch: a.ch, re: a.id, msg: appendChat(root, a.ch, meta.owner || a.ch, String(text), null, a.id) };
+}
+export function askWatch(root, ms = Number(process.env.REVIEW_SHEET_ASK_MS) || 60000, stale = Number(process.env.REVIEW_SHEET_ASK_STALE_MS) || 600000) {
+  const tick = () => {
+    try {
+      root = path.resolve(root); const hub = hubChat(root); if (!hub) return;
+      const now = Date.now();
+      for (const c of listChats(root)) {
+        const log = readChatLog(root, c.name);
+        for (const m of log) {
+          if (m.from !== 'hero' || !m.ask || m.askStaleSent || now - Date.parse(m.ts) < stale || now - Date.parse(m.ts) > 864e5) continue;
+          if (log.some(r => r.re === m.id && r.from !== 'hero')) continue;
+          const hl = readChatLog(root, hub.name);
+          if (hl.some(r => r.askStale === m.id)) continue;
+          appendChat(root, hub.name, 'hero', `문항 질문 답 없음 ${Math.round((now - Date.parse(m.ts)) / 60000)}분 (채널 ${c.name} #${m.id} · 시트 ${m.ask.d} · ${m.ask.q}): ${m.ask.text}\n— 담당 세션을 깨우거나 대신 답할 것: review-sheet ask-reply ${m.ask.d} ${m.ask.q} "…"`, null, null, { askStale: m.id });
+        }
+      }
+    } catch (e) { console.error('ask:', e.message || e); }
+  };
+  const t = setInterval(tick, ms); t.unref();
+  return () => clearInterval(t);
+}
+
 export function setUrgent(dir, name, on) {
   const s = listSheets(dir).find(x => !x.error && x.name === name); if (!s) throw new Error(`시트 ${name} 없음`);
   const u = readUrgent(dir), was = !!u[name];
@@ -466,9 +527,9 @@ export function readChatLog(root, ch) {
   catch { return []; }
 }
 const MSG_ID_RE = /^[a-z0-9]{6,24}$/;
-export function appendChat(root, ch, from, text, files, re) {
+export function appendChat(root, ch, from, text, files, re, extra) {
   const meta = readChatMeta(root, ch); if (!meta) throw new Error(`채널 ${ch} 없음`);
-  const msg = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: new Date().toISOString(), from, text: String(text) };
+  const msg = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: new Date().toISOString(), from, text: String(text), ...(extra || {}) };
   if (files && files.length) msg.files = files;
   const log = readChatLog(root, ch);
   if (re) { if (!MSG_ID_RE.test(String(re)) || !log.some(m => m.id === re)) throw new Error(`답장 원문 ${re} 없음 — chat read ${ch} --all 의 #id`); msg.re = String(re); }
@@ -911,6 +972,24 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       });
       return;
     }
+    if (url.pathname === '/api/asks' && req.method === 'GET') {   // ?d=<시트> → 그 시트의 문항 질문과 답
+      const name = url.searchParams.get('d') || '';
+      if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'd=<sheet> ([a-z0-9-])');
+      return send(res, 200, TYPES['.json'], JSON.stringify(asksFor(root, name)));
+    }
+    if (url.pathname === '/__ask') {   // POST ?d=<시트> {q,label,text} — 페이지(hero) 전용, CORS 없음, 제출과 무관
+      const name = url.searchParams.get('d') || '';
+      if (req.method !== 'POST') return send(res, 405, 'text/plain', 'POST');
+      if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'd=<sheet> ([a-z0-9-])');
+      if (!/^application\/json/.test(String(req.headers['content-type'] || ''))) return send(res, 415, 'text/plain', 'application/json');
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 2e4) req.destroy(); });
+      req.on('end', () => {
+        try { const j = JSON.parse(body || '{}'); send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, ...askItem(root, name, j.q, j.label, j.text) })); }
+        catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
+      });
+      return;
+    }
     if (url.pathname === '/api/push' && req.method === 'GET') return send(res, 200, TYPES['.json'], JSON.stringify({ publicKey: vapidKeys(root).publicKey, subs: readSubs(root).length }));
     if (/^\/__push\/(sub|unsub|test)$/.test(url.pathname)) {   // 폰 알림 구독 — 페이지(hero) 전용, CORS 없음
       if (req.method !== 'POST') return send(res, 405, 'text/plain', 'POST');
@@ -1012,8 +1091,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     server.on('error', reject);
     server.listen(port, host, () => {
       const p = server.address().port;
-      const stop = pushWatch(root);
-      resolve({ port: p, base: `http://127.0.0.1:${p}`, close: () => { stop(); return new Promise(r => server.close(r)); } });
+      const stop = pushWatch(root), stopAsk = askWatch(root);
+      resolve({ port: p, base: `http://127.0.0.1:${p}`, close: () => { stop(); stopAsk(); return new Promise(r => server.close(r)); } });
     });
   });
 }
@@ -1048,6 +1127,8 @@ async function main() {
   if (cmd === 'assign' && rest.length === 4) dirArg = undefined;   // assign <id> <issue> <owner> → inbox
   if (cmd === 'stage' && rest[2] && STAGES[rest[2]]) dirArg = undefined;   // stage <id> <stage> [note] → inbox
   if ((cmd === 'board' || cmd === 'dash') && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
+  let askArgs = rest.slice(2);   // asks / ask-reply: [dir] 은 진짜 폴더일 때만
+  if ((cmd === 'asks' || cmd === 'ask-reply') && !(rest[1] && fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) { dirArg = undefined; askArgs = rest.slice(1); }
   const dir = path.resolve(dirArg || INBOX);
   const isInbox = !dirArg;
   if (isInbox && cmd !== 'serve') fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
@@ -1161,6 +1242,21 @@ async function main() {
     let j; try { j = JSON.parse(src === '-' ? await (async () => { let t = ''; process.stdin.setEncoding('utf8'); for await (const c of process.stdin) t += c; return t; })() : fs.readFileSync(src, 'utf8')); } catch (e) { console.error('board: JSON 읽기 실패 — ' + e.message); process.exit(1); }
     try { const b = writeBoard(dir, j); console.log(`${boardFile(dir)}\t카드 ${b.cards.length}\t→ http://127.0.0.1:${INBOX_PORT}/board`); }
     catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'asks') {   // asks [<시트>] [--open] — 문항 질문과 답. 시트 없으면 전체(--prefix 로 좁힘)
+    const names = askArgs[0] ? [askArgs[0]] : listSheets(dir).filter(s => !s.error && (!flags.prefix || String(s.name).startsWith(flags.prefix))).map(s => s.name);
+    for (const n of names) for (const a of asksFor(dir, n)) {
+      if (flags.open && a.replies.length) continue;
+      console.log(`${n}\t${a.q}\t#${a.id}\t${a.replies.length ? '답 ' + a.replies.length : '답 없음'}\t${a.text.replace(/\s+/g, ' ')}`);
+    }
+    return;
+  }
+  if (cmd === 'ask-reply') {   // ask-reply <시트> <문항> "답" — 그 문항 질문에 ↩ 답장. 시트 그 문항 밑에 바로 뜬다
+    const [name, q, ...t] = askArgs; const text = t.join(' ').trim();
+    if (!name || !q || !text) { console.error('ask-reply <시트> <문항> "답"'); process.exit(2); }
+    const gate = !flags.notice && chatGate(text, { heroReply: true }); if (gate) { console.error(gate + " — 꼭 필요하면 --notice"); process.exit(2); }
+    try { const r = askReply(dir, name, q, text); console.log(`#${r.msg.id} → ${r.ch} ↩#${r.re}`); } catch (e) { console.error(e.message); process.exit(1); }
     return;
   }
   if (cmd === 'checks') {   // 보고 시트 확인 현황 — hero 가 ✓ 한 것(기본) / --open 아직 안 한 것. 세션이 나중에 한 번에 본다
