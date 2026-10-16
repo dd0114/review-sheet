@@ -66,7 +66,7 @@ function usage(code = 2) {
   review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [--off] [--eta <언제>] [메모…]   # 담당 세션이 끝난 상태 보고 → 시트 줄 맨 앞 태그
   review-sheet checks [dir] [--open] [--since ISO] [--prefix P]   # 보고 시트(report:) — hero 가 ✓ 확인한 것 / --open 아직 안 한 것. 체크는 세션을 깨우지 않는다
   review-sheet unassigned [dir] [--prefix P] [--hours N]  # 담당 없음·배정 뒤 답 바뀜·N시간(기본 24) 단계 멈춤 시트 — 있으면 exit 5
-  review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
+  review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
   review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|done,priority,owner,mode:claude|system|idle,modeNote,url}]} 쓰기, 인자 없으면 요약
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
@@ -253,6 +253,7 @@ export function readBoard(dir) { try { return JSON.parse(fs.readFileSync(boardFi
 // 자원판 — 바깥 생산자(예: fleet dash-collect)가 만든 dash.json 을 그대로 보여 주는 보기 전용 층. 숫자 카드 + 줄 목록, 줄을 누르면 그 줄의 시계열.
 export const dashFile = dir => path.join(dir, 'dash.json');
 const DASH_LEVELS = ['ok', 'warn', 'bad'];
+const DASH_KINDS = ['claude', 'out', 'ctr', 'sys', 'used', 'free'];
 export function cleanDash(j) {
   if (!j || !Array.isArray(j.cards) || !Array.isArray(j.groups)) throw new Error('dash: {cards:[…], groups:[…]} 필요');
   const str = (v, n = 120) => typeof v === 'string' ? v.slice(0, n) : typeof v === 'number' ? String(v) : undefined;
@@ -269,7 +270,10 @@ export function cleanDash(j) {
     sub: str(c.sub, 120), n: num(c.n), level: DASH_LEVELS.includes(c.level) ? c.level : 'ok', series: refs(c.series) }));
   const groups = j.groups.slice(0, 12).filter(g => g && Array.isArray(g.rows)).map(g => ({ title: str(g.title, 80),
     rows: g.rows.slice(0, 80).filter(r => r && str(r.label)).map(r => ({ key: str(r.key), label: str(r.label, 80), sub: str(r.sub, 160), cols: cols(r.cols), series: refs(r.series) })) }));
-  return { title: str(j.title, 80), source: str(j.source, 80), note: str(j.note, 200), scale: { week: num(j.scale && j.scale.week) }, updatedAt: str(j.updatedAt, 40) || new Date().toISOString(), cards, groups, series };
+  // 막대 쌓기(root-dash-3 ②) — 전체 중 무엇이 얼마를 쓰고 얼마가 남았나. kind 는 색 이름표
+  const bars = (Array.isArray(j.bars) ? j.bars : []).slice(0, 8).filter(b => b && str(b.label) && num(b.total) > 0).map(b => ({ label: str(b.label, 40), total: b.total, unit: str(b.unit, 8), sub: str(b.sub, 120),
+    parts: (Array.isArray(b.parts) ? b.parts : []).slice(0, 8).filter(p => p && str(p.label) && num(p.value) >= 0).map(p => ({ label: str(p.label, 30), value: p.value, kind: DASH_KINDS.includes(p.kind) ? p.kind : 'sys' })) }));
+  return { title: str(j.title, 80), source: str(j.source, 80), note: str(j.note, 200), scale: { week: num(j.scale && j.scale.week) }, updatedAt: str(j.updatedAt, 40) || new Date().toISOString(), cards, bars, groups, series };
 }
 export function writeDash(dir, j) {
   const d = cleanDash(j), f = dashFile(dir), tmp = f + '.' + process.pid + '.tmp';

@@ -30,6 +30,15 @@
 .ds-i.on{background:#2B2A27;color:#fff}
 .ds-info{background:#EEF2F7;border-radius:8px;padding:8px 12px;font-size:13px;color:#2B3A4F;margin:0 0 12px;line-height:1.45}
 .ds-empty{color:#888;font-size:13px;padding:6px 4px}
+.ds-bars{margin:8px 0 14px}
+.ds-bar{background:#fff;border-radius:10px;padding:9px 12px;margin:0 0 6px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.ds-bar h3{display:flex;justify-content:space-between;gap:8px;margin:0 0 6px;font-size:14px;line-height:1.3}
+.ds-bar h3 span{color:#666;font-weight:600;font-size:12.5px;white-space:nowrap}
+.ds-track{display:flex;height:18px;border-radius:5px;overflow:hidden;background:#EEE}
+.ds-track i{display:block;height:100%;min-width:0}
+.ds-leg{display:flex;flex-wrap:wrap;gap:2px 12px;list-style:none;padding:0;margin:6px 0 0;font-size:12px;color:#444}
+.ds-leg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.ds-bar .ds-sub{margin-top:4px}
 </style>
 <body class="rs-page"><main>
 <div class="eyebrow"><a href="/">REVIEW-SHEET</a> · 자원</div><h1><span id="ds-title">자원</span><button type="button" class="ds-i" id="ds-i" aria-label="토큰을 주간 % 로 보기" title="토큰을 주간 % 로 보기">i</button></h1>
@@ -38,6 +47,7 @@
 <div id="ds-stale" class="ds-stale" hidden></div>
 <div class="ds-cards" id="ds-cards"></div>
 <div id="ds-panel"></div>
+<div class="ds-bars" id="ds-bars"></div>
 <div id="ds-groups"></div>
 <p class="ds-note" id="ds-note"></p>
 </main>
@@ -75,6 +85,15 @@ function chart(s0) {
 }
 const charts = (d, keys) => (keys || []).map(k => d.series[k]).filter(Boolean).map(chart).join('') || '<p class="ds-empty">그래프 없음</p>';
 
+const KIND = {claude:'#4A6FA5', out:'#D08A2E', ctr:'#D08A2E', sys:'#A8A39A', used:'#7C766C', free:'#8FC59F'};
+const bar = b => {
+  const u = b.unit === 'MB' ? 'MB' : 'GB', f = v => u === 'MB' ? num(v, 'MB') : (v >= 20 ? Math.round(v) : Math.round(v * 10) / 10) + 'GB';
+  const free = b.parts.filter(p => p.kind === 'free').reduce((a, p) => a + p.value, 0);
+  return '<div class="ds-bar"><h3>' + esc(b.label) + '<span>남음 ' + f(free) + ' / ' + f(b.total) + ' · ' + Math.round(free / b.total * 100) + '%</span></h3>' +
+    '<div class="ds-track">' + b.parts.map(p => '<i style="width:' + Math.min(100, p.value / b.total * 100).toFixed(2) + '%;background:' + KIND[p.kind] + '" title="' + esc(p.label) + '"></i>').join('') + '</div>' +
+    '<ul class="ds-leg">' + b.parts.map(p => '<li><i style="background:' + KIND[p.kind] + '"></i>' + esc(p.label) + ' <b>' + f(p.value) + '</b></li>').join('') + '</ul>' +
+    (b.sub ? '<div class="ds-sub">' + esc(b.sub) + '</div>' : '') + '</div>';
+};
 function render(d) {
   const cardsEl = document.getElementById('ds-cards'), groupsEl = document.getElementById('ds-groups'), stale = document.getElementById('ds-stale');
   if (!d) { cardsEl.innerHTML = '<p class="ds-empty">아직 자원판이 없다 — 생산자가 <code>review-sheet dash</code> 로 dash.json 을 써야 한다.</p>'; return; }
@@ -91,6 +110,7 @@ function render(d) {
   cardsEl.innerHTML = d.cards.map((c, i) => '<button type="button" class="ds-card ' + c.level + (open === 'c' + i ? ' on' : '') + '" data-o="c' + i + '"><small>' + esc(c.label) + '</small><b>' + (wk() && c.n != null && c.unit !== '%' ? esc(tokv(c.n)) + '<i>주간</i>' : esc(c.value) + (c.unit ? '<i>' + esc(c.unit) + '</i>' : '')) + '</b>' + (c.sub ? '<span>' + esc(c.sub) + '</span>' : '') + '</button>').join('');
   const oc = /^c(\d+)$/.exec(open), card = oc && d.cards[+oc[1]];
   document.getElementById('ds-panel').innerHTML = card ? '<div class="ds-panel">' + charts(d, card.series) + '</div>' : '';
+  document.getElementById('ds-bars').innerHTML = (d.bars || []).map(bar).join('');
   groupsEl.innerHTML = d.groups.map((g, gi) => '<section class="ds-group"><h2>' + esc(g.title) + '</h2>' + (g.rows.length ? g.rows.map((r, ri) => {
     const id = 'r' + gi + '.' + ri, on = open === id || (r.key && open === 'k' + r.key);
     return '<div class="ds-row' + (on ? ' on' : '') + '" role="button" tabindex="0" data-o="' + (r.key ? 'k' + esc(r.key) : id) + '"><b>' + esc(r.label) + '</b>' +
