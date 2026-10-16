@@ -268,3 +268,7 @@ body.rs-page.rs-checked{background:#DCE8DF}
 .rs-page .v-askq-item .t{font-size:12px;color:#8A857A}
 .rs-page .v-askq-item .re{background:#F4F1EA;border-radius:8px;padding:6px 10px}
 .rs-page .v-askq-item .re.wait{color:#8A857A;font-style:italic}
+
+.rs-page .v-askq-log.flash{animation:askflash 2.4s ease-out}
+@keyframes askflash{0%,30%{background:#FBE3D6}100%{background:transparent}}
+.rs-page .v-askq-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:76px;z-index:30;max-width:calc(100% - 32px);padding:10px 16px;border:0;border-radius:999px;background:#C96442;color:#fff;font:inherit;font-size:14px;box-shadow:0 4px 14px rgba(0,0,0,.18);cursor:pointer}
