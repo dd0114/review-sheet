@@ -685,3 +685,13 @@ test('chat say 는 읽음 처리하지 않는다 — 보내는 순간 막 온 he
     assert.match(execFileSync('node', [BIN, 'chat', 'read', 'root'], { encoding: 'utf8', env }), /hero: 방금 온 질문/);
   });
 });
+
+test('CLI keeps sheet summaries on disk — unchanged data.js is not re-run', () => {
+  const dir = tmpDir();
+  const first = execFileSync('node', [BIN, 'ls', dir], { encoding: 'utf8' });
+  assert.ok(fs.existsSync(path.join(dir, '.summary-cache.json')));
+  const f = path.join(dir, 'example-data.js'), st = fs.statSync(f);
+  fs.writeFileSync(f, 'throw new Error("must not be evaluated")');
+  fs.utimesSync(f, st.atime, st.mtime);
+  assert.equal(execFileSync('node', [BIN, 'ls', dir], { encoding: 'utf8' }), first);
+});

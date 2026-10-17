@@ -444,14 +444,33 @@ export function setUrgent(dir, name, on) {
    모든 data.js 를 vm 으로 돌리고 answers 를 읽어 1초 넘게 걸렸다. data.js·answers 의 mtime 이 그대로면 지난 요약을 쓴다. */
 const summaryCache = new Map();   // <dir>/<name> → { key, sum }
 const mtimeOf = f => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } };
+/* 요약 캐시를 디스크에도 둔다 (2026-10-17) — 메모리 캐시는 서버 안에서만 산다. CLI(ls·stage·assign…)는 부를 때마다 새 프로세스라
+   모든 data.js 를 vm 으로 다시 돌렸고, 영상을 base64 로 박은 시트(개당 30~46MB, 13개 350MB)까지 읽어 한 번에 RSS 3.7GB → 맥 스왑 급증·HOLD.
+   <dir>/.summary-cache.json 에 { name: { dataM, ansM, sum } } — mtime 이 그대로인 시트는 data.js 를 열지 않는다. */
+const summaryFile = dir => path.join(dir, '.summary-cache.json');
+const diskLoaded = new Set();
+function loadDiskCache(dir) {
+  const d = path.resolve(dir); if (diskLoaded.has(d)) return; diskLoaded.add(d);
+  let j = {}; try { j = JSON.parse(fs.readFileSync(summaryFile(dir), 'utf8')) || {}; } catch { return; }
+  for (const [name, v] of Object.entries(j)) if (!summaryCache.has(path.join(d, name))) summaryCache.set(path.join(d, name), v);
+}
+function saveDiskCache(dir, names) {
+  const d = path.resolve(dir), out = {};
+  for (const name of names) { const v = summaryCache.get(path.join(d, name)); if (v) out[name] = v; }
+  try { const tmp = summaryFile(dir) + '.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(out)); fs.renameSync(tmp, summaryFile(dir)); } catch { /* 읽기 전용이어도 동작은 같다 */ }
+}
 function listSheetsRaw(dir) {
+  loadDiskCache(dir);
+  let dirty = false;
   const urgent = readUrgent(dir), checked = readChecked(dir);
   const live = (name, sum) => ({ ...sum, urgent: !!urgent[name], urgentAt: urgent[name] || null, checkedAt: sum.report && checked[name] || null });
-  return fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).sort().map(f => {
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).sort();
+  const out = files.map(f => {
     const name = f.slice(0, -'-data.js'.length);
     const ck = path.join(path.resolve(dir), name), hit = summaryCache.get(ck), dataM = mtimeOf(path.join(dir, f));
     if (hit && hit.dataM === dataM && (hit.sum.error || hit.ansM === mtimeOf(answersFile(dir, hit.sum.id))))
       return hit.sum.error ? hit.sum : live(name, hit.sum);
+    dirty = true;
     try {
       const sheet = loadSheet(dir, name);
       const saved = readAnswers(dir, sheet.id);
@@ -470,7 +489,9 @@ function listSheetsRaw(dir) {
       summaryCache.set(ck, { dataM, ansM: mtimeOf(answersFile(dir, sheet.id)), sum });
       return live(name, sum);
     } catch (e) { const sum = { name, error: String(e.message || e) }; summaryCache.set(ck, { dataM, sum }); return sum; }
-  }).sort((a, b) => {
+  });
+  if (dirty) saveDiskCache(dir, files.map(f => f.slice(0, -'-data.js'.length)));
+  return out.sort((a, b) => {
     // queue order: errors first (they need fixing), then pending (newest first), then submitted (latest first)
     const g = x => x.error ? 0 : x.submitted ? 2 : 1;
     if (g(a) !== g(b)) return g(a) - g(b);
