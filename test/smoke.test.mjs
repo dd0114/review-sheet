@@ -687,11 +687,11 @@ test('chat say 는 읽음 처리하지 않는다 — 보내는 순간 막 온 he
 });
 
 test('CLI keeps sheet summaries on disk — unchanged data.js is not re-run', () => {
-  const dir = tmpDir();
+  const dir = tmpDir(), f = path.join(dir, 'example-data.js'), t = 1700000000;   // 정수 초 — utimes 왕복에서 mtime 이 안 흔들리게
+  fs.utimesSync(f, t, t);
   const first = execFileSync('node', [BIN, 'ls', dir], { encoding: 'utf8' });
   assert.ok(fs.existsSync(path.join(dir, '.summary-cache.json')));
-  const f = path.join(dir, 'example-data.js'), st = fs.statSync(f);
   fs.writeFileSync(f, 'throw new Error("must not be evaluated")');
-  fs.utimesSync(f, st.atime, st.mtime);
+  fs.utimesSync(f, t, t);
   assert.equal(execFileSync('node', [BIN, 'ls', dir], { encoding: 'utf8' }), first);
 });
