@@ -37,7 +37,7 @@
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const when = iso => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}); };
 const COLS = [['todo', '할 일'], ['doing', '하는 중'], ['done', '끝']];
-const MODE = { claude: '클로드 직접 작업', system: '시스템 대기', idle: '쉬는 중' };
+const MODE = { claude: '클로드 직접 작업', system: '시스템 대기', idle: '맡은 일 · 대기' };
 const RANK = { p0: 0, p1: 1, p2: 2, p3: 3, '긴급': 0, '높음': 1, '중간': 2, '낮음': 3 };
 const rank = p => { const k = String(p || '').toLowerCase(); return k in RANK ? RANK[k] : 9; };
 const pcls = p => { const r = rank(p); return r <= 2 ? ' p' + r : ''; };
@@ -73,7 +73,7 @@ function render(b) {
   const doing = b.cards.filter(c => c.status === 'doing' && (!ui.group || c.group === ui.group));
   const modes = Object.keys(MODE).filter(m => doing.some(c => c.mode === m));
   if (ui.mode && !modes.includes(ui.mode)) ui.mode = '';
-  chips(document.getElementById('bd-modes'), 'mode', modes.map(m => [m, MODE[m] + ' ' + doing.filter(c => c.mode === m).length]), '하는 중 전부');
+  chips(document.getElementById('bd-modes'), 'mode', modes.map(m => [m, MODE[m] + ' ' + doing.filter(c => c.mode === m).length]), '하는 중 전부 ' + doing.length);
   const pick = st => b.cards.filter(c => c.status === st && (!ui.group || c.group === ui.group) && (st !== 'doing' || !ui.mode || c.mode === ui.mode))
     .sort((x, y) => st === 'done' ? String(y.at || '').localeCompare(String(x.at || '')) : rank(x.priority) - rank(y.priority) || String(y.at || '').localeCompare(String(x.at || '')));
   cols.innerHTML = COLS.map(([st, label]) => {
