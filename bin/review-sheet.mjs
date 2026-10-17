@@ -1125,7 +1125,8 @@ function lanAddrs() {
 }
 
 function launchdPlist(port, lan) {
-  const args = [process.execPath, fileURLToPath(import.meta.url), 'serve', INBOX, '--port', String(port)].concat(lan ? ['--lan'] : []);
+  // --use-bundled-ca: brew node(openssl@4) 기본 인증서 저장소로는 web.push.apple.com 체인 검증 실패(UNABLE_TO_GET_ISSUER_CERT_LOCALLY) — 폰 알림이 안 갔음 (hero 2026-10-18)
+  const args = [process.execPath, '--use-bundled-ca', fileURLToPath(import.meta.url), 'serve', INBOX, '--port', String(port)].concat(lan ? ['--lan'] : []);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
