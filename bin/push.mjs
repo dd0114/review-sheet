@@ -75,7 +75,7 @@ export async function pushAll(dir, msg) {
       const r = await fetch(s.endpoint, { method: 'POST', signal: AbortSignal.timeout(15e3), body: encrypt(body, s.keys),
         headers: { TTL: '86400', Urgency: 'high', 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream', Authorization: vapidAuth(s.endpoint, k, sub) } });
       status = r.status; await r.arrayBuffer().catch(() => {});
-    } catch (e) { status = -1; }
+    } catch (e) { status = -1; console.error(`push 실패 ${s.endpoint.slice(0, 40)}: ${e.cause?.code || e.message}`); }
     if (status === 404 || status === 410) removeSub(dir, s.endpoint);
     out.push({ endpoint: s.endpoint.slice(0, 40), status });
   }
