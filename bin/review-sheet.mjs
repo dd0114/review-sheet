@@ -527,7 +527,7 @@ function inboxSheets(dir, all) {
 
 /* ── 상시 채널 (chat) ───────────────────────────────────────────────────────────
    inbox/chat/<ch>.json   meta  { name, title, owner, createdAt, seenAt (owner read up to), heroSeenAt }
-   inbox/chat/<ch>.jsonl  one message per line { id, ts, from: 'hero'|<owner>, text, files?: [name], re?: id }
+   inbox/chat/<ch>.jsonl  one message per line { id, ts, from: 'hero'|<owner>, text, files?: [name], re?: id, kind?: issue|bug|followup }
    re = reply (카톡식 답글): the id of an earlier message in the same channel. Optional — only when the message answers one
    specific earlier message; the page shows the quoted original on top of the bubble and tapping it jumps there.
    inbox/chat/<ch>.files/ attached images (page: 📎·paste·drop → POST /__chat/file), served at /chat/<ch>.files/<name>
@@ -555,6 +555,13 @@ export function readChatLog(root, ch) {
   catch { return []; }
 }
 const MSG_ID_RE = /^[a-z0-9]{6,24}$/;
+/* 메시지 종류(hero 2026-10-18): 한 채널에 요구가 섞이면 세션이 맥락을 잃고, 제기한 이슈가 컴팩트 뒤 사라졌다.
+   페이지 '고급' 칩으로 고르면 kind 가 실리고, chat wait/read 가 [태그] + 세션이 할 일 한 줄을 붙여 준다. 없으면 평문(지금 그대로). */
+export const CHAT_KINDS = {
+  issue: { tag: '이슈제기', todo: '— 이슈 제기: 불명확해도 먼저 SoT 이슈를 만들고(정본 room 레포) 답장에 링크. 애매한 점은 그 뒤에 묻고 본문을 고쳐 쓴다. 컴팩트해도 사라지지 않게.' },
+  bug: { tag: '버그제보', todo: '— 버그 제보: bug 라벨 이슈 만들고 바로 고친다. 답장에 링크.' },
+  followup: { tag: '지난이슈확인', todo: '— 지난 이슈 확인: 관련 이슈를 찾아 현재 상태(진행·막힘·끝남)부터 답한다. 이슈가 없으면 지금 만든다.' },
+};
 export function appendChat(root, ch, from, text, files, re, extra) {
   const meta = readChatMeta(root, ch); if (!meta) throw new Error(`채널 ${ch} 없음`);
   const msg = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: new Date().toISOString(), from, text: String(text), ...(extra || {}) };
@@ -562,7 +569,7 @@ export function appendChat(root, ch, from, text, files, re, extra) {
   const log = readChatLog(root, ch);
   if (re) { if (!MSG_ID_RE.test(String(re)) || !log.some(m => m.id === re)) throw new Error(`답장 원문 ${re} 없음 — chat read ${ch} --all 의 #id`); msg.re = String(re); }
   const last = log.at(-1);   // same sender + same text + same files within 3s = a double send, keep the first
-  if (last && last.from === from && last.text === msg.text && (last.re || null) === (msg.re || null) && JSON.stringify(last.files || []) === JSON.stringify(msg.files || []) && Date.now() - Date.parse(last.ts) < 3000) return last;
+  if (last && last.from === from && last.text === msg.text && (last.re || null) === (msg.re || null) && (last.kind || null) === (msg.kind || null) && JSON.stringify(last.files || []) === JSON.stringify(msg.files || []) && Date.now() - Date.parse(last.ts) < 3000) return last;
   fs.appendFileSync(chatLogFile(root, ch), JSON.stringify(msg) + '\n');
   return msg;
 }
@@ -1118,7 +1125,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
           const files = (Array.isArray(j.files) ? j.files : []).filter(f => typeof f === 'string' && FILE_RE.test(f) && fs.existsSync(chatFilePath(root, ch, f)));
           const text = typeof j.text === 'string' ? j.text.trim() : '';
           const re = typeof j.re === 'string' && MSG_ID_RE.test(j.re) && readChatLog(root, ch).some(m => m.id === j.re) ? j.re : undefined;   // unknown original → plain message
-          if (text || files.length) msg = appendChat(root, ch, 'hero', text, files, re);   // the page is always hero
+          const kind = typeof j.kind === 'string' && Object.hasOwn(CHAT_KINDS, j.kind) ? j.kind : undefined;   // 모르는 값 → 평문
+          if (text || files.length) msg = appendChat(root, ch, 'hero', text, files, re, kind ? { kind } : undefined);   // the page is always hero
           const meta = markSeen(root, ch, 'hero');
           send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, msg, meta }));
         } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
@@ -1182,8 +1190,9 @@ async function main() {
   if (cmd === 'chat') {
     const [, sub, ch, ...words] = rest;
     const root = INBOX; fs.mkdirSync(chatDir(root), { recursive: true });
-    const fmt = m => `#${m.id} ${m.ts.replace('T', ' ').slice(0, 16)}  ${m.from === 'hero' ? 'hero' : m.from}: ${m.re ? `↩#${m.re} ` : ''}${m.text}` +
-      (m.files || []).map(f => `\n  [이미지] ${chatFilePath(root, ch, f)}`).join('');
+    const fmt = m => { const k = Object.hasOwn(CHAT_KINDS, m.kind || '') ? CHAT_KINDS[m.kind] : null;
+      return `#${m.id} ${m.ts.replace('T', ' ').slice(0, 16)}  ${m.from === 'hero' ? 'hero' : m.from}: ${k ? `[${k.tag}] ` : ''}${m.re ? `↩#${m.re} ` : ''}${m.text}` +
+        (m.files || []).map(f => `\n  [이미지] ${chatFilePath(root, ch, f)}`).join('') + (k ? `\n  ${k.todo}` : ''); };
     if (sub === 'hub') { if (!ch) { const h = hubChat(root); console.log(h ? h.name : '(허브 없음 — chat hub <ch>)'); return; } setHub(root, ch); console.log(`허브 = ${ch}  → http://127.0.0.1:${INBOX_PORT}/hub`); return; }
     if (sub === 'new') { const m = newChat(root, ch, flags.title, flags.owner, flags.hub || !listChats(root).length); console.log(`${chatLogFile(root, m.name)}\n  → http://127.0.0.1:${INBOX_PORT}/chat.html?c=${m.name}`); return; }
     if (sub === 'ls') { for (const c of listChats(root)) console.log(`${c.hub ? '★' : ''}${c.name}\t${c.owner}\t${c.count}건\thero 미읽 ${c.unreadHero}\t세션 미읽 ${c.unreadOwner}\t${c.title}`); return; }

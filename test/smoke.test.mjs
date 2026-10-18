@@ -183,6 +183,36 @@ test('chat reply (hero 2026-10-09): say --re quotes an earlier message, page may
   } finally { await close(); }
 });
 
+test('chat kind (hero 2026-10-18): page posts kind → stored, unknown kind dropped, read prints [태그] + 할 일 줄, --json carries kind', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-kind-'));
+  const { newChat, readChatLog } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root:hub');
+  const { base, close } = await startServer(dir, 0);
+  const env = { ...process.env, REVIEW_SHEET_INBOX: dir };
+  const post = body => fetch(base + '/__chat?c=root', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+  try {
+    let r = await post({ text: '로그인 느림', kind: 'issue' }); assert.equal(r.msg.kind, 'issue');
+    r = await post({ text: '저장 버튼 안 눌림', kind: 'bug' }); assert.equal(r.msg.kind, 'bug');
+    r = await post({ text: '어제 그거 어떻게 됐어', kind: 'followup', re: r.msg.id }); assert.equal(r.msg.kind, 'followup'); assert.ok(r.msg.re);
+    r = await post({ text: '평문', kind: 'urgent' }); assert.equal(r.msg.kind, undefined); assert.equal(r.msg.text, '평문');
+    r = await post({ text: '평문2', kind: ['issue'] }); assert.equal(r.msg.kind, undefined);
+    r = await post({ text: '평문3', kind: '__proto__' }); assert.equal(r.msg.kind, undefined);
+    const log = readChatLog(dir, 'root');
+    assert.deepEqual(log.map(m => m.kind || null), ['issue', 'bug', 'followup', null, null, null]);
+    const out = execFileSync('node', [BIN, 'chat', 'read', 'root'], { encoding: 'utf8', env });
+    assert.match(out, new RegExp('^#' + log[0].id + ' .*hero: \\[이슈제기\\] 로그인 느림\\n  — 이슈 제기: .*SoT 이슈', 'm'));
+    assert.match(out, /hero: \[버그제보\] 저장 버튼 안 눌림\n  — 버그 제보: bug 라벨/);
+    assert.match(out, new RegExp('hero: \\[지난이슈확인\\] ↩#' + log[1].id + ' 어제 그거 어떻게 됐어\\n  — 지난 이슈 확인: '));
+    assert.match(out, new RegExp('^#' + log[3].id + ' .*hero: 평문$', 'm'));   // 평문은 지금 그대로 — 태그·할 일 줄 없음
+    assert.equal((out.match(/\n  — /g) || []).length, 3);
+    const j = JSON.parse(execFileSync('node', [BIN, 'chat', 'read', 'root', '--all', '--json'], { encoding: 'utf8', env }));
+    assert.equal(j[0].kind, 'issue'); assert.equal(j[3].kind, undefined);
+    const api = await (await fetch(base + '/api/chat?c=root')).json(); assert.equal(api.messages[1].kind, 'bug');
+    const html = await (await fetch(base + '/chat.html?c=root')).text();
+    assert.match(html, /id="c-adv"/); assert.match(html, /data-kind="followup"/);
+  } finally { await close(); }
+});
+
 test('hub: first CLI channel becomes the hub, chat hub switches it, /hub redirects, hub listed first', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-hub-'));
   const env = { ...process.env, REVIEW_SHEET_INBOX: dir };
