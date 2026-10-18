@@ -49,6 +49,12 @@ test('serve: page, data, POST → file, GET → same, index lists the sheet', as
     assert.equal(back.savedAt, saved.savedAt);
     assert.equal((await fetch(base + '/__answers?sheet=../x')).status, 400);
     assert.equal((await fetch(base + '/__answers?sheet=example', { method: 'POST', body: 'nope' })).status, 400);
+    const blank = await fetch(base + '/__answers?sheet=example', { method: 'POST', body: JSON.stringify({ answers: {} }) });   // 빈 제출 (#43)
+    assert.equal(blank.status, 400);
+    assert.equal((await fetch(base + '/__answers?sheet=example', { method: 'POST', body: JSON.stringify({ answers: { 'A-1': { memo: '  ' } } }) })).status, 400);
+    assert.equal(readAnswers(dir, 'example').savedAt, saved.savedAt);   // 기존 답 그대로
+    assert.equal((await fetch(base + '/__answers?sheet=never', { method: 'POST', body: JSON.stringify({ answers: {} }) })).status, 400);
+    assert.ok(!fs.existsSync(path.join(dir, 'answers', 'never.json')));
     const index = await (await fetch(base + '/')).text();
     assert.match(index, /"name":"example"[^}]*"picked":2[^}]*"submitted":true/);
     const api = await (await fetch(base + '/api/sheets')).json();

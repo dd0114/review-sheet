@@ -955,6 +955,9 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
             const id = qid || (typeof json.sheet === 'string' ? json.sheet : '');
             if (!ID_RE.test(id)) throw new Error('bad sheet id');
             json.sheet = id;
+            // 고른 것·메모·파일이 하나도 없는 제출은 받지 않는다 — 빈 답이 「제출됨」으로 넘어가 대기 목록에서 사라졌다 (#43)
+            if (!Object.values(json.answers || {}).some(a => a && (a.pick || (typeof a.memo === 'string' && a.memo.trim()) || (a.files || []).length)))
+              return send(res, 400, 'text/plain; charset=utf-8', 'empty answers — 고른 것·메모·파일이 하나도 없음');
             for (const a of Object.values(json.answers || {})) if (a && typeof a === 'object') { const f = cleanFiles(root, id, a.files); if (f.length) a.files = f; else delete a.files; }
             json.savedAt = new Date().toISOString();
             const file = answersFile(root, id);

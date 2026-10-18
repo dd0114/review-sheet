@@ -271,6 +271,7 @@ document.getElementById('v-all').addEventListener('click', () => {
 });
 saveBtn.addEventListener('click', async () => {
   const body = collect();
+  if(!Object.keys(body.answers).length){ st.className = 'st bad'; st.textContent = '아직 고른 게 없어요 — 하나 고르거나 메모를 남기면 제출돼요'; return; }   // 빈 제출 = 제출됨 아님 (#43)
   try { localStorage.setItem(KEY, JSON.stringify(body)); } catch(_){}
   saveBtn.disabled = true; saveBtn.textContent = '저장 중…'; st.className = 'st'; st.textContent = '저장 중…';
   try {
