@@ -10,7 +10,9 @@
  *   review-sheet ls    <dir>                         list sheets in <dir> and whether each is answered
  *   review-sheet assign <dir> <id> <issue> <owner>   record who owns a submitted sheet's follow-up (closes it)
  *   review-sheet stage <dir> <id> <stage> [note…]    the owner reports a step (머지·배포대기·라이브·끝, --off --eta) — shown as a tag at the front of the sheet's row
- *   review-sheet unassigned <dir> [--prefix P] [--hours N]  submitted sheets with no owner / answer changed / stalled N h (exit 5 if any)
+ *   review-sheet items <dir> <id> [<q> done|defer|reject|moved …]  per-question ledger — every answered question must point somewhere before the sheet closes
+ *   review-sheet record <dir> <id> [--issue N]       post the full read output as an issue comment; later calls post only the changed lines
+ *   review-sheet unassigned <dir> [--prefix P]       submitted sheets with unattached questions / reverted PR / closed issue but stage short (exit 5 if any)
  *
  * <dir> may be omitted everywhere: it then defaults to the INBOX (~/.review-sheet/inbox, or $REVIEW_SHEET_INBOX),
  * one folder every session drops its sheets into, served once (port 5600) like a queue — pending sheets on top,
@@ -20,7 +22,9 @@
  *   <name>-data.js      one sheet: `window.SHEET = { id, title, sections:[{ code, questions:[…] }] }`
  *   answers/<id>.json   what the reviewer saved: { sheet, answers:{ "<code>-<k>": { pick, memo, files:[{name,orig}] } }, savedAt }
  *   answers/<id>.files/ files the reviewer attached to a question (page: 📎·paste·drop → POST /__answers/file), served at /answers/<id>.files/<name>
- *   assign/<id>.json    { issue, owner, at, stages:[{stage,note,at,by}], heroSeenAt } written by `assign`/`stage`, page 확인 → heroSeenAt; assign/.since = when the gate started (older answers are exempt)
+ *   assign/<id>.json    { issue, owner, repo, at, stages:[{stage,note,at,by,pr,sha,…}], items:{<q>:{kind,pr|issue|to,ans,at,by}}, heroSeenAt } written by `assign`/`stage`/`items`;
+ *                       assign/.since = when the gate started (older answers are exempt), assign/.items-since = when the per-question ledger started
+ *   record/<id>.json    { "<repo>#N": { hashes, at, url } } lines already posted by `record`
  *   anything else       images etc. the sheet references by relative path
  *
  * 음성 입력: POST /api/stt[?live=1&from=초] (audio/* 바디) → ffmpeg → whisper.cpp(whisper-cli) 로 **로컬에서만** 전사해 { text, end } 를 돌려준다(live = 말하는 중 미리보기).
@@ -36,7 +40,8 @@ import path from 'node:path';
 import vm from 'node:vm';
 import os from 'node:os';
 import process from 'node:process';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { vapidKeys, readSubs, addSub, removeSub, pushAll } from './push.mjs';
@@ -63,12 +68,15 @@ function usage(code = 2) {
   review-sheet read  [dir] <id> [--json]
   review-sheet wait  [dir] <id> [--timeout SEC]
   review-sheet ls    [dir]
-  review-sheet assign [dir] <id> <issue#> <owner>   # 제출된 시트의 후속 일 담당 기록 → 닫힘
-  review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [--off] [--eta <언제>] [메모…]   # 담당 세션이 끝난 상태 보고 → 시트 줄 맨 앞 태그
+  review-sheet assign [dir] <id> <issue#> <도메인:창> [--repo o/r]   # 제출된 시트의 후속 일 담당 기록 (이슈인지 gh 로 확인, PR·뒤바뀐 순서 거부)
+  review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [--pr N] [--sha S] [--off [이유]] [--eta <언제>] [메모…]   # 단계 보고 — 머지 = --pr(MERGED), 라이브 = --sha(머지 커밋 포함) 또는 --off <이유>
+  review-sheet items [dir] <id> [<문항> done --pr N | defer --issue N | reject [이유] | moved <시트>]   # 문항 장부 — 답한 문항마다 붙어야 시트가 닫힘. 문항 없이 = 현황
+  review-sheet record [dir] <id> [--issue N] [--repo o/r]   # read 출력 전체(메모·_ask·문항 질문)를 이슈 댓글로, 다시 부르면 바뀐 줄만
+  review-sheet migrate-assign [dir] [--dry-run]   # 옛 뒤바뀐 assign(이슈 칸에 창, 담당 칸에 번호) 맞바꾸기 — assign/.backup-<시각>/ 에 백업
   review-sheet asks [dir] [<시트>] [--open] [--prefix P]   # 문항 질문(시트 안 '＋ 이것만 묻기')과 답 수 — --open 답 없는 것만
   review-sheet ask-reply [dir] <시트> <문항> "답" [--notice]   # 그 문항 질문에 ↩ 답장 → 시트 그 문항 밑에 바로 뜬다(chat say --re 와 같음)
   review-sheet checks [dir] [--open] [--since ISO] [--prefix P]   # 보고 시트(report:) — hero 가 ✓ 확인한 것 / --open 아직 안 한 것. 체크는 세션을 깨우지 않는다
-  review-sheet unassigned [dir] [--prefix P] [--hours N]  # 담당 없음·배정 뒤 답 바뀜·N시간(기본 24) 단계 멈춤 시트 — 있으면 exit 5
+  review-sheet unassigned [dir] [--prefix P]  # 문항 안 붙음(배정없음 포함)·되돌림·이슈 닫혔는데 단계 덜 됨 — 있으면 exit 5
   review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
   review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|done,priority,owner,mode:claude|system|idle,modeNote,url}]} 쓰기, 인자 없으면 요약
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
@@ -84,9 +92,10 @@ function parseArgs(argv) {
   const flags = {}, rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--off' || a === '--notice' || a === '--open') flags[a.slice(2)] = true;
+    if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--notice' || a === '--open' || a === '--dry-run') flags[a.slice(2)] = true;
+    else if (a === '--off') { flags.off = true; if (argv[i + 1] && !argv[i + 1].startsWith('--')) flags.offReason = argv[++i]; }   // --off [이유] — 라이브 근거로도 쓴다(#40)
     else if (a === '--port' || a === '--timeout' || a === '--hours') flags[a.slice(2)] = Number(argv[++i]);
-    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since') flags[a.slice(2)] = String(argv[++i] || '');
+    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since' || a === '--pr' || a === '--sha' || a === '--issue' || a === '--repo') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
@@ -132,13 +141,92 @@ export function assignSince(dir) {
   return now;
 }
 const saveAssign = (dir, id, rec) => fs.writeFileSync(path.join(assignDir(dir), id + '.json'), JSON.stringify(rec, null, 2) + '\n');
-export function writeAssign(dir, id, issue, owner, by = fromId()) {
+
+/* gh 근거 확인 (hero 2026-10-18 "리뷰시트로 승인한 변경사항들이 반영안되고 누락") — 단계·문항·배정이 말로만 찍히지 않게 GitHub 에 물어 본다.
+   전부 `gh api` 하나로(REVIEW_SHEET_GH 로 바꿀 수 있다 — 시험은 스텁). repo 를 안 주면 gh 가 지금 폴더 레포로 {owner}/{repo} 를 채운다. */
+export function ghApi(p, { input } = {}) {
+  const args = ['api', p]; if (input !== undefined) args.push('--input', '-');
+  let out;
+  try { out = execFileSync(process.env.REVIEW_SHEET_GH || 'gh', args, { encoding: 'utf8', input: input === undefined ? '' : JSON.stringify(input), stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000 }); }
+  catch (e) { throw new Error(`gh api ${p} 실패 — ${String(e.stderr || e.message).trim().split('\n')[0]}`); }
+  return out.trim() ? JSON.parse(out) : null;
+}
+const repoPath = repo => repo ? `repos/${repo}` : 'repos/{owner}/{repo}';
+/** '#12' · '12' · 'owner/name#12' · github.com/…/pull|issues/12 → { repo, n }; 숫자가 아니면 null */
+export function parseRef(s, repo = '') {
+  const m = String(s || '').trim().match(/^(?:https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:pull|issues)\/|([\w.-]+\/[\w.-]+)#|#)?(\d+)$/);
+  return m ? { repo: m[1] || m[2] || repo || '', n: Number(m[3]) } : null;
+}
+export const refStr = r => `${r.repo || ''}#${r.n}`;
+const repoOfUrl = u => (String(u || '').match(/github\.com\/([\w.-]+\/[\w.-]+)\//) || [])[1] || '';
+export function ghPull(ref) {
+  const p = ghApi(`${repoPath(ref.repo)}/pulls/${ref.n}`) || {};
+  return { n: ref.n, repo: (p.base && p.base.repo && p.base.repo.full_name) || repoOfUrl(p.html_url) || ref.repo, merged: !!p.merged,
+    state: p.state || '', title: p.title || '', url: p.html_url || '', mergeCommit: p.merge_commit_sha || '', mergedAt: p.merged_at || '' };
+}
+export function ghIssue(ref) {
+  const i = ghApi(`${repoPath(ref.repo)}/issues/${ref.n}`) || {};
+  return { n: ref.n, repo: repoOfUrl(i.html_url) || ref.repo, isPR: !!i.pull_request, state: i.state || '', url: i.html_url || '' };
+}
+/** 운영 커밋 sha 가 commit 을 품는가 — compare commit...sha 가 identical·ahead 면 품는다 */
+export function ghContains(repo, commit, sha) {
+  const c = ghApi(`${repoPath(repo)}/compare/${commit}...${sha}`) || {};
+  return c.status === 'identical' || c.status === 'ahead';
+}
+/** pr 을 되돌린 머지된 PR — GitHub Revert 버튼 본문 "Reverts o/r#N" 또는 제목 'Revert "<원제목>"' */
+export function ghRevertOf(pr) {
+  if (!pr.repo) return null;
+  const q = `repo:${pr.repo} is:pr is:merged revert` + (pr.mergedAt ? ` merged:>=${pr.mergedAt.slice(0, 10)}` : '');
+  const r = ghApi(`search/issues?q=${encodeURIComponent(q)}&per_page=50`) || {};
+  const body = new RegExp(`Reverts (?:${pr.repo.replace(/[.]/g, '\\.')})?#${pr.n}\\b`);
+  const hit = (r.items || []).find(x => x.number !== pr.n && (body.test(x.body || '') || (pr.title && x.title === `Revert "${pr.title}"`)));
+  return hit ? { repo: pr.repo, n: hit.number, title: hit.title } : null;
+}
+
+/* 배정 검사 (#40) — 이슈는 숫자(gh 로 이슈인지 확인, PR 거부), 담당은 <도메인>:<창>. 88장 중 76장이 둘을 뒤바꿔 적었다. */
+export const OWNER_RE = /^[a-z0-9][\w-]*:[^\s:#]+$/i;
+export function checkAssign(issue, owner, { repo = '', verify = true } = {}) {
+  const ref = parseRef(issue, repo);
+  if (!ref && parseRef(owner) && OWNER_RE.test(String(issue))) throw new Error(`순서가 뒤바뀜 — assign <시트> <이슈#> <도메인:창> (받은 값: ${issue} ${owner})`);
+  if (!ref) throw new Error(`이슈는 숫자(#12 · 12 · owner/repo#12) — 받은 값: ${issue}`);
+  if (!OWNER_RE.test(String(owner))) throw new Error(`담당은 <도메인>:<창> (예: proj:ws1) — 받은 값: ${owner}`);
+  if (!verify) return { ref };
+  const i = ghIssue(ref);
+  if (i.isPR) throw new Error(`${refStr(ref)} 는 PR — 후속 일을 적을 이슈 번호를 준다(PR 은 stage --pr / items done --pr)`);
+  return { ref: { repo: i.repo || ref.repo, n: ref.n }, url: i.url, state: i.state };
+}
+export function writeAssign(dir, id, issue, owner, by = fromId(), opt = {}) {
+  const chk = opt.check === false ? null : checkAssign(issue, owner, opt);
   assignSince(dir);
   const old = readAssign(dir, id) || {}, at = new Date().toISOString();
-  const rec = { ...old, issue: String(issue), owner: String(owner), at,
-    stages: [...(old.stages || []), { stage: '배정', note: `${issue} → ${owner}`, at, by }] };
+  const show = chk ? `#${chk.ref.n}` : String(issue);
+  const rec = { ...old, issue: show, owner: String(owner), at,
+    stages: [...(old.stages || []), { stage: '배정', note: `${show} → ${owner}`, at, by }] };
+  if (chk && chk.ref.repo) rec.repo = chk.ref.repo; if (chk && chk.url) rec.issueUrl = chk.url;
   saveAssign(dir, id, rec);
   return rec;
+}
+/** 옛 뒤바뀐 배정 고치기 — owner 칸이 이슈 번호이고 issue 칸이 번호가 아니면 맞바꾼다. 고치기 전 assign/.backup-<시각>/ 에 복사 */
+export function migrateAssign(dir, { dryRun = false } = {}) {
+  let names = []; try { names = fs.readdirSync(assignDir(dir)).filter(f => f.endsWith('.json')); } catch { return { fixed: [], total: 0 }; }
+  const fixed = [];
+  for (const f of names) {
+    const a = readAssign(dir, f.slice(0, -5)); if (!a) continue;
+    if (parseRef(a.issue) || !parseRef(a.owner)) continue;
+    fixed.push({ id: f.slice(0, -5), issue: `#${parseRef(a.owner).n}`, owner: String(a.issue), was: [a.issue, a.owner] });
+  }
+  if (dryRun || !fixed.length) return { fixed, total: names.length };
+  const bak = path.join(assignDir(dir), '.backup-' + new Date().toISOString().replace(/[:.]/g, '-'));
+  fs.mkdirSync(bak, { recursive: true });
+  for (const x of fixed) {
+    fs.copyFileSync(path.join(assignDir(dir), x.id + '.json'), path.join(bak, x.id + '.json'));
+    const a = readAssign(dir, x.id); a.issue = x.issue; a.owner = x.owner;
+    const r = parseRef(x.was[1]); if (r && r.repo && !a.repo) a.repo = r.repo;
+    a.stages = (a.stages || []).map(s => s.stage === '배정' && s.note === `${x.was[0]} → ${x.was[1]}` ? { ...s, note: `${x.issue} → ${x.owner}` } : s);
+    a.migrated = { at: new Date().toISOString(), was: x.was };
+    saveAssign(dir, x.id, a);
+  }
+  return { fixed, total: names.length, backup: bak };
 }
 
 /* 단계 보고 (hero 2026-10-13 "시트로 가져간 일은 끝나면 항상 보고") — 배정 뒤 담당 세션이 머지·배포대기·라이브·끝 을 한 줄 메모와 함께 남긴다.
@@ -152,11 +240,13 @@ export function fromId() {
     off = 코드는 들어갔지만 어드민 스위치가 꺼져 있어 켜야 보임, eta = 배포·공개 예정(시각 또는 '다음 시즌' 같은 말). */
 export function stageTag(x) {   // 아이콘 + 한 단어 (hero 2026-10-15 "문장 너무 길어 — 아이콘+ 간결하게 머지됨")
   const off = x.off ? ' · 스위치 꺼짐' : '', eta = x.eta ? ' · ' + x.eta + (x.stage === '라이브' ? ' 공개' : ' 예정') : '';
+  const pr = x.pr ? ' ' + String(x.pr).replace(/^.*#/, '#') : '', sha = x.sha ? ' ' + String(x.sha).slice(0, 7) : '';   // 근거가 칩에 붙는다(#40)
   switch (x.stage) {
-    case '머지': return '🔀 머지됨' + off + eta;
+    case '머지': return '🔀 머지됨' + pr + off + eta;
     case '배포대기': return '⏳ 배포 대기' + off + eta;
-    case '라이브': return '🚀 배포됨' + (x.off ? off + eta : '');
+    case '라이브': return '🚀 배포됨' + sha + (x.off ? off + eta : '');
     case '끝': return '✅ 끝';
+    case '되돌림': return '↩ 되돌림' + pr;
     default: return x.stage;
   }
 }
@@ -199,34 +289,209 @@ export function setChecked(dir, name, on) {
   fs.writeFileSync(checkedFile(dir) + '.tmp', JSON.stringify(c, null, 2) + '\n'); fs.renameSync(checkedFile(dir) + '.tmp', checkedFile(dir));
   return { ok: true, name, checkedAt: c[name] || null };
 }
+/* 단계 근거 (#40) — '머지' 105개 중 73개가 메모 빈칸, 같은 '머지'를 창 3개가 40초 안에 찍었다. 이제 근거 없이는 안 찍힌다:
+   머지 = --pr N (gh 로 MERGED 확인, 머지 커밋 기록) · 라이브 = --sha <운영 커밋> 이 그 머지 커밋을 품음(gh compare) 또는 --off <이유>.
+   같은 단계는 한 번만 — 되돌림(근거 PR 이 revert 됨) 뒤에는 새로 찍을 수 있다. by = REVIEW_SHEET_FROM(세션 이름). */
+const epoch = a => { const st = (a && a.stages) || [], i = st.map(x => x.stage).lastIndexOf('되돌림'); return st.slice(i + 1); };
 export function writeStage(dir, id, stage, note = '', by = fromId(), opt = {}) {
   const st = STAGES[stage];
   if (!st) throw new Error(`단계는 ${[...new Set(Object.values(STAGES))].join(' · ')} 중 하나 (받은 값: ${stage})`);
   const a = readAssign(dir, id);
   if (!a) throw new Error(`${id}: 아직 배정 안 됨 — 먼저 assign <시트> <이슈#> <담당>`);
+  const dup = epoch(a).find(x => x.stage === st);
+  if (dup) throw new Error(`${id}: '${st}' 는 이미 찍힘 (${dup.at} · ${dup.by || '?'}${dup.pr ? ' · ' + dup.pr : ''}) — 같은 단계는 한 번만`);
   const rec = { stage: st, note: String(note), at: new Date().toISOString(), by };
-  if (opt.off) rec.off = true;
+  const repo = opt.repo || a.repo || '';
+  if (st === '머지') {
+    const ref = parseRef(opt.pr, repo);
+    if (!ref) throw new Error(`${id}: 머지 는 근거 필요 — --pr <번호> (머지된 PR)`);
+    const p = ghPull(ref);
+    if (!p.merged) throw new Error(`${id}: PR ${refStr(ref)} 는 머지 안 됨 (${p.state || '?'}) — 머지된 뒤에 찍는다`);
+    Object.assign(rec, { pr: refStr({ repo: p.repo, n: p.n }), url: p.url, mergeCommit: p.mergeCommit, mergedAt: p.mergedAt, title: p.title });
+  }
+  if (st === '라이브') {
+    if (opt.sha) {
+      let m = epoch(a).find(x => x.stage === '머지' && x.mergeCommit);
+      if (opt.pr) { const pr = parseRef(opt.pr, repo); if (!pr) throw new Error(`--pr 는 번호 (받은 값: ${opt.pr})`); const p = ghPull(pr); if (!p.merged) throw new Error(`${id}: PR ${opt.pr} 는 머지 안 됨`); m = { pr: refStr({ repo: p.repo, n: p.n }), mergeCommit: p.mergeCommit }; }
+      if (!m) throw new Error(`${id}: 어떤 머지가 나갔는지 모름 — 먼저 stage 머지 --pr N, 또는 라이브 에 --pr N 도 같이`);
+      const r = parseRef(m.pr) || {};
+      if (!ghContains(r.repo || repo, m.mergeCommit, opt.sha)) throw new Error(`${id}: 운영 커밋 ${opt.sha} 에 머지 커밋 ${m.mergeCommit.slice(0, 7)} (${m.pr}) 이 없다 — 아직 안 나갔다`);
+      Object.assign(rec, { sha: String(opt.sha), pr: m.pr, mergeCommit: m.mergeCommit });
+    } else if (!opt.offReason) throw new Error(`${id}: 라이브 는 근거 필요 — --sha <운영 커밋> (머지 커밋을 품어야 함) 또는 --off <이유>`);
+  }
+  if (opt.off || opt.offReason) rec.off = true;
+  if (opt.offReason) rec.offReason = String(opt.offReason).slice(0, 200);
   if (opt.eta) rec.eta = String(opt.eta).slice(0, 60);
   a.stages = [...(a.stages || [{ stage: '배정', note: `${a.issue} → ${a.owner}`, at: a.at }]), rec];
   saveAssign(dir, id, a);
   return a;
 }
+
+/* 문항 장부 (#40) — 답한 문항(고름·메모·첨부·섹션 메모·추가 질문 _ask)마다 어디로 갔는지 하나씩 붙어야 시트가 닫힌다.
+   done --pr N(머지된 PR) · defer --issue N(이슈, PR 아님) · reject [이유] · moved <시트>. 붙인 뒤 hero 가 그 문항 답을 바꾸면(해시) 다시 열린다. */
+export const ITEM_KINDS = ['done', 'defer', 'reject', 'moved'];
+const hasAns = a => !!a && !!(a.pick || (typeof a.memo === 'string' && a.memo.trim()) || (a.files || []).length);
+export const answeredKeys = saved => Object.keys((saved && saved.answers) || {}).filter(k => hasAns(saved.answers[k]));
+const ansHash = a => crypto.createHash('sha1').update(JSON.stringify([a && a.pick || '', a && a.memo || '', ((a && a.files) || []).map(f => f.name)])).digest('hex').slice(0, 12);
+const revertedPrs = a => new Set(((a && a.stages) || []).filter(x => x.stage === '되돌림' && x.reverts).map(x => x.reverts));
+/** 답한 문항 중 안 붙은 것 — missing(장부 없음) · changed(붙인 뒤 답 바뀜) · reverted(done 의 PR 이 되돌려짐) */
+export function itemsOpen(dir, id, a = readAssign(dir, id), saved = readAnswers(dir, id)) {
+  const it = (a && a.items) || {}, rv = revertedPrs(a), A = (saved && saved.answers) || {};
+  const keys = answeredKeys(saved), out = [];
+  for (const k of keys) {
+    const x = it[k];
+    if (!x) out.push({ k, why: 'missing' });
+    else if (x.ans !== ansHash(A[k])) out.push({ k, why: 'changed' });
+    else if (x.kind === 'done' && rv.has(x.pr)) out.push({ k, why: 'reverted' });
+  }
+  return { keys, open: out };
+}
+export function writeItem(dir, id, key, kind, opt = {}, by = fromId()) {
+  const a = readAssign(dir, id);
+  if (!a) throw new Error(`${id}: 아직 배정 안 됨 — 먼저 assign <시트> <이슈#> <담당>`);
+  const saved = readAnswers(dir, id);
+  if (!answeredKeys(saved).includes(key)) throw new Error(`${id}: 문항 ${key} 는 답이 없다 — 답한 문항: ${answeredKeys(saved).join(' ') || '(없음)'}`);
+  if (!ITEM_KINDS.includes(kind)) throw new Error(`문항 처리는 ${ITEM_KINDS.join(' · ')} 중 하나 (받은 값: ${kind})`);
+  const rec = { kind, ans: ansHash(saved.answers[key]), at: new Date().toISOString(), by };
+  const repo = opt.repo || a.repo || '';
+  if (kind === 'done') {
+    const ref = parseRef(opt.pr, repo); if (!ref) throw new Error(`${key} done 은 --pr <번호> 필요`);
+    const p = ghPull(ref); if (!p.merged) throw new Error(`${key}: PR ${refStr(ref)} 는 머지 안 됨 (${p.state || '?'})`);
+    Object.assign(rec, { pr: refStr({ repo: p.repo, n: p.n }), url: p.url, mergedAt: p.mergedAt, title: p.title });
+  } else if (kind === 'defer') {
+    const ref = parseRef(opt.issue, repo); if (!ref) throw new Error(`${key} defer 는 --issue <번호> 필요`);
+    const i = ghIssue(ref); if (i.isPR) throw new Error(`${key}: ${refStr(ref)} 는 PR — 미룬 일은 이슈 번호로`);
+    Object.assign(rec, { issue: refStr({ repo: i.repo, n: i.n }), url: i.url });
+  } else if (kind === 'moved') {
+    const to = String(opt.to || '');
+    const t = to && listSheetsRaw(dir).find(s => !s.error && (s.name === to || s.id === to));
+    if (!t) throw new Error(`${key} moved 는 옮긴 시트 이름이 필요 — 받은 값: ${to || '(없음)'}`);
+    if (t.id === id) throw new Error(`${key}: 자기 시트로는 못 옮긴다`);
+    rec.to = t.name;
+  }
+  if (opt.note) rec.note = String(opt.note).slice(0, 300);
+  a.items = { ...(a.items || {}), [key]: rec };
+  saveAssign(dir, id, a);
+  return { a, rec, ...itemsOpen(dir, id, a, saved) };
+}
+
+/* 되돌림 감지 (#40) — 근거 PR(머지 단계·문항 done)이 나중에 revert 되면 '되돌림' 단계를 붙여 시트를 다시 연다.
+   unassigned 가 부를 때만 gh 를 친다. PR 마다 everyMs(기본 1시간)에 한 번, 머지 뒤 maxDays(기본 14일)까지만 본다. */
+export function checkReverts(dir, { everyMs = 3600e3, maxDays = 14, onError = () => {} } = {}) {
+  let names = []; try { names = fs.readdirSync(assignDir(dir)).filter(f => f.endsWith('.json')); } catch { return []; }
+  const found = [], now = Date.now();
+  for (const f of names) {
+    const id = f.slice(0, -5), a = readAssign(dir, id); if (!a) continue;
+    const rv = revertedPrs(a), seen = a.revertChecked || {};
+    const prs = [...epoch(a).filter(x => x.stage === '머지' && x.pr).map(x => ({ pr: x.pr, title: x.title, mergedAt: x.mergedAt })),
+      ...Object.values(a.items || {}).filter(x => x.kind === 'done' && x.pr).map(x => ({ pr: x.pr, title: x.title, mergedAt: x.mergedAt }))]
+      .filter((x, i, l) => l.findIndex(y => y.pr === x.pr) === i && !rv.has(x.pr));
+    let dirty = false;
+    for (const x of prs) {
+      if (seen[x.pr] && now - Date.parse(seen[x.pr]) < everyMs) continue;
+      if (x.mergedAt && now - Date.parse(x.mergedAt) > maxDays * 864e5) continue;
+      const ref = parseRef(x.pr); if (!ref || !ref.repo) continue;
+      let hit; try { hit = ghRevertOf({ ...ref, title: x.title, mergedAt: x.mergedAt }); } catch (e) { onError(e); continue; }
+      seen[x.pr] = new Date().toISOString(); dirty = true;
+      if (hit) {
+        const r = refStr(hit);
+        a.stages = [...(a.stages || []), { stage: '되돌림', note: `${r} 가 ${x.pr} 를 되돌림`, pr: r, reverts: x.pr, at: new Date().toISOString(), by: 'review-sheet' }];
+        found.push({ id, pr: x.pr, by: r });
+      }
+    }
+    if (dirty) { a.revertChecked = seen; saveAssign(dir, id, a); }
+  }
+  return found;
+}
+/** 이슈가 닫혔는지 — unassigned 가 단계 덜 된 배정만(검사 통과해 repo 가 남은 것), 이슈마다 everyMs 에 한 번 */
+export function checkIssues(dir, { everyMs = 3600e3, onError = () => {} } = {}) {
+  let names = []; try { names = fs.readdirSync(assignDir(dir)).filter(f => f.endsWith('.json')); } catch { return; }
+  for (const f of names) {
+    const id = f.slice(0, -5), a = readAssign(dir, id); if (!a) continue;
+    const last = (a.stages || []).at(-1);
+    if (last && FINAL_STAGES.has(last.stage)) continue;
+    if (a.issueCheckedAt && Date.now() - Date.parse(a.issueCheckedAt) < everyMs) continue;
+    const ref = parseRef(a.issue, a.repo || ''); if (!ref || !ref.repo) continue;   // 레포를 모르는 옛 배정은 묻지 않는다(지금 폴더 레포로 잘못 채워진다)
+    try { const i = ghIssue(ref); a.issueState = i.state; a.issueCheckedAt = new Date().toISOString(); saveAssign(dir, id, a); } catch (e) { onError(e); }
+  }
+}
+
+export const STATE_LABEL = { none: '배정없음', changed: '답바뀜', items: '문항안붙음', reverted: '되돌림' };
 /** 시트 요약에 붙일 배정·단계 정보 — tag 는 받은편지함 시트 줄 맨 앞에 붙는 '끝난 상태'. */
 function assignInfo(a) {
   if (!a) return null;
   const last = (a.stages || []).at(-1) || { stage: '배정', note: `${a.issue} → ${a.owner}`, at: a.at };
-  return { issue: a.issue, owner: a.owner, stage: last.stage, tag: stageTag(last), off: !!last.off, eta: last.eta || '', note: last.note || '', stageAt: last.at, by: last.by || '' };
+  return { issue: a.issue, owner: a.owner, stage: last.stage, tag: stageTag(last), off: !!last.off, eta: last.eta || '', note: last.note || '', stageAt: last.at, by: last.by || '',
+    pr: last.pr || '', sha: last.sha || '' };
 }
-/** 'none' = 제출됐는데 배정 없음 · 'changed' = 배정 뒤 답이 바뀜 · 'ok' = 배정됨 · null = 대상 아님(미제출·게이트 전 답) */
-export function assignState(dir, s, since, stallHours = 24) {
+/* 장부 시작 (#40) — 문항 장부는 assign/.items-since 뒤에 (다시) 저장된 답부터. 그 전 답은 예전 규칙(배정 있으면 닫힘, 배정 뒤 답 바뀜 = 열림). */
+export function itemsSince(dir) {
+  const f = path.join(assignDir(dir), '.items-since');
+  try { return fs.readFileSync(f, 'utf8').trim(); } catch { /* first use */ }
+  const now = new Date().toISOString();
+  fs.mkdirSync(assignDir(dir), { recursive: true }); fs.writeFileSync(f, now + '\n');
+  return now;
+}
+/** null = 대상 아님(미제출·게이트 전 답) · 'none' 배정없음 · 'items' 문항 안 붙음 · 'changed' 배정 뒤 답 바뀜(장부 전 답) ·
+ *  'reverted' 근거 PR 되돌려짐 · 'closed' 이슈는 닫혔는데 단계 덜 됨 · 'ok'. 예전 '멈춤(24h)'은 소음이라 뺐다(102건). */
+export function assignState(dir, s, since, iSince = '9') {
   if (!s || s.error || !s.submitted) return null;
   const a = readAssign(dir, s.id);
-  if (a) {
-    if (String(s.savedAt) > String(a.at)) return 'changed';
-    const i = assignInfo(a);
-    return !FINAL_STAGES.has(i.stage) && Date.now() - Date.parse(i.stageAt) > stallHours * 3600e3 ? 'stalled' : 'ok';
+  if (!a) return String(s.savedAt) >= String(since) ? 'none' : null;
+  const last = (a.stages || []).at(-1) || { stage: '배정' };
+  if (last.stage === '되돌림') return 'reverted';
+  if (String(s.savedAt) >= String(iSince)) { if (itemsOpen(dir, s.id, a).open.length) return 'items'; }
+  else if (String(s.savedAt) > String(a.at)) return 'changed';
+  if (a.issueState === 'closed' && !FINAL_STAGES.has(last.stage)) return 'closed';
+  return 'ok';
+}
+
+/* record (#40) — read 출력 전체(메모·추가 질문 _ask·문항 질문 포함)를 이슈 댓글로. 다시 저장된 뒤 또 부르면 아직 안 붙인 줄만 덧붙인다.
+   붙인 줄의 해시는 record/<id>.json { "<repo>#N": { hashes, at } } 에 남는다. */
+const recordFile = (dir, id) => path.join(dir, 'record', id + '.json');
+export function recordText(dir, name) {
+  const sheet = loadSheet(dir, name), saved = readAnswers(dir, sheet.id);
+  let md = renderMarkdown(sheet, saved, dir);
+  const asks = asksFor(dir, name);
+  if (asks.length) md += '\n\n### 문항 질문\n\n' + asks.map(x => `- ${x.q} — hero: ${x.text.replace(/\s+/g, ' ')}` + x.replies.map(r => `\n  - ↩ ${r.from}: ${r.text.replace(/\s+/g, ' ')}`).join('')).join('\n');
+  return { sheet, saved, md };
+}
+const lineHash = l => crypto.createHash('sha1').update(l).digest('hex').slice(0, 16);
+export function recordPlan(md, posted = []) {
+  const done = new Set(posted), lines = md.split('\n');
+  const isContent = l => /^\| (?!# \|)(?!---)/.test(l) || /^> /.test(l) || /^- /.test(l) || /^  - /.test(l);
+  if (!posted.length) return { body: md, hashes: lines.filter(isContent).map(lineHash), fresh: lines.filter(isContent).length };
+  const out = []; let sec = '', head = [], secOut = false, fresh = 0;
+  for (const l of lines) {
+    if (/^### /.test(l)) { sec = l; head = []; secOut = false; continue; }
+    if (/^\| # \|/.test(l) || /^\| --- /.test(l)) { head.push(l); continue; }
+    if (!isContent(l) || done.has(lineHash(l))) continue;
+    if (!secOut && sec) { out.push('', sec, ''); secOut = true; }
+    if (/^\| /.test(l) && head.length && !out.includes(head[0], out.lastIndexOf(sec))) out.push(...head);
+    out.push(l); fresh++;
   }
-  return String(s.savedAt) >= String(since) ? 'none' : null;
+  return { body: out.join('\n').trim(), hashes: lines.filter(isContent).map(lineHash).filter(h => !done.has(h)), fresh };
+}
+export function recordSheet(dir, name, { issue, repo = '' } = {}) {
+  const s = listSheetsRaw(dir).find(x => !x.error && (x.name === name || x.id === name));
+  if (!s) throw new Error(`시트 ${name} 없음`);
+  const a = readAssign(dir, s.id);
+  let ref = parseRef(issue || (a && a.issue), repo || (a && a.repo) || '');
+  if (!ref) throw new Error(`${s.name}: 붙일 이슈가 없다 — record <시트> --issue N`);
+  const iss = ghIssue(ref); if (iss.isPR) throw new Error(`${refStr(ref)} 는 PR — 답은 이슈에 남긴다`);
+  ref = { repo: iss.repo || ref.repo, n: ref.n };
+  const { saved, md } = recordText(dir, s.name);
+  if (!saved || !saved.savedAt) throw new Error(`${s.name}: 아직 제출 안 됨`);
+  let book = {}; try { book = JSON.parse(fs.readFileSync(recordFile(dir, s.id), 'utf8')) || {}; } catch { /* 처음 */ }
+  const key = refStr(ref), prev = book[key] || { hashes: [] };
+  const plan = recordPlan(md, prev.hashes);
+  if (prev.hashes.length && !plan.fresh) return { posted: false, key, fresh: 0 };
+  const body = prev.hashes.length ? `## ${s.title} — 바뀐 답 (저장 ${saved.savedAt} · sheet \`${s.id}\`)\n${plan.body}` : plan.body;
+  const c = ghApi(`${repoPath(ref.repo)}/issues/${ref.n}/comments`, { input: { body } }) || {};
+  book[key] = { hashes: [...prev.hashes, ...plan.hashes], at: new Date().toISOString(), savedAt: saved.savedAt, url: c.html_url || (book[key] || {}).url || '' };
+  fs.mkdirSync(path.dirname(recordFile(dir, s.id)), { recursive: true });
+  fs.writeFileSync(recordFile(dir, s.id), JSON.stringify(book, null, 2) + '\n');
+  return { posted: true, key, fresh: plan.fresh, url: c.html_url || '' };
 }
 /* Sheet attachments: any file type (hero 2026-10-06 "리뷰 시트에도 파일 첨부"), stored under a random name so the
    original name never reaches the disk path; the original is kept beside it in the answers JSON as `orig`. */
@@ -1180,9 +1445,9 @@ async function main() {
   if (needsArg2 && rest.length === 2) { arg2 = rest[1]; dirArg = undefined; }
   if (cmd === 'assign' && rest.length === 4) dirArg = undefined;   // assign <id> <issue> <owner> → inbox
   if (cmd === 'stage' && rest[2] && STAGES[rest[2]]) dirArg = undefined;   // stage <id> <stage> [note] → inbox
+  let askArgs = rest.slice(2);   // asks / ask-reply / items / record: [dir] 은 진짜 폴더일 때만
   if ((cmd === 'board' || cmd === 'dash') && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
-  let askArgs = rest.slice(2);   // asks / ask-reply: [dir] 은 진짜 폴더일 때만
-  if ((cmd === 'asks' || cmd === 'ask-reply') && !(rest[1] && fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) { dirArg = undefined; askArgs = rest.slice(1); }
+  if (['asks', 'ask-reply', 'items', 'record', 'migrate-assign'].includes(cmd) && !(rest[1] && fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) { dirArg = undefined; askArgs = rest.slice(1); }
   const dir = path.resolve(dirArg || INBOX);
   const isInbox = !dirArg;
   if (isInbox && cmd !== 'serve') fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
@@ -1260,8 +1525,9 @@ async function main() {
   }
   if (cmd === 'ls') {
     const since = fs.existsSync(path.join(assignDir(dir), '.since')) ? assignSince(dir) : '9';   // 게이트 안 쓰는 폴더는 표시 안 함
-    const tag = (s, st) => st === 'none' ? '\t배정없음' : st === 'changed' ? '\t답바뀜' : s.assign ? `\t${s.assign.stage}${st === 'stalled' ? '(멈춤)' : ''} ${s.assign.issue}` : '';
-    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}${tag(s, assignState(dir, s, since))}`);
+    const iSince = fs.existsSync(path.join(assignDir(dir), '.items-since')) ? itemsSince(dir) : '9';
+    const tag = (s, st) => st && STATE_LABEL[st] ? '\t' + STATE_LABEL[st] : s.assign ? `\t${s.assign.stage}${st === 'closed' ? '(이슈닫힘)' : ''} ${s.assign.issue}` : '';
+    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}${tag(s, assignState(dir, s, since, iSince))}`);
     return;
   }
   if (cmd === 'assign') {
@@ -1270,8 +1536,9 @@ async function main() {
     const s = listSheets(dir).find(x => !x.error && (x.name === id || x.id === id));
     if (!s) { console.error(`${dir} 에 ${id} 시트 없음`); process.exit(1); }
     if (!s.submitted) { console.error(`${s.name}: 아직 제출 안 됨 — 답이 온 뒤에 배정한다`); process.exit(1); }
-    const a = writeAssign(dir, s.id, issue, owner);
-    console.log(`${s.name}\t배정 ${a.issue} → ${a.owner}`);
+    let a; try { a = writeAssign(dir, s.id, issue, owner, undefined, { repo: flags.repo }); } catch (e) { console.error(e.message); process.exit(1); }
+    console.log(`${s.name}\t배정 ${a.issue} → ${a.owner}${a.repo ? ' (' + a.repo + ')' : ''}`);
+    const left = itemsOpen(dir, s.id).open; if (left.length) console.log(`  문항 장부: ${left.length}개 남음 — items ${s.name} <문항> done --pr N | defer --issue N | reject | moved <시트>  (${left.map(x => x.k).join(' ')})`);
     return;
   }
   if (cmd === 'stage') {
@@ -1279,7 +1546,7 @@ async function main() {
     if (!id || !stage) usage();
     const s = listSheets(dir).find(x => !x.error && (x.name === id || x.id === id));
     if (!s) { console.error(`${dir} 에 ${id} 시트 없음`); process.exit(1); }
-    try { const a = writeStage(dir, s.id, stage, words.join(' '), undefined, { off: flags.off, eta: flags.eta }); console.log(`${s.name}\t${stageTag(a.stages.at(-1))}${words.length ? ' — ' + words.join(' ') : ''}`); }
+    try { const a = writeStage(dir, s.id, stage, words.join(' '), undefined, { off: flags.off, offReason: flags.offReason, eta: flags.eta, pr: flags.pr, sha: flags.sha, repo: flags.repo }); console.log(`${s.name}\t${stageTag(a.stages.at(-1))}${words.length ? ' — ' + words.join(' ') : ''}`); }
     catch (e) { console.error(e.message); process.exit(1); }
     return;
   }
@@ -1323,15 +1590,48 @@ async function main() {
     }
     return;
   }
-  if (cmd === 'unassigned') {
-    const since = assignSince(dir), open = [];
+  if (cmd === 'items') {   // items <시트> [<문항> done --pr N | defer --issue N | reject [이유] | moved <시트>] — 문항 장부(#40)
+    const [name, key, kind, ...words] = askArgs;
+    const s = name && listSheets(dir).find(x => !x.error && (x.name === name || x.id === name));
+    if (!s) { console.error(`${dir} 에 ${name || '?'} 시트 없음`); process.exit(name ? 1 : 2); }
+    if (key) {
+      const opt = { pr: flags.pr, issue: flags.issue, repo: flags.repo, to: kind === 'moved' ? words[0] : '', note: (kind === 'moved' ? words.slice(1) : words).join(' ') };
+      try { const r = writeItem(dir, s.id, key, kind, opt); console.log(`${s.name}\t${key}\t${kind}${r.rec.pr ? ' ' + r.rec.pr : r.rec.issue ? ' ' + r.rec.issue : r.rec.to ? ' → ' + r.rec.to : ''}\t남음 ${r.open.length}/${r.keys.length}`); }
+      catch (e) { console.error(e.message); process.exit(1); }
+      return;
+    }
+    const a = readAssign(dir, s.id), { keys, open } = itemsOpen(dir, s.id, a), why = Object.fromEntries(open.map(x => [x.k, x.why]));
+    const it = (a && a.items) || {};
+    for (const k of keys) { const x = it[k]; console.log(`${k}\t${why[k] ? { missing: '안 붙음', changed: '답 바뀜', reverted: '되돌려짐' }[why[k]] : 'ok'}${x ? `\t${x.kind}${x.pr ? ' ' + x.pr : x.issue ? ' ' + x.issue : x.to ? ' → ' + x.to : ''}${x.note ? ' — ' + x.note : ''}` : ''}`); }
+    if (open.length) process.exitCode = 5;
+    return;
+  }
+  if (cmd === 'record') {   // record <시트> [--issue N] — read 출력 전체를 이슈 댓글로, 다시 부르면 바뀐 줄만(#40)
+    const [name] = askArgs; if (!name) usage();
+    try { const r = recordSheet(dir, name, { issue: flags.issue, repo: flags.repo }); console.log(r.posted ? `${name}\t→ ${r.key}\t${r.fresh}줄${r.url ? '\t' + r.url : ''}` : `${name}\t→ ${r.key}\t바뀐 것 없음`); }
+    catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'migrate-assign') {   // 옛 뒤바뀐 assign 맞바꾸기 — --dry-run 이면 건수만
+    const r = migrateAssign(dir, { dryRun: !!flags['dry-run'] });
+    for (const x of r.fixed) console.log(`${x.id}\t${x.was[0]} ${x.was[1]}\t→ ${x.issue} ${x.owner}`);
+    console.log(`${flags['dry-run'] ? '고칠 것' : '고침'} ${r.fixed.length} / 배정 ${r.total}${r.backup ? `\t백업 ${r.backup}` : ''}`);
+    return;
+  }
+  if (cmd === 'unassigned') {   // 문항 안 붙음·되돌림·이슈 닫혔는데 단계 덜 됨만 (#40 — 예전 24h '멈춤'은 소음이라 뺐다)
+    const since = assignSince(dir), iSince = itemsSince(dir), open = [];
+    const warn = new Set(), onError = e => warn.add(e.message);
+    checkReverts(dir, { onError }); checkIssues(dir, { onError });
     for (const s of listSheets(dir)) {
       if (flags.prefix && !String(s.name).startsWith(flags.prefix)) continue;
-      const st = assignState(dir, s, since, flags.hours || 24);
-      if (st === 'none' || st === 'changed') open.push(`${s.name}\t${st === 'none' ? '배정없음' : '답바뀜'}\t${s.savedAt}\t${s.from || '-'}\t${s.title}${s.partial ? ` · 부분제출(미선택 ${s.partial})` : ''}`);
-      if (st === 'stalled') open.push(`${s.name}\t멈춤\t${s.assign.stageAt}\t${s.assign.owner}\t${s.title} (${s.assign.stage} ${s.assign.issue})`);
+      const st = assignState(dir, s, since, iSince);
+      if (st === 'none' || st === 'changed') open.push(`${s.name}\t${STATE_LABEL[st]}\t${s.savedAt}\t${s.from || '-'}\t${s.title}${s.partial ? ` · 부분제출(미선택 ${s.partial})` : ''}`);
+      if (st === 'items') { const o = itemsOpen(dir, s.id).open; open.push(`${s.name}\t문항안붙음\t${s.savedAt}\t${s.assign.owner}\t${s.title} (${o.map(x => x.k + (x.why === 'missing' ? '' : '·' + { changed: '답바뀜', reverted: '되돌림' }[x.why])).join(' ')})`); }
+      if (st === 'reverted') open.push(`${s.name}\t되돌림\t${s.assign.stageAt}\t${s.assign.owner}\t${s.title} (${s.assign.note} · ${s.assign.issue})`);
+      if (st === 'closed') open.push(`${s.name}\t이슈닫힘\t${s.assign.stageAt}\t${s.assign.owner}\t${s.title} (${s.assign.stage} ${s.assign.issue} — 이슈는 닫혔는데 라이브·끝 아님)`);
     }
     for (const l of open) console.log(l);
+    for (const w of warn) console.error('gh 확인 못 함: ' + w);
     if (open.length) process.exitCode = 5;
     return;
   }

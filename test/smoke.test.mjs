@@ -7,10 +7,36 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { startServer, loadSheet, readAnswers, renderMarkdown, dropHallucination } from '../bin/review-sheet.mjs';
+import { startServer, loadSheet, readAnswers, renderMarkdown, dropHallucination, stageTag } from '../bin/review-sheet.mjs';
 
 const BIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'review-sheet.mjs');
 const TEMPLATE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'example-data.js');
+
+/* gh 스텁 (#40) — `gh api <path> [--input -]` 를 fixtures { path: 응답 | { $err } } 로 답하고, 부른 것을 log 에 남긴다.
+   path 는 gh 가 채우기 전 그대로({owner}/{repo}) — repos/o/r/… 로 와도 같은 것으로 본다. 'search/issues' 처럼 ? 앞까지만 맞춰도 된다. --input 이면 stdin 을 log 에. */
+function ghStub(fixtures) {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-stub-'));
+  const fx = path.join(d, 'fx.json'), log = path.join(d, 'log.jsonl'), bin = path.join(d, 'gh');
+  fs.writeFileSync(fx, JSON.stringify(fixtures));
+  fs.writeFileSync(bin, `#!${process.execPath}
+const fs = require('fs'); const a = process.argv.slice(2); const p = a[1];
+const fx = JSON.parse(fs.readFileSync(${JSON.stringify(fx)}, 'utf8'));
+let input = ''; if (a.includes('--input')) input = fs.readFileSync(0, 'utf8');
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args: a, input }) + '\\n');
+const q = p.replace('repos/o/r/', 'repos/{owner}/{repo}/'), r = [p, q, p.split('?')[0]].map(k => fx[k]).find(x => x !== undefined);   // o/r = 스텁의 기본 레포
+if (r === undefined || (r && r.$err)) { process.stderr.write('HTTP 404: ' + (r && r.$err || 'Not Found') + ' (stub ' + p + ')\\n'); process.exit(1); }
+process.stdout.write(JSON.stringify(r));
+`);
+  fs.chmodSync(bin, 0o755);
+  const set = f => fs.writeFileSync(fx, JSON.stringify(f));
+  const calls = () => { try { return fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; } };
+  return { env: { ...process.env, REVIEW_SHEET_GH: bin, REVIEW_SHEET_FROM: 'proj:ws9' }, set, calls, fixtures };
+}
+const R = 'repos/{owner}/{repo}';
+const ghIssueFx = (n, extra) => ({ number: n, state: 'open', html_url: `https://github.com/o/r/issues/${n}`, ...extra });
+const ghPrFx = (n, merged, extra) => ({ number: n, merged, state: merged ? 'closed' : 'open', title: 'T' + n, html_url: `https://github.com/o/r/pull/${n}`,
+  merge_commit_sha: merged ? 'm' + String(n).padStart(6, '0') + 'aaaa' : null, merged_at: merged ? new Date().toISOString() : null, base: { repo: { full_name: 'o/r' } }, ...extra });
+const runIn = env => (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
 
 function tmpDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-sheet-'));
@@ -468,7 +494,8 @@ test('cli: assign gate — submitted sheets stay open until an issue/owner is re
   const old = fs.readFileSync(path.join(dir, 'old-data.js'), 'utf8').replace(/id:\s*'example'/, "id: 'old'");
   fs.writeFileSync(path.join(dir, 'old-data.js'), old);
   fs.writeFileSync(path.join(dir, 'answers', 'old.json'), JSON.stringify({ sheet: 'old', savedAt: '2020-01-01T00:00:00.000Z', answers: { 'A-1': { pick: '①' } } }));
-  const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8' }), code: 0 }; } catch (e) { return { out: e.stdout, code: e.status }; } };
+  const gh = ghStub({ [`${R}/issues/12`]: ghIssueFx(12) });
+  const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', env: gh.env }), code: 0 }; } catch (e) { return { out: e.stdout, code: e.status }; } };
   // first use starts the gate — answers saved before it are exempt
   assert.deepEqual(run('unassigned', dir), { out: '', code: 0 });
   const save = at => fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: at, answers: { 'A-1': { pick: '①' } } }));
@@ -477,54 +504,218 @@ test('cli: assign gate — submitted sheets stay open until an issue/owner is re
   assert.equal(r.code, 5); assert.match(r.out, /^example\t배정없음\t/);
   assert.match(run('ls', dir).out, /^example\t.*\t배정없음$/m);
   assert.equal(run('unassigned', dir, '--prefix', 'zzz').code, 0);
-  assert.match(run('assign', dir, 'example', '#12', 'proj:ws1').out, /배정 #12 → proj:ws1/);
+  assert.match(run('assign', dir, 'example', '#12', 'proj:ws1').out, /배정 #12 → proj:ws1 \(o\/r\)/);
+  assert.match(run('unassigned', dir).out, /^example\t문항안붙음\t.*\(A-1\)$/m);   // 배정만으론 안 닫힌다 — 문항 장부(#40)
+  assert.equal(run('items', dir, 'example', 'A-1', 'reject', '이번엔', '안', '함').code, 0);
   assert.deepEqual(run('unassigned', dir), { out: '', code: 0 });
-  assert.doesNotMatch(run('ls', dir).out, /배정없음|답바뀜/);
-  // hero changes the answer after assignment → reopens
-  save(new Date(Date.now() + 60000).toISOString());
-  assert.match(run('unassigned', dir).out, /^example\t답바뀜\t/);
+  assert.doesNotMatch(run('ls', dir).out, /배정없음|답바뀜|문항안붙음/);
+  // 같은 답으로 다시 저장 = 그대로, hero 가 답을 바꾸면 그 문항만 다시 열린다
+  const save2 = (at, pick) => fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: at, answers: { 'A-1': { pick } } }));
+  save2(new Date(Date.now() + 60000).toISOString(), '①');
+  assert.equal(run('unassigned', dir).code, 0);
+  save2(new Date(Date.now() + 120000).toISOString(), '②');
+  assert.match(run('unassigned', dir).out, /^example\t문항안붙음\t.*\(A-1·답바뀜\)$/m);
 });
 
-test('stage: owner reports each step as an end-state tag on the sheet row; stalled steps surface in unassigned (hero 2026-10-13/14)', async () => {
+test('stage: owner reports each step as an end-state tag on the sheet row — 근거(PR·커밋)가 칩에 붙는다 (hero 2026-10-13/14, #40)', async () => {
   const dir = tmpDir();
   fs.mkdirSync(path.join(dir, 'answers'));
-  const run = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
+  const gh = ghStub({ [`${R}/issues/7`]: ghIssueFx(7), [`${R}/pulls/9`]: ghPrFx(9, true), [`repos/o/r/compare/m000009aaaa...live123456`]: { status: 'ahead' } });
+  const run = runIn(gh.env);
   run('unassigned', dir);                                   // gate starts now
   fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers: { 'A-1': { pick: '①' } } }));
-  let r = run('stage', dir, 'example', '머지');
+  let r = run('stage', dir, 'example', '머지', '--pr', '9');
   assert.equal(r.code, 1); assert.match(r.out, /아직 배정 안 됨/);
   assert.equal(run('assign', dir, 'example', '#7', 'proj:ws1').code, 0);
-  assert.match(run('stage', dir, 'example', 'merged', 'PR', '#9').out, /^example\t🔀 머지됨 — PR #9/);
+  assert.match(run('stage', dir, 'example', 'merged', '--pr', '9', '정리').out, /^example\t🔀 머지됨 #9 — 정리/);
   assert.equal(run('stage', dir, 'example', '반쯤').code, 1);
   const a = JSON.parse(fs.readFileSync(path.join(dir, 'assign', 'example.json'), 'utf8'));
   assert.deepEqual(a.stages.map(x => x.stage), ['배정', '머지']);
+  assert.deepEqual([a.stages[1].pr, a.stages[1].mergeCommit, a.stages[1].by], ['o/r#9', 'm000009aaaa', 'proj:ws9']);
+  assert.match(run('ls', dir).out, /\t문항안붙음$/m);
+  assert.equal(run('items', dir, 'example', 'A-1', 'done', '--pr', '9').code, 0);
   assert.match(run('ls', dir).out, /\t머지 #7$/m);
-  // backdate the last step → 멈춤 after 24h, not when final
-  a.stages.at(-1).at = new Date(Date.now() - 30 * 3600e3).toISOString();
-  fs.writeFileSync(path.join(dir, 'assign', 'example.json'), JSON.stringify(a));
-  r = run('unassigned', dir);
-  assert.equal(r.code, 5); assert.match(r.out, /^example\t멈춤\t/);
-  assert.equal(run('unassigned', dir, '--hours', '48').code, 0);
-  run('stage', dir, 'example', '라이브', '16:05 배포');
+  assert.equal(run('unassigned', dir).code, 0);             // 24h '멈춤' 은 없어졌다 — 이슈가 열려 있으면 조용
+  assert.match(run('stage', dir, 'example', '라이브', '--sha', 'live123456', '16:05 배포').out, /^example\t🚀 배포됨 live123 — 16:05 배포/);
   assert.equal(run('unassigned', dir).code, 0);
-  // end-state tag on the sheet row (hero 2026-10-14: 메인만? 배포 큐? 배포됨? 어드민 스위치? 언제?)
-  assert.match(run('stage', dir, 'example', '라이브', '--off', '--eta', '다음 시즌', '스위치 켜면 공개').out, /^example\t🚀 배포됨 · 스위치 꺼짐 · 다음 시즌 공개 — 스위치 켜면 공개/);
+  // 끝난 상태 태그 (hero 2026-10-14: 메인만? 배포 큐? 배포됨? 어드민 스위치? 언제?)
+  assert.equal(stageTag({ stage: '라이브', off: true, eta: '다음 시즌' }), '🚀 배포됨 · 스위치 꺼짐 · 다음 시즌 공개');
+  assert.equal(stageTag({ stage: '배포대기', eta: '15:00' }), '⏳ 배포 대기 · 15:00 예정');
+  assert.equal(stageTag({ stage: '머지', pr: 'o/r#9' }), '🔀 머지됨 #9');
+  assert.equal(stageTag({ stage: '되돌림', pr: 'o/r#11' }), '↩ 되돌림 #11');
   const { base, close } = await startServer(dir, 0);
   try {
-    let inbox = await (await fetch(base + '/api/inbox')).json();
-    let a = inbox.sheets.find(s => s.name === 'example').assign;
-    assert.deepEqual([a.stage, a.off, a.eta, a.tag], ['라이브', true, '다음 시즌', '🚀 배포됨 · 스위치 꺼짐 · 다음 시즌 공개']);
+    const inbox = await (await fetch(base + '/api/inbox')).json();
+    const x = inbox.sheets.find(s => s.name === 'example').assign;
+    assert.deepEqual([x.stage, x.tag, x.sha, x.pr], ['라이브', '🚀 배포됨 live123', 'live123456', 'o/r#9']);
     assert.equal(inbox.reports, undefined);
     assert.equal((await fetch(base + '/__report-ack?d=example', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 404);
-    run('stage', dir, 'example', '배포대기', '--eta', '15:00');
-    inbox = await (await fetch(base + '/api/inbox')).json();
-    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.tag, '⏳ 배포 대기 · 15:00 예정');
-    run('stage', dir, 'example', '머지');
-    inbox = await (await fetch(base + '/api/inbox')).json();
-    assert.equal(inbox.sheets.find(s => s.name === 'example').assign.tag, '🔀 머지됨');
     const html = await (await fetch(base + '/')).text();
     assert.match(html, /rs-tag/); assert.doesNotMatch(html, /rs-report-h|오른쪽으로 밀면/);
   } finally { await close(); }
+});
+
+test('AC1·AC2: stage 근거 — 머지 = --pr MERGED, 라이브 = --sha 가 머지 커밋 포함 또는 --off <이유>, 같은 단계 두 번 거부 (#40)', () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const gh = ghStub({ [`${R}/issues/7`]: ghIssueFx(7), [`${R}/pulls/9`]: ghPrFx(9, true), [`${R}/pulls/10`]: ghPrFx(10, false),
+    'repos/o/r/compare/m000009aaaa...old0000': { status: 'behind' }, 'repos/o/r/compare/m000009aaaa...new1111': { status: 'identical' } });
+  const run = runIn(gh.env);
+  run('unassigned', dir);
+  fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers: { 'A-1': { pick: '①' } } }));
+  run('assign', dir, 'example', '7', 'proj:ws1');
+  let r = run('stage', dir, 'example', '머지');
+  assert.notEqual(r.code, 0); assert.match(r.out, /근거 필요 — --pr/);
+  r = run('stage', dir, 'example', '머지', '--pr', '10');
+  assert.notEqual(r.code, 0); assert.match(r.out, /머지 안 됨 \(open\)/);
+  r = run('stage', dir, 'example', '머지', '--pr', '404');
+  assert.notEqual(r.code, 0); assert.match(r.out, /gh api .*pulls\/404 실패/);
+  r = run('stage', dir, 'example', '라이브', '--sha', 'new1111');
+  assert.notEqual(r.code, 0); assert.match(r.out, /어떤 머지가 나갔는지 모름/);
+  assert.equal(run('stage', dir, 'example', '머지', '--pr', '9').code, 0);
+  r = run('stage', dir, 'example', '머지', '--pr', '9');
+  assert.notEqual(r.code, 0); assert.match(r.out, /'머지' 는 이미 찍힘 .*proj:ws9/);
+  r = run('stage', dir, 'example', '라이브');
+  assert.notEqual(r.code, 0); assert.match(r.out, /--sha <운영 커밋>.*또는 --off <이유>/);
+  r = run('stage', dir, 'example', '라이브', '--off');
+  assert.notEqual(r.code, 0);                               // 이유 없는 --off 는 근거가 아니다
+  r = run('stage', dir, 'example', '라이브', '--sha', 'old0000');
+  assert.notEqual(r.code, 0); assert.match(r.out, /old0000 에 머지 커밋 m000009 \(o\/r#9\) 이 없다/);
+  assert.equal(run('stage', dir, 'example', '라이브', '--sha', 'new1111').code, 0);
+  assert.notEqual(run('stage', dir, 'example', '라이브', '--sha', 'new1111').code, 0);
+  // --off <이유> 도 라이브 근거 (스위치 꺼짐)
+  const d2 = tmpDir(); fs.mkdirSync(path.join(d2, 'answers'));
+  fs.writeFileSync(path.join(d2, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers: { 'A-1': { pick: '①' } } }));
+  run('assign', d2, 'example', '#7', 'proj:ws1');
+  assert.match(run('stage', d2, 'example', '라이브', '--off', '어드민 스위치 꺼 둠', '--eta', '다음 시즌').out, /🚀 배포됨 · 스위치 꺼짐 · 다음 시즌 공개/);
+  const a = JSON.parse(fs.readFileSync(path.join(d2, 'assign', 'example.json'), 'utf8'));
+  assert.equal(a.stages.at(-1).offReason, '어드민 스위치 꺼 둠');
+});
+
+test('되돌림: 근거 PR 이 revert 되면 unassigned 가 시트를 다시 열고, 다시 머지 단계를 찍을 수 있다 (#40)', () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const fx = { [`${R}/issues/7`]: ghIssueFx(7), [`${R}/pulls/9`]: ghPrFx(9, true), [`${R}/pulls/12`]: ghPrFx(12, true), 'search/issues': { items: [] } };
+  const gh = ghStub(fx), run = runIn(gh.env);
+  run('unassigned', dir);
+  fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers: { 'A-1': { pick: '①' } } }));
+  run('assign', dir, 'example', '#7', 'proj:ws1');
+  run('stage', dir, 'example', '머지', '--pr', '9');
+  run('items', dir, 'example', 'A-1', 'done', '--pr', '9');
+  assert.equal(run('unassigned', dir).code, 0);
+  assert.ok(gh.calls().some(c => /^search\/issues\?q=repo%3Ao%2Fr/.test(c.args[1])));
+  // 한 시간 안에는 다시 안 묻는다
+  const n = gh.calls().length; run('unassigned', dir);
+  assert.equal(gh.calls().filter(c => c.args[1].startsWith('search/')).length, gh.calls().slice(0, n).filter(c => c.args[1].startsWith('search/')).length);
+  gh.set({ ...fx, 'search/issues': { items: [{ number: 11, title: 'Revert "T9"', body: 'Reverts o/r#9' }] } });
+  const a = JSON.parse(fs.readFileSync(path.join(dir, 'assign', 'example.json'), 'utf8'));
+  a.revertChecked = {}; fs.writeFileSync(path.join(dir, 'assign', 'example.json'), JSON.stringify(a));
+  const r = run('unassigned', dir);
+  assert.equal(r.code, 5); assert.match(r.out, /^example\t되돌림\t.*o\/r#11 가 o\/r#9 를 되돌림/m);
+  assert.match(run('items', dir, 'example').out, /^A-1\t되돌려짐\tdone o\/r#9/m);
+  assert.equal(run('stage', dir, 'example', '머지', '--pr', '12').code, 0);   // 되돌림 뒤 새 머지 OK
+  run('items', dir, 'example', 'A-1', 'done', '--pr', '12');
+  assert.equal(run('unassigned', dir).code, 0);
+});
+
+test('AC3: items 장부 — 답한 문항(메모·_ask 포함)마다 붙어야 닫힘, unassigned 는 안 붙음·이슈 닫혔는데 단계 덜 됨만 (#40)', () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  fs.writeFileSync(path.join(dir, 'next-data.js'), "window.SHEET = { id: 'next', title: '다음', sections: [] };");
+  const fx = { [`${R}/issues/7`]: ghIssueFx(7), [`${R}/issues/8`]: ghIssueFx(8), [`${R}/issues/9`]: ghIssueFx(9, { pull_request: {} }), [`${R}/pulls/9`]: ghPrFx(9, true), [`${R}/pulls/10`]: ghPrFx(10, false), 'search/issues': { items: [] } };
+  const gh = ghStub(fx), run = runIn(gh.env);
+  run('unassigned', dir);
+  fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(),
+    answers: { 'A-1': { pick: '①' }, 'A-2': { memo: '이건 나중에' }, 'A-memo': { memo: '전체 메모' }, _ask: { memo: '제출 뒤 덧붙인 질문' }, 'A-3': {} } }));
+  assert.match(run('unassigned', dir).out, /^example\t배정없음\t/m);
+  run('assign', dir, 'example', '#7', 'proj:ws1');
+  let r = run('items', dir, 'example');
+  assert.equal(r.code, 5);
+  assert.deepEqual(r.out.trim().split('\n'), ['A-1\t안 붙음', 'A-2\t안 붙음', 'A-memo\t안 붙음', '_ask\t안 붙음']);   // 빈 답(A-3)은 대상 아님
+  assert.match(run('unassigned', dir).out, /^example\t문항안붙음\t.*\(A-1 A-2 A-memo _ask\)$/m);
+  assert.match(run('items', dir, 'example', 'A-3', 'reject').out, /답이 없다/);
+  assert.match(run('items', dir, 'example', 'A-1', 'done').out, /--pr <번호> 필요/);
+  assert.match(run('items', dir, 'example', 'A-1', 'done', '--pr', '10').out, /머지 안 됨/);
+  assert.match(run('items', dir, 'example', 'A-2', 'defer', '--issue', '9').out, /는 PR/);
+  assert.match(run('items', dir, 'example', 'A-1', 'skip').out, /done · defer · reject · moved/);
+  assert.match(run('items', dir, 'example', 'A-memo', 'moved', 'example').out, /자기 시트/);
+  assert.match(run('items', dir, 'example', 'A-memo', 'moved', 'nope').out, /옮긴 시트 이름/);
+  assert.match(run('items', dir, 'example', 'A-1', 'done', '--pr', '9').out, /^example\tA-1\tdone o\/r#9\t남음 3\/4$/m);
+  run('items', dir, 'example', 'A-2', 'defer', '--issue', '8');
+  run('items', dir, 'example', 'A-memo', 'moved', 'next');
+  assert.equal(run('unassigned', dir).code, 5);
+  assert.match(run('items', dir, 'example', '_ask', 'reject', '채팅으로', '답함').out, /남음 0\/4/);
+  assert.equal(run('items', dir, 'example').code, 0);
+  assert.deepEqual(run('unassigned', dir), { out: '', code: 0 });
+  // 이슈가 닫혔는데 라이브·끝 전이면 보고, 끝 을 찍으면 조용
+  gh.set({ ...fx, [`${R}/issues/7`]: ghIssueFx(7, { state: 'closed' }) });
+  const a = JSON.parse(fs.readFileSync(path.join(dir, 'assign', 'example.json'), 'utf8'));
+  delete a.issueCheckedAt; fs.writeFileSync(path.join(dir, 'assign', 'example.json'), JSON.stringify(a));
+  r = run('unassigned', dir);
+  assert.equal(r.code, 5); assert.match(r.out, /^example\t이슈닫힘\t.*배정 #7 — 이슈는 닫혔는데 라이브·끝 아님/m);
+  run('stage', dir, 'example', '끝');
+  assert.deepEqual(run('unassigned', dir), { out: '', code: 0 });
+});
+
+test('AC4: assign 검사 — PR 번호·뒤바뀐 인자·이상한 담당 거부, migrate-assign 이 옛 뒤바뀜을 백업 남기고 고침 (#40)', () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const gh = ghStub({ [`${R}/issues/7`]: ghIssueFx(7), [`${R}/issues/9`]: ghIssueFx(9, { pull_request: { url: 'x' } }), 'repos/x/y/issues/5': ghIssueFx(5, { html_url: 'https://github.com/x/y/issues/5' }) });
+  const run = runIn(gh.env);
+  fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers: { 'A-1': { pick: '①' } } }));
+  let r = run('assign', dir, 'example', 'proj:ws1', '#7');
+  assert.equal(r.code, 1); assert.match(r.out, /순서가 뒤바뀜/);
+  r = run('assign', dir, 'example', '#9', 'proj:ws1');
+  assert.equal(r.code, 1); assert.match(r.out, /#9 는 PR/);
+  r = run('assign', dir, 'example', 'abc', 'proj:ws1');
+  assert.equal(r.code, 1); assert.match(r.out, /이슈는 숫자/);
+  r = run('assign', dir, 'example', '#7', 'ws1');
+  assert.equal(r.code, 1); assert.match(r.out, /담당은 <도메인>:<창>/);
+  assert.equal(fs.existsSync(path.join(dir, 'assign', 'example.json')), false);
+  assert.match(run('assign', dir, 'example', 'x/y#5', 'proj:ws1').out, /배정 #5 → proj:ws1 \(x\/y\)/);
+  // 옛 뒤바뀐 기록 (검사 전 CLI 가 그대로 받아 적던 것)
+  const old = (id, issue, owner) => fs.writeFileSync(path.join(dir, 'assign', id + '.json'), JSON.stringify({ issue, owner, at: '2026-10-10T00:00:00.000Z', stages: [{ stage: '배정', note: `${issue} → ${owner}`, at: '2026-10-10T00:00:00.000Z' }] }));
+  old('s1', 'web:ws2', '#31'); old('s2', 'proj:main', 'o/r#40'); old('s3', '#12', 'proj:ws1');
+  r = run('migrate-assign', dir, '--dry-run');
+  assert.match(r.out, /^s1\tweb:ws2 #31\t→ #31 web:ws2$/m); assert.match(r.out, /고칠 것 2 \/ 배정 4$/m);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'assign', 's1.json'), 'utf8')).issue, 'web:ws2');   // dry-run 은 안 씀
+  r = run('migrate-assign', dir);
+  assert.match(r.out, /고침 2 \/ 배정 4\t백업 /);
+  const bak = r.out.match(/백업 (\S+)/)[1];
+  assert.equal(JSON.parse(fs.readFileSync(path.join(bak, 's1.json'), 'utf8')).issue, 'web:ws2');
+  const s1 = JSON.parse(fs.readFileSync(path.join(dir, 'assign', 's1.json'), 'utf8')), s2 = JSON.parse(fs.readFileSync(path.join(dir, 'assign', 's2.json'), 'utf8'));
+  assert.deepEqual([s1.issue, s1.owner, s1.stages[0].note], ['#31', 'web:ws2', '#31 → web:ws2']);
+  assert.deepEqual([s2.issue, s2.repo], ['#40', 'o/r']);
+  assert.match(run('migrate-assign', dir).out, /고침 0 \/ 배정 4/);
+});
+
+test('AC5: record — read 전체(_ask·메모·문항 질문)를 이슈 댓글로, 다시 저장되면 바뀐 줄만 (#40)', () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const gh = ghStub({ [`${R}/issues/7`]: ghIssueFx(7), [`${R}/issues/7/comments`]: { html_url: 'https://github.com/o/r/issues/7#issuecomment-1' } });
+  const run = runIn(gh.env);
+  const save = answers => fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers }));
+  save({ 'A-1': { pick: '① 선택지 하나' }, 'A-2': { memo: '둘 다 싫다' }, _ask: { memo: '제출 뒤 덧붙인 묻기' } });
+  assert.match(run('record', dir, 'example').out, /붙일 이슈가 없다/);
+  let r = run('record', dir, 'example', '--issue', '7');
+  assert.equal(r.code, 0); assert.match(r.out, /^example\t→ o\/r#7\t\d+줄\thttps:/);
+  let posts = gh.calls().filter(c => c.args.includes('--input'));
+  assert.equal(posts.length, 1);
+  let body = JSON.parse(posts[0].input).body;
+  assert.match(body, /hero 추가 질문.*제출 뒤 덧붙인 묻기/); assert.match(body, /둘 다 싫다/); assert.match(body, /① 선택지 하나/);
+  assert.match(run('record', dir, 'example', '--issue', '7').out, /바뀐 것 없음/);
+  assert.equal(gh.calls().filter(c => c.args.includes('--input')).length, 1);
+  save({ 'A-1': { pick: '② 선택지 둘' }, 'A-2': { memo: '둘 다 싫다' }, _ask: { memo: '제출 뒤 덧붙인 묻기' } });
+  r = run('record', dir, 'example', '--issue', '7');
+  assert.match(r.out, /\t1줄\t/);
+  posts = gh.calls().filter(c => c.args.includes('--input'));
+  body = JSON.parse(posts[1].input).body;
+  assert.match(body, /바뀐 답/); assert.match(body, /② 선택지 둘/); assert.match(body, /\| # \| 질문/);
+  assert.doesNotMatch(body, /둘 다 싫다|덧붙인 묻기/);
+  // 배정이 있으면 --issue 없이 그 이슈로
+  run('assign', dir, 'example', '#7', 'proj:ws1');
+  save({ 'A-1': { pick: '② 선택지 둘' }, 'A-2': { memo: '바꾼 메모' }, _ask: { memo: '제출 뒤 덧붙인 묻기' } });
+  assert.match(run('record', dir, 'example').out, /→ o\/r#7\t1줄/);
 });
 
 test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세션 안 깨움), 확인할 보고 묶음, 옛 머지 제목은 배지로 (hero 2026-10-15)', async () => {
