@@ -352,7 +352,13 @@ export function readUrgent(dir) { try { return JSON.parse(fs.readFileSync(urgent
 /** 시트 → 담당 세션의 채널: from 과 이름/owner 가 같은 채널, 없으면(데이터 파일을 통째로 덮어써 from 이 빠진 경우) 시트 이름 접두가 가장 긴 채널 */
 function chatFor(root, from, sheetName) {
   const all = listChats(root);
-  if (from) { const c = all.find(c => c.name === from) || all.find(c => c.owner === from || String(c.owner).split(':')[0] === from); if (c) return c; }
+  if (from) {
+    // 'pkch:서버' 처럼 창 이름까지 붙은 from 은 그 도메인 매니저(:main) 채널로 — 허브로 새면 root 와 도메인이 같은 질문에 두 번 답한다 (hero 2026-10-18)
+    const dom = String(from).split(':')[0];
+    const c = all.find(c => c.name === from) || all.find(c => c.owner === from || String(c.owner).split(':')[0] === from)
+      || all.find(c => c.owner === `${dom}:main`) || all.find(c => String(c.owner).split(':')[0] === dom && !c.hub);
+    if (c) return c;
+  }
   return all.filter(c => String(sheetName).startsWith(c.name + '-')).sort((a, b) => b.name.length - a.name.length)[0] || null;
 }
 /* 추가 질문 (hero 2026-10-13) — answers._ask.memo. 새로 쓰거나 바뀌면 담당 세션 채널에 hero 이름으로 알림, read 맨 위에 뜬다. */

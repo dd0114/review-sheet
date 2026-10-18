@@ -616,6 +616,16 @@ test('문항 질문: ＋ 이것만 묻기 → 담당 채널로 그 문항만, �
   } finally { await close(); }
 });
 
+test('문항 질문: from 이 창 이름까지(pkch:서버)면 그 도메인 :main 채널로 — 허브로 새지 않음 (hero 2026-10-18)', async () => {
+  const dir = tmpDir();
+  const { newChat, askItem } = await import('../bin/review-sheet.mjs');
+  fs.writeFileSync(path.join(dir, 'pkch-y-data.js'), `window.SHEET = { id: 'pkch-y', title: 'T-y', from: 'pkch:서버', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
+  newChat(dir, 'root', 'root', 'root:hub', true); newChat(dir, 'pkch-main', 'pkch', 'pkch:main');
+  assert.equal(askItem(dir, 'pkch-y', 'S-1', '', '이거 뭐야?').ch, 'pkch-main');
+  fs.writeFileSync(path.join(dir, 'zz-data.js'), `window.SHEET = { id: 'zz', title: 'T-z', from: 'zz:w', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
+  assert.equal(askItem(dir, 'zz', 'S-1', '', '도메인 채널 없음').ch, 'root');      // 그 도메인 채널이 없으면 허브
+});
+
 test('push: 폰 알림 — RFC 8291 시험값, VAPID 서명, 구독 → 새 시트·세션 글만 알림(hero 글·보고 시트 X) → 410 이면 구독 삭제 (hero 2026-10-16)', async () => {
   const crypto = await import('node:crypto');
   const { encrypt, vapidAuth, vapidKeys, readSubs } = await import('../bin/push.mjs');
