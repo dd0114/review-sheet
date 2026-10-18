@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -326,6 +327,35 @@ test('stt: /api/stt → ffmpeg → whisper-cli with vocab as --prompt (fake bina
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     await close();
+  }
+});
+
+test('stt: REVIEW_SHEET_STT_REMOTE — 다른 맥이 적으면 그 글, 503 이면 이 맥 whisper 로 떨어진다', async () => {
+  const dir = tmpDir();
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-stt-bin-'));
+  const ff = path.join(bin, 'ffmpeg'), wh = path.join(bin, 'whisper-cli'), model = path.join(bin, 'model.bin');
+  fs.writeFileSync(ff, '#!/bin/sh\nfor a; do last="$a"; done\nhead -c 16044 /dev/urandom > "$last"\n', { mode: 0o755 });
+  fs.writeFileSync(wh, '#!/bin/sh\necho "이 맥"\n', { mode: 0o755 });
+  fs.writeFileSync(model, 'x');
+  let code = 200, got = null;
+  const remote = http.createServer((q, s) => {
+    if (q.url === '/stt/ready') { s.writeHead(code); return s.end(); }
+    const b = []; q.on('data', c => b.push(c)); q.on('end', () => { got = Buffer.concat(b).toString('latin1'); s.writeHead(code, { 'content-type': 'text/plain' }); s.end(code === 200 ? ' 다른 맥\n' : ''); });
+  });
+  await new Promise(r => remote.listen(0, '127.0.0.1', r));
+  const saved = { ...process.env };
+  const { base, close } = await startServer(dir, 0);
+  try {
+    Object.assign(process.env, { REVIEW_SHEET_WHISPER_BIN: wh, REVIEW_SHEET_FFMPEG: ff, REVIEW_SHEET_WHISPER_MODEL: model, REVIEW_SHEET_VOCAB: path.join(bin, 'none'), REVIEW_SHEET_STT_REMOTE: `http://127.0.0.1:${remote.address().port}/stt` });
+    const post = () => fetch(base + '/api/stt', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: Buffer.from('fake-opus') }).then(r => r.json());
+    assert.equal((await post()).text, '다른 맥');
+    assert.match(got, /name="file"; filename="in.wav"/);   // whisper-server 와 같은 /inference 몸
+    assert.match(got, /name="language"\r\n\r\nko/);
+    code = 503;
+    assert.equal((await post()).text, '이 맥');
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    await close(); remote.close();
   }
 });
 

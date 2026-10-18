@@ -229,6 +229,7 @@ curl -s http://127.0.0.1:5600/api/stt                             # {ready, miss
 ```
 
 - env 교체: `REVIEW_SHEET_WHISPER_BIN` / `REVIEW_SHEET_WHISPER_MODEL` / `REVIEW_SHEET_FFMPEG` / `REVIEW_SHEET_VOCAB` / `REVIEW_SHEET_STT_LANG`(기본 `ko`). launchd PATH 에 brew 가 없어도 `/opt/homebrew/bin` 을 직접 찾는다.
+- **다른 맥에 넘기기**: `REVIEW_SHEET_STT_REMOTE=<url>`(whisper-server `/inference` 와 같은 몸, `<url>/ready` 200 = 받을 수 있음)이면 이 맥에서 wav 로 바꾼 뒤 그 주소로 먼저 보낸다 — tailnet 안 내 맥만, 클라우드 아님. 503·실패·시간 초과(미리보기 15초·최종 120초)면 이 맥 whisper 로 떨어지고, 🎤 warm 은 다른 맥이 받을 수 있으면 이 맥 모델을 올리지 않는다.
 - `POST /api/stt` 는 `content-type: audio/*` 만 받는다(교차 사이트 단순 POST 차단), 25MB 상한, 한 번에 하나씩 직렬 처리.
 - **말하는 중 미리보기** (hero 2026-10-08): 녹음 중 1.5초마다 쌓인 녹음 전체를 `POST /api/stt?live=1` 로 보내 빠르게(greedy, 단어장 없이 — 짧은 조각에 단어장을 주면 단어장을 읊는다) 적어 입력칸 위 회색 말풍선을 바꾼다. 조각 이어 붙이기(`from=<초>`)는 경계에서 단어가 잘려 안 쓴다. 멈추면 전체를 정밀하게 다시 적어 칸에 넣고 말풍선을 지운다. 녹음 중 **다른 칸·버튼을 누르면 자동 정지**(스크롤은 아님).
 - **상주 모델**: `whisper-cli` 옆에 `whisper-server` 가 있으면 127.0.0.1 빈 포트에 한 번 띄워 재사용(13초 말 3초 → 1.3초, 조각 ~1초), 10분 놀면 내린다. 🎤 누르면 `GET /api/stt?warm=1` 로 미리 올린다. 없거나 실패하면 `whisper-cli` 로 떨어진다.

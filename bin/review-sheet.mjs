@@ -25,7 +25,8 @@
  *
  * 음성 입력: POST /api/stt[?live=1&from=초] (audio/* 바디) → ffmpeg → whisper.cpp(whisper-cli) 로 **로컬에서만** 전사해 { text, end } 를 돌려준다(live = 말하는 중 미리보기).
  *   모델 ~/.review-sheet/models/ggml-large-v3-turbo.bin · 단어장 ~/.review-sheet/vocab.txt(한 줄 1단어 → --prompt).
- *   env 로 교체: REVIEW_SHEET_WHISPER_BIN / _WHISPER_MODEL / _FFMPEG / _VOCAB / _STT_LANG(기본 ko). 오디오는 외부로 나가지 않는다.
+ *   env 로 교체: REVIEW_SHEET_WHISPER_BIN / _WHISPER_MODEL / _FFMPEG / _VOCAB / _STT_LANG(기본 ko). 오디오는 클라우드로 나가지 않는다 —
+ *   REVIEW_SHEET_STT_REMOTE 를 주면 tailnet 안 내 다른 맥(whisper-server 와 같은 /inference)에 먼저 보내고, 안 되면 이 맥이 적는다.
  *
  * No dependencies. Node 18+.
  */
@@ -739,14 +740,29 @@ export async function sttServer(c = sttConfig()) {
   clearTimeout(me.idle); me.idle = setTimeout(() => { if (ws === me) wsStop(); }, WS_IDLE_MS); me.idle.unref();
   try { await me.ready; return me; } catch { if (ws === me) wsStop(); return null; }
 }
-async function sttServerInfer(me, wav, c, live) {
+/* 다른 맥에 넘기기 — REVIEW_SHEET_STT_REMOTE(예: pkch 큐 http://127.0.0.1:5610/stt)가 whisper-server 와 같은 /inference 몸을 받아
+   tailnet 안의 다른 맥이 전사한다(hero 2026-10-18 sheet-drops-1b C①). 503·시간 초과·실패면 이 맥 whisper 로 떨어진다. 이 맥에서 wav 로 바꾼 뒤 보낸다. */
+const sttRemote = () => process.env.REVIEW_SHEET_STT_REMOTE || '';
+export async function sttRemoteReady(base = sttRemote()) {
+  if (!base) return false;
+  try { return (await fetch(base + '/ready', { signal: AbortSignal.timeout(1500) })).ok; } catch { return false; }
+}
+function sttForm(wav, c, live) {
   const fd = new FormData();
   fd.append('file', new Blob([fs.readFileSync(wav)], { type: 'audio/wav' }), 'in.wav');
   fd.append('response_format', 'text'); fd.append('language', c.lang);
   fd.append('beam_size', live ? '1' : '5'); fd.append('best_of', live ? '1' : '5');
   if (c.vocab.length && !live) fd.append('prompt', c.vocab.join(', '));   // 짧은 조각에 단어장을 주면 단어장을 그대로 읊는다
-  const r = await fetch(`http://127.0.0.1:${me.port}/inference`, { method: 'POST', body: fd, signal: AbortSignal.timeout(300e3) });
+  return fd;
+}
+async function sttServerInfer(me, wav, c, live) {
+  const r = await fetch(`http://127.0.0.1:${me.port}/inference`, { method: 'POST', body: sttForm(wav, c, live), signal: AbortSignal.timeout(300e3) });
   if (!r.ok) throw new Error('whisper-server HTTP ' + r.status);
+  return r.text();
+}
+async function sttRemoteInfer(base, wav, c, live) {
+  const r = await fetch(base, { method: 'POST', body: sttForm(wav, c, live), signal: AbortSignal.timeout(live ? 15e3 : 120e3) });
+  if (!r.ok) throw new Error('remote STT HTTP ' + r.status);
   return r.text();
 }
 
@@ -764,7 +780,8 @@ export function transcribe(buf, c = sttConfig(), { from = 0, live = false } = {}
       if (live && sec < 0.8) return { text: '', end: from };   // 새로 쌓인 소리가 너무 짧다 — 다음 번에
       if (quiet(wav)) return { text: '', end };                  // 조용한 녹음·조각 — whisper 가 ‘감사합니다’ 를 지어낸다(최종 전사도)
       let out = null;
-      const srv = await sttServer(c).catch(() => null);
+      if (sttRemote()) out = await sttRemoteInfer(sttRemote(), wav, c, live).catch(() => null);
+      const srv = out == null ? await sttServer(c).catch(() => null) : null;
       if (srv) out = await sttServerInfer(srv, wav, c, live).catch(() => null);
       if (out == null) {
         const args = ['-m', c.model, '-f', wav, '-l', c.lang, '-nt', '-np', '-t', sttThreads(), ...(live ? ['-bs', '1', '-bo', '1'] : [])];
@@ -948,7 +965,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     if (url.pathname === '/api/stt') {
       if (req.method === 'GET') {
         const st = sttStatus();
-        if (st.ready && url.searchParams.get('warm') === '1') sttServer().catch(() => {});   // 🎤 누르는 순간 모델을 미리 올린다
+        // 🎤 누르는 순간 모델을 미리 올린다 — 다른 맥이 받을 수 있으면 이 맥 모델은 올리지 않는다
+        if (st.ready && url.searchParams.get('warm') === '1') sttRemoteReady().then(ok => ok || sttServer()).catch(() => {});
         return send(res, 200, TYPES['.json'], JSON.stringify(st));
       }
       if (req.method !== 'POST') return send(res, 405, 'text/plain', 'method');
