@@ -771,3 +771,46 @@ test('CLI keeps sheet summaries on disk — unchanged data.js is not re-run', ()
   fs.utimesSync(f, t, t);
   assert.equal(execFileSync('node', [BIN, 'ls', dir], { encoding: 'utf8' }), first);
 });
+
+test('batch: 배치판 — 도메인별로 쌓고, 같은 규칙 두 번이면 이력 2줄, 같은 id 는 하나(새것이 이김), 상한 넘으면 오래된 것부터 잘림, /batch 에 main 채널 (#41)', async () => {
+  const dir = tmpDir();
+  const run = (id, at, extra = {}) => ({ id, status: 'done', verdict: 'look', line: '줄 ' + id, startedAt: at, endedAt: at, ms: 12, want: true, taken: null, waitingMin: 3,
+    log: [{ level: 'look', code: 'X', text: '볼 것 ' + id }, { level: 'note' }], file: 'runs/' + id + '.json', ...extra });
+  const view = runs => ({ format: 'pkch-batch-view/1', at: '2026-10-18T11:14:34.103Z', state: '~/s', tick: { at: '2026-10-18T11:14:00Z', ran: ['hourly-check'] },
+    rules: [{ job: 'hourly-check', what: '매시 점검', verdicts: { clear: '없음', look: '볼 것' }, owner: 'pkch:main', draft: true, when: '매시', who_runs: '틱',
+      on: { look: '관리가 처리' }, every_min: 60, next: null, health: 'weird', last: null, total: 1, runs }, { job: 'merge-check', owner: 'pkch:main', runs: [] }, { what: '이름 없음' }],
+    others: [{ label: 'com.x.watch', pid: 12, status: '0' }] });
+  const src = path.join(dir, 'in.json');
+  fs.writeFileSync(src, JSON.stringify(view([run('a', '2026-10-18T10:00:00.000Z')])));
+  assert.match(execFileSync('node', [BIN, 'batch', dir, src], { encoding: 'utf8' }), /규칙 2\t실행 1/);   // job 없는 규칙은 버림
+  // 같은 규칙 두 번 → 이력 2줄 (stdin), 같은 id(a) 다시 오면 하나 — taken 붙은 새것
+  execFileSync('node', [BIN, 'batch', dir, '-'], { input: JSON.stringify(view([run('b', '2026-10-18T11:00:00.000Z'), run('a', '2026-10-18T10:00:00.000Z', { taken: { by: 'pkch:관리', at: '2026-10-18T10:05:00Z', did: '처리함' } })])) });
+  let b = JSON.parse(fs.readFileSync(path.join(dir, 'batch', 'pkch.json'), 'utf8'));
+  assert.equal(b.domain, 'pkch');   // owner pkch:main → 도메인
+  const hc = b.rules[0];
+  assert.deepEqual(hc.runs.map(r => r.id), ['b', 'a']);   // 새것부터
+  assert.equal(hc.runs[1].taken.by, 'pkch:관리');
+  assert.equal(hc.health, 'none');
+  assert.deepEqual(hc.runs[0].log.map(x => x.code), ['X']);   // text 없는 로그 줄은 버림
+  // 상한: BATCH_KEEP(50) 넘으면 오래된 것부터
+  const many = Array.from({ length: 55 }, (_, i) => run('m' + String(i).padStart(2, '0'), `2026-10-19T${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00.000Z`));
+  execFileSync('node', [BIN, 'batch', dir, '-'], { input: JSON.stringify(view(many)) });
+  b = JSON.parse(fs.readFileSync(path.join(dir, 'batch', 'pkch.json'), 'utf8'));
+  assert.equal(b.rules[0].runs.length, 50);
+  assert.equal(b.rules[0].runs[0].id, 'm54'); assert.equal(b.rules[0].runs.at(-1).id, 'm05');   // a·b·m00~m04 잘림
+  // 다른 도메인은 따로 — --domain 으로 지정
+  execFileSync('node', [BIN, 'batch', dir, '-', '--domain', 'spider'], { input: JSON.stringify({ format: 'pkch-batch-view/1', rules: [{ job: 'shell', runs: [run('s1', '2026-10-19T00:00:00Z')] }] }) });
+  assert.match(execFileSync('node', [BIN, 'batch', dir], { encoding: 'utf8' }), /pkch\t규칙 2\t실행 50[\s\S]*spider\t규칙 1\t실행 1/);
+  assert.throws(() => execFileSync('node', [BIN, 'batch', dir, '-'], { input: JSON.stringify({ rules: [{ job: 'x' }] }), stdio: 'pipe' }));   // 도메인 모름
+  // 화면: /api/batch 에 그 도메인 main 채널, /batch 페이지, 받은편지함 링크
+  execFileSync('node', [BIN, 'chat', 'new', 'pkch-main', '--owner', 'pkch:main'], { env: { ...process.env, REVIEW_SHEET_INBOX: dir } });
+  const srv = await startServer(dir, 0);
+  try {
+    const j = await (await fetch(srv.base + '/api/batch')).json();
+    assert.deepEqual(j.batches.map(x => [x.domain, x.chat]), [['pkch', 'pkch-main'], ['spider', null]]);
+    assert.equal(j.batches[0].others[0].label, 'com.x.watch');
+    const page = await (await fetch(srv.base + '/batch')).text();
+    assert.match(page, /<title>배치<\/title>/); assert.match(page, /chat\.html\?c=/); assert.doesNotMatch(page, /<table/);
+    assert.match(await (await fetch(srv.base + '/')).text(), /href="\/batch"/);
+  } finally { await srv.close(); }
+});

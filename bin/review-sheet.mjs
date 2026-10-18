@@ -70,6 +70,7 @@ function usage(code = 2) {
   review-sheet checks [dir] [--open] [--since ISO] [--prefix P]   # 보고 시트(report:) — hero 가 ✓ 확인한 것 / --open 아직 안 한 것. 체크는 세션을 깨우지 않는다
   review-sheet unassigned [dir] [--prefix P] [--hours N]  # 담당 없음·배정 뒤 답 바뀜·N시간(기본 24) 단계 멈춤 시트 — 있으면 exit 5
   review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
+  review-sheet batch [dir] [<file|->] [--domain D]   # 배치판(보기 전용, /batch) — pkch-batch-view/1 {rules:[{job,…,runs:[{id,status,verdict,line,startedAt,…,log,taken}]}]} 를 도메인별로 더함(실행 id 로 합침, 규칙마다 최근 ${BATCH_KEEP}개), 인자 없으면 요약
   review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|done,priority,owner,mode:claude|system|idle,modeNote,url}]} 쓰기, 인자 없으면 요약
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
@@ -86,7 +87,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--off' || a === '--notice' || a === '--open') flags[a.slice(2)] = true;
     else if (a === '--port' || a === '--timeout' || a === '--hours') flags[a.slice(2)] = Number(argv[++i]);
-    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since') flags[a.slice(2)] = String(argv[++i] || '');
+    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since' || a === '--domain') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
@@ -284,6 +285,61 @@ export function writeDash(dir, j) {
   return d;
 }
 export function readDash(dir) { try { return JSON.parse(fs.readFileSync(dashFile(dir), 'utf8')); } catch { return null; } }
+/* 배치판 (#41, hero 시트 ops-script-3 C-1 「젠킨스 빌드기록 같은 뷰」) — 생산자(도메인)마다 batch/<도메인>.json.
+   형식 pkch-batch-view/1: 위 {format, at, domain?, source?, state, tick, rules[], others?} · 규칙 {job, what, verdicts, owner, when, who_runs, on,
+   every_min, next, last, total, health, runs[]} · 실행 {id, status, verdict, line, startedAt, endedAt, ms, log[{level,code,text}], file, want, taken{by,at,did}, waitingMin}.
+   넣을 때마다 규칙 정보는 새것으로, 실행은 id 로 합쳐 더한다(같은 id 는 새것이 이김 — 나중에 taken 이 붙음). 규칙마다 새것부터 BATCH_KEEP 개만. 보기 전용 — 판은 일을 바꾸지 않는다. */
+export const BATCH_KEEP = 50, BATCH_HEALTH = ['ok', 'late', 'broke', 'none'];
+export const batchDir = dir => path.join(dir, 'batch');
+const batchFile = (dir, dom) => path.join(batchDir(dir), dom + '.json');
+export function batchDomain(j, flag) {
+  const owner = j && Array.isArray(j.rules) && j.rules.map(r => r && r.owner).find(o => typeof o === 'string' && o.includes(':'));
+  const d = String(flag || (j && j.domain) || (owner ? owner.split(':')[0] : '') || (j && typeof j.format === 'string' ? j.format.split('-')[0] : '')).toLowerCase();
+  if (!ID_RE.test(d)) throw new Error('batch: 도메인을 모름 — --domain <이름> ([a-z0-9-])');
+  return d;
+}
+export function cleanBatch(j) {
+  if (!j || !Array.isArray(j.rules)) throw new Error('batch: {format, rules:[…]} 필요');
+  const str = (v, n = 300) => typeof v === 'string' ? v.slice(0, n) : typeof v === 'number' ? String(v) : undefined;
+  const num = v => Number.isFinite(v) ? v : null;
+  const map = (o, n) => o && typeof o === 'object' && !Array.isArray(o) ? Object.fromEntries(Object.entries(o).slice(0, 12).map(([k, v]) => [k.slice(0, 30), str(v, n) || ''])) : {};
+  const run = r => ({ id: str(r.id, 120), status: r.status === 'error' ? 'error' : 'done', verdict: str(r.verdict, 30) || null, line: str(r.line, 500) || '',
+    startedAt: str(r.startedAt, 40), endedAt: str(r.endedAt, 40), ms: num(r.ms), file: str(r.file, 200), want: !!r.want, waitingMin: num(r.waitingMin),
+    log: (Array.isArray(r.log) ? r.log : []).slice(0, 40).filter(x => x && str(x.text)).map(x => ({ level: str(x.level, 12) || 'note', code: str(x.code, 40) || '', text: str(x.text, 600) })),
+    taken: r.taken && typeof r.taken === 'object' && str(r.taken.by) ? { by: str(r.taken.by, 80), at: str(r.taken.at, 40), did: str(r.taken.did, 300) || '' } : null });
+  const rules = j.rules.slice(0, 40).filter(r => r && str(r.job)).map(r => ({ job: str(r.job, 60), what: str(r.what, 400) || '', verdicts: map(r.verdicts, 200), owner: str(r.owner, 60),
+    draft: !!r.draft, when: str(r.when, 300), who_runs: str(r.who_runs, 300), on: map(r.on, 500), every_min: num(r.every_min), next: str(r.next, 40) || null,
+    last: str(r.last, 40) || null, total: num(r.total), fails: num(r.fails), last_error: str(r.last_error, 300) || null,
+    health: BATCH_HEALTH.includes(r.health) ? r.health : 'none', runs: (Array.isArray(r.runs) ? r.runs : []).filter(x => x && str(x.id)).map(run) }));
+  const others = (Array.isArray(j.others) ? j.others : []).slice(0, 40).filter(o => o && str(o.label)).map(o => ({ label: str(o.label, 80), pid: num(o.pid), status: str(o.status, 12) }));
+  const tick = j.tick && typeof j.tick === 'object' ? { at: str(j.tick.at, 40), ran: (Array.isArray(j.tick.ran) ? j.tick.ran : []).map(x => str(x, 60)).filter(Boolean).slice(0, 40) } : null;
+  return { format: str(j.format, 40), at: str(j.at, 40) || new Date().toISOString(), source: str(j.source, 80), state: str(j.state, 200), tick, rules, others };
+}
+export function writeBatch(dir, j, domain) {
+  const dom = batchDomain(j, domain), b = cleanBatch(j), old = readBatch(dir, dom);
+  const prev = new Map((old ? old.rules : []).map(r => [r.job, r.runs || []]));
+  for (const r of b.rules) {
+    const byId = new Map((prev.get(r.job) || []).map(x => [x.id, x]));
+    for (const x of r.runs) byId.set(x.id, x);
+    r.runs = [...byId.values()].sort((a, c) => String(c.startedAt || '').localeCompare(String(a.startedAt || ''))).slice(0, BATCH_KEEP);
+  }
+  b.domain = dom; b.receivedAt = new Date().toISOString();
+  fs.mkdirSync(batchDir(dir), { recursive: true });
+  const f = batchFile(dir, dom), tmp = f + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(b)); fs.renameSync(tmp, f);
+  return b;
+}
+export function readBatch(dir, dom) { try { return JSON.parse(fs.readFileSync(batchFile(dir, dom), 'utf8')); } catch { return null; } }
+export function readBatches(dir) {
+  let names = []; try { names = fs.readdirSync(batchDir(dir)).filter(f => f.endsWith('.json')).map(f => f.slice(0, -5)).filter(n => ID_RE.test(n)).sort(); } catch { /* none */ }
+  return names.map(n => readBatch(dir, n)).filter(Boolean);
+}
+/** 도메인의 main 채널 — owner 가 <도메인>:main 인 채널, root 면 허브 */
+export function batchChat(root, dom) {
+  const all = listChats(root);
+  const c = all.find(c => c.owner === `${dom}:main`) || (dom === 'root' ? all.find(c => c.hub) : null) || all.find(c => String(c.owner).split(':')[0] === dom && !c.hub);
+  return c ? c.name : null;
+}
 
 export function saveSheetFile(dir, id, type, orig, buf) {
   if (!buf.length) throw new Error('빈 파일');
@@ -819,7 +875,7 @@ function indexHtml(dir) {
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="리뷰시트"><script src="/push.js" defer></script>
 <title>review-sheet</title><link rel="stylesheet" href="/sheet.css">
 <body class="rs-page"><main><div class="eyebrow">REVIEW-SHEET · 받은편지함</div><h1>답변 시트</h1>
-<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a> <a class="rs-boardlink" href="/dash">자원 →</a> <span id="rs-push"></span></p><div id="rs-list"></div></main>
+<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a> <a class="rs-boardlink" href="/dash">자원 →</a> <a class="rs-boardlink" href="/batch">배치 →</a> <span id="rs-push"></span></p><div id="rs-list"></div></main>
 <script>
 const INIT = ${init};
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1089,6 +1145,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     if (url.pathname === '/dash') return serveFile(res, path.join(WEB, 'dash.html'));
     if (url.pathname === '/api/dash') return send(res, 200, TYPES['.json'], JSON.stringify({ dash: readDash(root) }), cors);
+    if (url.pathname === '/batch') return serveFile(res, path.join(WEB, 'batch.html'));
+    if (url.pathname === '/api/batch') { const bs = readBatches(root); return send(res, 200, TYPES['.json'], JSON.stringify({ batches: bs.map(b => ({ ...b, chat: batchChat(root, b.domain) })) }), cors); }
     if (url.pathname === '/board') return serveFile(res, path.join(WEB, 'board.html'));
     if (url.pathname === '/api/board') return send(res, 200, TYPES['.json'], JSON.stringify({ board: readBoard(root) }), cors);
     if (url.pathname === '/hub') { const h = hubChat(root); return h ? send(res, 302, 'text/plain', '', { location: '/chat.html?c=' + encodeURIComponent(h.name) }) : send(res, 302, 'text/plain', '', { location: '/' }); }
@@ -1138,7 +1196,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
-    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/dash.html', '/mic.js', '/compose.js', '/push.js', '/sw.js', '/manifest.webmanifest', '/icon-180.png', '/icon-512.png'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/dash.html', '/batch.html', '/mic.js', '/compose.js', '/push.js', '/sw.js', '/manifest.webmanifest', '/icon-180.png', '/icon-512.png'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
     serveFile(res, file);
@@ -1183,7 +1241,7 @@ async function main() {
   if (needsArg2 && rest.length === 2) { arg2 = rest[1]; dirArg = undefined; }
   if (cmd === 'assign' && rest.length === 4) dirArg = undefined;   // assign <id> <issue> <owner> → inbox
   if (cmd === 'stage' && rest[2] && STAGES[rest[2]]) dirArg = undefined;   // stage <id> <stage> [note] → inbox
-  if ((cmd === 'board' || cmd === 'dash') && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
+  if ((cmd === 'board' || cmd === 'dash' || cmd === 'batch') && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
   let askArgs = rest.slice(2);   // asks / ask-reply: [dir] 은 진짜 폴더일 때만
   if ((cmd === 'asks' || cmd === 'ask-reply') && !(rest[1] && fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) { dirArg = undefined; askArgs = rest.slice(1); }
   const dir = path.resolve(dirArg || INBOX);
@@ -1291,6 +1349,14 @@ async function main() {
     if (rest.length < 2 || (dirArg && rest.length === 2)) { const d = readDash(dir); if (!d) { console.error('자원판 없음'); process.exit(1); } console.log(`cards\t${d.cards.length}\nrows\t${d.groups.reduce((n, g) => n + g.rows.length, 0)}\nupdatedAt\t${d.updatedAt}`); return; }
     let j; try { j = JSON.parse(src === '-' ? await (async () => { let t = ''; process.stdin.setEncoding('utf8'); for await (const c of process.stdin) t += c; return t; })() : fs.readFileSync(src, 'utf8')); } catch (e) { console.error('dash: JSON 읽기 실패 — ' + e.message); process.exit(1); }
     try { const d = writeDash(dir, j); console.log(`${dashFile(dir)}\t카드 ${d.cards.length}\t→ http://127.0.0.1:${INBOX_PORT}/dash`); }
+    catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'batch') {
+    const src = rest.at(-1);
+    if (rest.length < 2 || (dirArg && rest.length === 2)) { const bs = readBatches(dir); if (!bs.length) { console.error('배치판 없음'); process.exit(1); } for (const b of bs) console.log(`${b.domain}\t규칙 ${b.rules.length}\t실행 ${b.rules.reduce((n, r) => n + r.runs.length, 0)}\t${b.at}`); return; }
+    let j; try { j = JSON.parse(src === '-' ? await (async () => { let t = ''; process.stdin.setEncoding('utf8'); for await (const c of process.stdin) t += c; return t; })() : fs.readFileSync(src, 'utf8')); } catch (e) { console.error('batch: JSON 읽기 실패 — ' + e.message); process.exit(1); }
+    try { const b = writeBatch(dir, j, flags.domain); console.log(`${batchFile(dir, b.domain)}\t규칙 ${b.rules.length}\t실행 ${b.rules.reduce((n, r) => n + r.runs.length, 0)}\t→ http://127.0.0.1:${INBOX_PORT}/batch`); }
     catch (e) { console.error(e.message); process.exit(1); }
     return;
   }

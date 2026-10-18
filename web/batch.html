@@ -1,0 +1,152 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="리뷰시트"><script src="/push.js" defer></script>
+<title>배치</title><link rel="stylesheet" href="/sheet.css">
+<!-- 배치판 (#41): 생산자(도메인)가 `review-sheet batch -` 로 넣은 pkch-batch-view/1 을 규칙마다 실행 이력(새것부터)으로 보인다 — 젠킨스 빌드 기록처럼, 기능만.
+     규칙 줄 = 이름·건강·주기·최근 실행 점들 → 누르면 실행 목록 → 실행을 누르면 로그·결과 파일·누가 가져가 처리했나. 맨 아래는 그 도메인 main 채널(chat.html 그대로).
+     보기 전용 — 일은 바꾸지 않는다. 표 금지(폰 375px). -->
+<style>
+.bt-top{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 12px}
+.bt-chip{padding:6px 12px;min-height:34px;border-radius:16px;border:1px solid #CFCBC2;background:#fff;font:700 13px system-ui,sans-serif;color:#222;cursor:pointer}
+.bt-chip.on{background:#2B2A27;color:#F3E6C4;border-color:#2B2A27}
+.bt-chip small{font-weight:600;opacity:.75;margin-left:4px}
+.bt-stale{padding:8px 12px;border-radius:8px;background:#F6DED6;color:#8E3320;font-size:13.5px;margin:0 0 12px}
+.bt-now{background:#fff;border-radius:10px;padding:10px 12px;margin:0 0 12px;box-shadow:0 1px 2px rgba(0,0,0,.08);font-size:13.5px;line-height:1.5}
+.bt-now b{font-weight:800}
+.bt-now .bt-sub{color:#666;font-size:12.5px;overflow-wrap:anywhere}
+.bt-rule{background:#fff;border-radius:10px;margin:0 0 8px;box-shadow:0 1px 2px rgba(0,0,0,.08);border-left:4px solid #8FB89A;overflow:hidden}
+.bt-rule.late{border-left-color:#D08A2E}.bt-rule.broke{border-left-color:#B2472F}.bt-rule.none{border-left-color:#CFCBC2}
+.bt-head{display:block;width:100%;box-sizing:border-box;text-align:left;border:0;background:transparent;padding:10px 12px;font:inherit;color:#222;cursor:pointer}
+.bt-head h2{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:15px;margin:0;line-height:1.35}
+.bt-head h2 .bt-job{overflow-wrap:anywhere}
+.bt-what{font-size:13px;color:#555;margin-top:2px;overflow-wrap:anywhere}
+.bt-meta{display:flex;flex-wrap:wrap;gap:2px 10px;font-size:12.5px;color:#666;margin-top:4px}
+.bt-meta b{color:#333}
+.bt-dots{display:flex;flex-wrap:wrap;gap:3px;margin-top:6px}
+.bt-dots i{display:block;width:12px;height:12px;border-radius:3px}
+.bt-last{font-size:13px;color:#333;margin-top:6px;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.bt-h{font:800 11px/1.7 system-ui,sans-serif;padding:0 7px;border-radius:4px;color:#fff}
+.bt-h.ok{background:#3F8A57}.bt-h.late{background:#D08A2E}.bt-h.broke{background:#B2472F}.bt-h.none{background:#A8A39A}
+.bt-draft{font:700 11px/1.7 system-ui,sans-serif;padding:0 7px;border-radius:4px;background:#EEE9DE;color:#5A4A22}
+.k-ok{background:#3F8A57}.k-fail{background:#B2472F}.k-wait{background:#D08A2E}.k-skip{background:#A8A39A}
+.bt-body{border-top:1px solid #EEE;padding:6px 12px 10px}
+.bt-on{font-size:12.5px;color:#444;margin:4px 0 8px;padding:6px 8px;background:#F7F5F0;border-radius:6px}
+.bt-on div{margin:2px 0;overflow-wrap:anywhere}
+.bt-on em{font-style:normal;font-weight:800;margin-right:4px}
+.bt-run{border-top:1px solid #F0EEE9}
+.bt-run:first-of-type{border-top:0}
+.bt-rh{display:block;width:100%;box-sizing:border-box;text-align:left;border:0;background:transparent;padding:8px 0;font:inherit;color:#222;cursor:pointer}
+.bt-rh .bt-r1{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:12.5px;color:#555}
+.bt-rh .bt-r1 i{display:inline-block;width:10px;height:10px;border-radius:3px}
+.bt-st{font:800 11.5px/1.6 system-ui,sans-serif;padding:0 7px;border-radius:4px;color:#fff}
+.bt-v{font:700 12px/1.6 system-ui,sans-serif;padding:0 7px;border-radius:10px;background:#EEE9DE;color:#5A4A22}
+.bt-rl{font-size:13.5px;margin-top:3px;overflow-wrap:anywhere}
+.bt-tk{font-size:12.5px;margin-top:3px;color:#1F6B3A;overflow-wrap:anywhere}
+.bt-tk.no{color:#8E3320}
+.bt-log{list-style:none;padding:0;margin:0 0 8px;font-size:12.5px}
+.bt-log li{padding:5px 8px;margin:0 0 4px;border-radius:6px;background:#F7F5F0;overflow-wrap:anywhere;line-height:1.45}
+.bt-log li.look,.bt-log li.block{background:#FBF1E2}
+.bt-log li b{font:800 11px/1.6 system-ui,sans-serif;margin-right:6px;color:#5A4A22}
+.bt-file{font-size:12px;color:#777;overflow-wrap:anywhere;margin:0 0 6px}
+.bt-empty{color:#888;font-size:13px;padding:6px 0}
+.bt-others{margin:16px 0 0}
+.bt-others h2{font-size:15px;margin:0 2px 6px}
+.bt-oth{display:flex;flex-wrap:wrap;gap:6px}
+.bt-oth span{background:#fff;border-radius:14px;padding:3px 10px;font-size:12.5px;box-shadow:0 1px 2px rgba(0,0,0,.06);overflow-wrap:anywhere}
+.bt-oth span.off{color:#888}
+.bt-chat{margin:22px 0 0}
+.bt-chat h2{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:15px;margin:0 2px 6px}
+.bt-chat h2 a{font-size:12.5px;font-weight:700}
+.bt-chat iframe{display:block;width:100%;height:min(78vh,680px);border:0;border-radius:10px;background:#E9E7E2;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+</style>
+<body class="rs-page"><main>
+<div class="eyebrow"><a href="/">REVIEW-SHEET</a> · 배치</div><h1>배치</h1>
+<p class="lede">보기 전용 — 규칙마다 실행 기록, 새것부터. 규칙을 누르면 이력, 실행을 누르면 로그. <span id="bt-upd"></span></p>
+<div class="bt-top" id="bt-doms"></div>
+<div class="bt-top" id="bt-filter"><button type="button" class="bt-chip" data-f="">전체</button><button type="button" class="bt-chip" data-f="fail">실패만</button><button type="button" class="bt-chip" data-f="wait">처리 대기만</button></div>
+<div id="bt-stale" class="bt-stale" hidden></div>
+<div id="bt-now"></div>
+<div id="bt-rules"></div>
+<div id="bt-others"></div>
+<section class="bt-chat" id="bt-chat" hidden><h2><span id="bt-chat-t">main 대화</span><a id="bt-chat-a" href="#">크게 열기 →</a></h2><iframe id="bt-chat-f" title="main 대화"></iframe></section>
+</main>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const when = iso => { if (!iso) return '–'; const d = new Date(iso); return isNaN(d) ? '–' : d.toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false}); };
+const ago = iso => { const m = (Date.now() - new Date(iso)) / 60000; return !iso || isNaN(m) ? '' : m < 1 ? '방금' : m < 60 ? Math.round(m) + '분 전' : m < 2880 ? Math.round(m / 60) + '시간 전' : Math.round(m / 1440) + '일 전'; };
+const dur = ms => ms == null ? '' : ms < 1000 ? ms + 'ms' : ms < 60000 ? (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + '초' : Math.round(ms / 60000) + '분';
+const HEALTH = { ok: '정상', late: '늦음', broke: '고장', none: '기록 없음' };
+const KIND = { ok: '성공', fail: '실패', wait: '처리 대기', skip: '건너뜀' };
+// 실행 한 건의 상태: 고장 = 실패 · skip 판정 = 건너뜀 · 가져가 처리할 결과인데 아무도 안 가져감 = 처리 대기(보류) · 그 밖 = 성공
+const kind = r => r.status === 'error' ? 'fail' : r.verdict === 'skip' ? 'skip' : r.want && !r.taken ? 'wait' : 'ok';
+let data = [], dom = '', filt = '', open = {};
+try { dom = localStorage.getItem('bt-dom') || ''; filt = localStorage.getItem('bt-filt') || ''; open = JSON.parse(localStorage.getItem('bt-open') || '{}') || {}; } catch {}
+const q = new URLSearchParams(location.search).get('d'); if (q) dom = q;
+const save = () => { try { localStorage.setItem('bt-dom', dom); localStorage.setItem('bt-filt', filt); localStorage.setItem('bt-open', JSON.stringify(open)); } catch {} };
+
+function runHtml(rule, r) {
+  const k = kind(r), id = 'r:' + rule.job + ':' + r.id, on = open[id];
+  const tk = r.taken ? '<div class="bt-tk">처리 ' + esc(r.taken.by) + ' · ' + esc(when(r.taken.at)) + (r.taken.did ? ' — ' + esc(r.taken.did) : '') + '</div>'
+    : r.want ? '<div class="bt-tk no">아무도 안 가져감' + (r.waitingMin != null ? ' · ' + esc(r.waitingMin) + '분째' : '') + '</div>' : '';
+  return '<div class="bt-run"><button type="button" class="bt-rh" data-o="' + esc(id) + '"><div class="bt-r1"><span class="bt-st k-' + k + '">' + KIND[k] + '</span>' +
+    (r.verdict ? '<span class="bt-v" title="' + esc((rule.verdicts || {})[r.verdict] || '') + '">' + esc(r.verdict) + '</span>' : '') +
+    '<span>' + esc(when(r.startedAt)) + '</span>' + (r.ms != null ? '<span>' + esc(dur(r.ms)) + '</span>' : '') + '</div>' +
+    '<div class="bt-rl">' + esc(r.line) + '</div>' + tk + '</button>' +
+    (on ? '<ul class="bt-log">' + (r.log.length ? r.log.map(x => '<li class="' + esc(x.level) + '"><b>' + esc(x.level) + (x.code ? ' · ' + esc(x.code) : '') + '</b>' + esc(x.text) + '</li>').join('') : '<li>로그 줄 없음</li>') + '</ul>' +
+      '<div class="bt-file">' + esc(r.id) + ' · ' + esc(when(r.startedAt)) + ' → ' + esc(when(r.endedAt)) + (r.file ? ' · 결과 파일 ' + esc(r.file) : '') + '</div>' : '') + '</div>';
+}
+
+function ruleHtml(b, rule) {
+  const id = 'j:' + b.domain + ':' + rule.job, on = open[id] || !!filt;   // 실패만·대기만 이면 그 실행들을 바로 펼쳐 보임
+  const runs = filt ? rule.runs.filter(r => kind(r) === filt) : rule.runs, last = rule.runs[0];
+  if (filt && !runs.length) return '';
+  const dots = rule.runs.slice(0, 20).map(r => '<i class="k-' + kind(r) + '" title="' + esc(when(r.startedAt) + ' ' + KIND[kind(r)]) + '"></i>').join('');
+  const on_ = Object.entries(rule.on || {});
+  return '<div class="bt-rule ' + esc(rule.health) + '"><button type="button" class="bt-head" data-o="' + esc(id) + '">' +
+    '<h2><span class="bt-job">' + esc(rule.job) + '</span><span class="bt-h ' + esc(rule.health) + '">' + HEALTH[rule.health] + '</span>' + (rule.draft ? '<span class="bt-draft">초안</span>' : '') + '</h2>' +
+    (rule.what ? '<div class="bt-what">' + esc(rule.what) + '</div>' : '') +
+    '<div class="bt-meta"><span>' + (rule.every_min ? esc(rule.every_min) + '분마다' : '때 되면') + '</span><span>마지막 <b>' + esc(rule.last ? ago(rule.last) : '없음') + '</b></span>' +
+    (rule.next ? '<span>다음 ' + esc(when(rule.next)) + '</span>' : '') + '<span>총 ' + esc(rule.total == null ? rule.runs.length : rule.total) + '번</span>' + (rule.owner ? '<span>주인 ' + esc(rule.owner) + '</span>' : '') + '</div>' +
+    (dots ? '<div class="bt-dots" aria-label="최근 실행">' + dots + '</div>' : '') +
+    (last && !on ? '<div class="bt-last">' + esc(last.line) + '</div>' : '') + (rule.last_error ? '<div class="bt-last" style="color:#8E3320">' + esc(rule.last_error) + '</div>' : '') + '</button>' +
+    (on ? '<div class="bt-body">' + (rule.when || rule.who_runs ? '<div class="bt-on">' + (rule.when ? '<div><em>언제</em>' + esc(rule.when) + '</div>' : '') + (rule.who_runs ? '<div><em>누가 돌림</em>' + esc(rule.who_runs) + '</div>' : '') +
+      on_.map(([k, v]) => '<div><em>' + esc(k) + '</em>' + esc(v) + '</div>').join('') + '</div>' : '') +
+      (runs.length ? runs.map(r => runHtml(rule, r)).join('') : '<p class="bt-empty">실행 기록 없음</p>') + '</div>' : '') + '</div>';
+}
+
+function render() {
+  const doms = document.getElementById('bt-doms');
+  if (!data.length) { document.getElementById('bt-rules').innerHTML = '<p class="bt-empty">아직 배치판이 없다 — 생산자가 <code>review-sheet batch -</code> 로 넣어야 한다.</p>'; doms.innerHTML = ''; return; }
+  if (!data.find(b => b.domain === dom)) dom = data[0].domain;
+  doms.innerHTML = data.length > 1 ? data.map(b => { const bad = b.rules.filter(r => r.health === 'broke' || r.health === 'late').length;
+    return '<button type="button" class="bt-chip' + (b.domain === dom ? ' on' : '') + '" data-d="' + esc(b.domain) + '">' + esc(b.domain) + '<small>' + b.rules.length + (bad ? ' · ⚠' + bad : '') + '</small></button>'; }).join('') : '';
+  document.querySelectorAll('#bt-filter .bt-chip').forEach(x => x.classList.toggle('on', x.dataset.f === filt));
+  const b = data.find(x => x.domain === dom);
+  document.getElementById('bt-upd').textContent = '받음 ' + when(b.receivedAt || b.at) + (b.source ? ' · ' + b.source : '');
+  const age = (Date.now() - new Date(b.receivedAt || b.at)) / 60000, stale = document.getElementById('bt-stale');
+  stale.hidden = !(age > 10);
+  if (age > 10) stale.textContent = Math.round(age) + '분째 새 기록 없음 — 생산자가 멈췄을 수 있다. 아래는 그때 상태다.';
+  const bad = b.rules.filter(r => r.health === 'broke' || r.health === 'late'), wait = b.rules.reduce((n, r) => n + r.runs.filter(x => kind(x) === 'wait').length, 0);
+  document.getElementById('bt-now').innerHTML = '<div class="bt-now"><b>' + esc(b.domain) + '</b> · 규칙 ' + b.rules.length + '개' +
+    (b.tick ? ' · 마지막 틱 <b>' + esc(ago(b.tick.at)) + '</b>' + (b.tick.ran && b.tick.ran.length ? ' — 돈 것 ' + esc(b.tick.ran.join(' · ')) : ' — 칸 된 규칙 없음') : ' · 틱 기록 없음') +
+    (bad.length ? '<div class="bt-sub" style="color:#8E3320">⚠ ' + esc(bad.map(r => r.job + ' ' + HEALTH[r.health]).join(' · ')) + '</div>' : '') +
+    (wait ? '<div class="bt-sub" style="color:#8A5A12">처리 대기 ' + wait + '건 — 가져가 처리할 결과를 아무도 안 가져감</div>' : '') +
+    (b.state ? '<div class="bt-sub">결과 폴더 ' + esc(b.state) + '</div>' : '') + '</div>';
+  document.getElementById('bt-rules').innerHTML = b.rules.map(r => ruleHtml(b, r)).join('') || '<p class="bt-empty">' + (filt ? KIND[filt] + ' 기록 없음' : '규칙 없음') + '</p>';
+  document.getElementById('bt-others').innerHTML = (b.others || []).length ? '<section class="bt-others"><h2>배치 밖에서 따로 도는 것 ' + b.others.length + '개</h2><div class="bt-oth">' +
+    b.others.map(o => '<span class="' + (o.pid ? '' : 'off') + '">' + esc(o.label) + (o.pid ? '' : ' (멈춤)') + '</span>').join('') + '</div></section>' : '';
+  const sec = document.getElementById('bt-chat'), fr = document.getElementById('bt-chat-f');
+  sec.hidden = !b.chat;
+  if (b.chat) { const u = '/chat.html?c=' + encodeURIComponent(b.chat); document.getElementById('bt-chat-t').textContent = b.domain + ' main 대화'; document.getElementById('bt-chat-a').href = u; if (fr.dataset.c !== b.chat) { fr.dataset.c = b.chat; fr.src = u; } }
+}
+
+document.addEventListener('click', e => {
+  const d = e.target.closest('[data-d]'); if (d) { dom = d.dataset.d; save(); render(); return; }
+  const f = e.target.closest('[data-f]'); if (f) { filt = f.dataset.f; save(); render(); return; }
+  const o = e.target.closest('[data-o]'); if (o) { const k = o.dataset.o; if (open[k]) delete open[k]; else open[k] = 1; save(); render(); }
+});
+async function load() {
+  try { const r = await fetch('/api/batch', { cache: 'no-store' }); data = (await r.json()).batches || []; render(); }
+  catch { document.getElementById('bt-upd').textContent = '서버 연결 안 됨 — 다시 시도 중'; }
+}
+load(); setInterval(() => { if (!document.hidden) load(); }, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+</script>
