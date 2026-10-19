@@ -164,7 +164,7 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .c-msg.flash .c-bubble{box-shadow:0 0 0 3px rgba(138,109,46,.6)}
 .rs-page .c-re{border:0;background:none;color:#AAA;font:inherit;font-size:13px;line-height:1;padding:2px 4px;min-height:0;cursor:pointer;vertical-align:middle;-webkit-tap-highlight-color:transparent}
 .rs-page .c-msg:hover .c-re,.rs-page .c-re:focus{color:#8A6D2E}
-.rs-page .c-reply{flex:0 0 100%;display:flex;align-items:center;gap:8px;padding:6px 10px;border-left:3px solid #8A6D2E;border-radius:6px;background:#F3EFE6;font-size:12.5px;color:#444;box-sizing:border-box}
+.rs-page .c-reply{flex:0 0 100%;min-width:0;max-width:100%;display:flex;align-items:center;gap:8px;padding:6px 10px;border-left:3px solid #8A6D2E;border-radius:6px;background:#F3EFE6;font-size:12.5px;color:#444;box-sizing:border-box}
 .rs-page .c-reply[hidden]{display:none}
 .rs-page .c-pin{margin:-8px 0 12px;padding:8px 12px;border-left:3px solid #8A6D2E;border-radius:6px;background:#F3EFE6;font-size:14px;color:#333;overflow-wrap:anywhere}
 .rs-page .c-pin[hidden]{display:none}
