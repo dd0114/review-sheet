@@ -71,6 +71,7 @@ function usage(code = 2) {
   review-sheet unassigned [dir] [--prefix P] [--hours N]  # 담당 없음·배정 뒤 답 바뀜·N시간(기본 24) 단계 멈춤 시트 — 있으면 exit 5
   review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
   review-sheet batch [dir] [<file|->] [--domain D]   # 배치판(보기 전용, /batch) — pkch-batch-view/1 {rules:[{job,…,runs:[{id,status,verdict,line,startedAt,…,log,taken}]}]} 를 도메인별로 더함(실행 id 로 합침, 규칙마다 최근 ${BATCH_KEEP}개), 인자 없으면 요약
+  review-sheet links [dir] [<file|->]   # 받은편지함 위 줄 외부 링크 — {links:[{label,url}]} url=http(s) 또는 /경로, 같은 label 덮어씀, url 비우면 지움, 8개까지 (#47)
   review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|done,priority,owner,mode:claude|system|idle,modeNote,url}]} 쓰기, 인자 없으면 요약
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
@@ -254,6 +255,26 @@ export function writeBoard(dir, j) {
   return b;
 }
 export function readBoard(dir) { try { return JSON.parse(fs.readFileSync(boardFile(dir), 'utf8')); } catch { return null; } }
+// 바깥 링크 — 받은편지함 위 줄(진행판 → 자원 → 배치 →) 뒤에 붙는 외부 페이지 링크. 같은 label 은 덮어쓰고 나머지는 둠, url 이 빈 줄은 지움 (#47)
+export const linksFile = dir => path.join(dir, 'links.json');
+export function readLinks(dir) { try { const j = JSON.parse(fs.readFileSync(linksFile(dir), 'utf8')); return Array.isArray(j.links) ? j.links : []; } catch { return []; } }
+export function writeLinks(dir, j) {
+  if (!j || !Array.isArray(j.links)) throw new Error('links: {links:[{label,url}]} 필요');
+  const cur = readLinks(dir);
+  for (const l of j.links) {
+    const label = typeof l?.label === 'string' ? l.label.trim().slice(0, 30) : '';
+    if (!label) continue;
+    const i = cur.findIndex(c => c.label === label);
+    if (!l.url) { if (i >= 0) cur.splice(i, 1); continue; }
+    if (!/^(https?:\/\/|\/(?!\/))/.test(String(l.url))) throw new Error(`links: ${label} — url 은 http(s) 나 받은편지함 안 경로(/…) 만`);
+    const row = { label, url: String(l.url).slice(0, 300) };
+    if (i >= 0) cur[i] = row; else cur.push(row);
+  }
+  if (cur.length > 8) throw new Error('links: 8개까지');
+  const f = linksFile(dir), tmp = f + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify({ links: cur }, null, 1)); fs.renameSync(tmp, f);
+  return cur;
+}
 // 자원판 — 바깥 생산자(예: fleet dash-collect)가 만든 dash.json 을 그대로 보여 주는 보기 전용 층. 숫자 카드 + 줄 목록, 줄을 누르면 그 줄의 시계열.
 export const dashFile = dir => path.join(dir, 'dash.json');
 const DASH_LEVELS = ['ok', 'warn', 'bad'];
@@ -875,7 +896,7 @@ function indexHtml(dir) {
   return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="리뷰시트"><script src="/push.js" defer></script>
 <title>review-sheet</title><link rel="stylesheet" href="/sheet.css">
 <body class="rs-page"><main><div class="eyebrow">REVIEW-SHEET · 받은편지함</div><h1>답변 시트</h1>
-<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a> <a class="rs-boardlink" href="/dash">자원 →</a> <a class="rs-boardlink" href="/batch">배치 →</a> <span id="rs-push"></span></p><div id="rs-list"></div></main>
+<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a> <a class="rs-boardlink" href="/dash">자원 →</a> <a class="rs-boardlink" href="/batch">배치 →</a> ${readLinks(dir).map(l => `<a class="rs-boardlink" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)} →</a> `).join('')}<span id="rs-push"></span></p><div id="rs-list"></div></main>
 <script>
 const INIT = ${init};
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1241,7 +1262,7 @@ async function main() {
   if (needsArg2 && rest.length === 2) { arg2 = rest[1]; dirArg = undefined; }
   if (cmd === 'assign' && rest.length === 4) dirArg = undefined;   // assign <id> <issue> <owner> → inbox
   if (cmd === 'stage' && rest[2] && STAGES[rest[2]]) dirArg = undefined;   // stage <id> <stage> [note] → inbox
-  if ((cmd === 'board' || cmd === 'dash' || cmd === 'batch') && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
+  if ((cmd === 'board' || cmd === 'dash' || cmd === 'batch' || cmd === 'links') && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
   let askArgs = rest.slice(2);   // asks / ask-reply: [dir] 은 진짜 폴더일 때만
   if ((cmd === 'asks' || cmd === 'ask-reply') && !(rest[1] && fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) { dirArg = undefined; askArgs = rest.slice(1); }
   const dir = path.resolve(dirArg || INBOX);
@@ -1349,6 +1370,14 @@ async function main() {
     if (rest.length < 2 || (dirArg && rest.length === 2)) { const d = readDash(dir); if (!d) { console.error('자원판 없음'); process.exit(1); } console.log(`cards\t${d.cards.length}\nrows\t${d.groups.reduce((n, g) => n + g.rows.length, 0)}\nupdatedAt\t${d.updatedAt}`); return; }
     let j; try { j = JSON.parse(src === '-' ? await (async () => { let t = ''; process.stdin.setEncoding('utf8'); for await (const c of process.stdin) t += c; return t; })() : fs.readFileSync(src, 'utf8')); } catch (e) { console.error('dash: JSON 읽기 실패 — ' + e.message); process.exit(1); }
     try { const d = writeDash(dir, j); console.log(`${dashFile(dir)}\t카드 ${d.cards.length}\t→ http://127.0.0.1:${INBOX_PORT}/dash`); }
+    catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'links') {
+    const src = rest.at(-1);
+    if (rest.length < 2 || (dirArg && rest.length === 2)) { for (const l of readLinks(dir)) console.log(`${l.label}\t${l.url}`); return; }
+    let j; try { j = JSON.parse(src === '-' ? await (async () => { let t = ''; process.stdin.setEncoding('utf8'); for await (const c of process.stdin) t += c; return t; })() : fs.readFileSync(src, 'utf8')); } catch (e) { console.error('links: JSON 읽기 실패 — ' + e.message); process.exit(1); }
+    try { const ls = writeLinks(dir, j); console.log(`${linksFile(dir)}\t링크 ${ls.length}`); }
     catch (e) { console.error(e.message); process.exit(1); }
     return;
   }

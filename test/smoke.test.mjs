@@ -814,3 +814,22 @@ test('batch: 배치판 — 도메인별로 쌓고, 같은 규칙 두 번이면 �
     assert.match(await (await fetch(srv.base + '/')).text(), /href="\/batch"/);
   } finally { await srv.close(); }
 });
+
+test('links: 받은편지함 위 줄 외부 링크 — 같은 label 덮어씀, url 비우면 지움, http(s)·/경로만, 목록 위 줄에 그림 (#47)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-links-'));
+  const put = j => execFileSync('node', [BIN, 'links', dir, '-'], { input: JSON.stringify(j), encoding: 'utf8' });
+  put({ links: [{ label: '뉴맥', url: '/q/board.html' }, { label: '큐', url: 'http://h:1/' }] });
+  put({ links: [{ label: '큐', url: 'https://h:2/' }] });
+  let l = JSON.parse(fs.readFileSync(path.join(dir, 'links.json'), 'utf8')).links;
+  assert.deepEqual(l, [{ label: '뉴맥', url: '/q/board.html' }, { label: '큐', url: 'https://h:2/' }]);
+  assert.throws(() => put({ links: [{ label: 'x', url: 'javascript:alert(1)' }] }));
+  assert.throws(() => put({ links: [{ label: 'x', url: '//evil/' }] }));
+  put({ links: [{ label: '큐', url: '' }] });
+  l = JSON.parse(fs.readFileSync(path.join(dir, 'links.json'), 'utf8')).links;
+  assert.equal(l.length, 1);
+  const { base, close } = await startServer(dir, 0);
+  try {
+    const html = await (await fetch(base + '/')).text();
+    assert.match(html, /<a class="rs-boardlink" href="\/q\/board.html" target="_blank" rel="noopener">뉴맥 →<\/a>/);
+  } finally { await close(); }
+});
