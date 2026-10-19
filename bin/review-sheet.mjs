@@ -85,6 +85,7 @@ function usage(code = 2) {
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
+  review-sheet chat pin <ch> <text|->  /  chat unpin <ch>       # 방 맨 위 고정 글 하나 (meta.pin) — 링크 그대로 둬도 됨, 새로 걸면 바뀜
   review-sheet chat ls | read <ch> [--all] [--json] | say <ch> [--re <id>] [--notice] <text…|-> | wait <ch> [--timeout SEC]   # --re = 그 메시지에 답장(카톡식 인용)
   (메모: http://127.0.0.1:${INBOX_PORT}/memo.html — hero 가 자기한테 보내는 메시지, CLI 없음·세션은 읽지 않는다)
   [dir] omitted → inbox ${INBOX} (one folder for every session; served on :${INBOX_PORT})`);
@@ -1587,6 +1588,13 @@ async function main() {
     if (sub === 'new') { const m = newChat(root, ch, flags.title, flags.owner, flags.hub || !listChats(root).length); console.log(`${chatLogFile(root, m.name)}\n  → http://127.0.0.1:${INBOX_PORT}/chat.html?c=${m.name}`); return; }
     if (sub === 'ls') { for (const c of listChats(root)) console.log(`${c.hub ? '★' : ''}${c.name}\t${c.owner}\t${c.count}건\thero 미읽 ${c.unreadHero}\t세션 미읽 ${c.unreadOwner}\t${c.title}`); return; }
     if (!ch || !readChatMeta(root, ch)) { console.error(`채널 ${ch || '?'} 없음 — chat new <ch>`); process.exit(1); }
+    if (sub === 'pin' || sub === 'unpin') {   // 방 맨 위 고정 글 하나(hero 2026-10-19 #55) — 상시로 펼쳐 볼 주소·안내. 채팅 게이트 밖(링크가 본 용도)
+      const meta = readChatMeta(root, ch);
+      if (sub === 'unpin') { delete meta.pin; writeChatMeta(root, meta); console.log(`${ch} 고정 해제`); return; }
+      const text = words[0] === '-' || !words.length ? fs.readFileSync(0, 'utf8').trim() : words.join(' ');
+      if (!text) { console.error('text 없음'); process.exit(2); }
+      meta.pin = { text, at: new Date().toISOString() }; writeChatMeta(root, meta); console.log(`${ch} 고정: ${text}`); return;
+    }
     if (sub === 'say') {
       const text = words[0] === '-' || !words.length ? fs.readFileSync(0, 'utf8').trim() : words.join(' ');
       if (!text) { console.error('text 없음'); process.exit(2); }

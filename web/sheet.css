@@ -161,6 +161,9 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .c-msg:hover .c-re,.rs-page .c-re:focus{color:#8A6D2E}
 .rs-page .c-reply{flex:0 0 100%;display:flex;align-items:center;gap:8px;padding:6px 10px;border-left:3px solid #8A6D2E;border-radius:6px;background:#F3EFE6;font-size:12.5px;color:#444;box-sizing:border-box}
 .rs-page .c-reply[hidden]{display:none}
+.rs-page .c-pin{margin:-8px 0 12px;padding:8px 12px;border-left:3px solid #8A6D2E;border-radius:6px;background:#F3EFE6;font-size:14px;color:#333;overflow-wrap:anywhere}
+.rs-page .c-pin[hidden]{display:none}
+.rs-page .c-pin a{color:#8A6D2E}
 .rs-page .c-reply b{color:#8A6D2E}
 .rs-page .c-reply span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rs-page .c-reply button{border:0;background:none;font-size:14px;padding:2px 6px;cursor:pointer;color:#666}
