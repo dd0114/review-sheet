@@ -81,6 +81,7 @@ function usage(code = 2) {
   review-sheet batch [dir] [<file|->] [--domain D]   # 배치판(보기 전용, /batch) — pkch-batch-view/1 {rules:[{job,…,runs:[{id,status,verdict,line,startedAt,…,log,taken}]}]} 를 도메인별로 더함(실행 id 로 합침, 규칙마다 최근 ${BATCH_KEEP}개), 인자 없으면 요약
   review-sheet links [dir] [<file|->]   # 받은편지함 위 줄 외부 링크 — {links:[{label,url}]} url=http(s) 또는 /경로, 같은 label 덮어씀, url 비우면 지움, 8개까지 (#47)
   review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|done,priority,owner,mode:claude|system|idle,modeNote,url}]} 쓰기, 인자 없으면 요약
+  review-sheet tab [dir] [--prefix X] [--icon Y] [--clear]   # 탭 이름표 — <inbox>/tab.json {prefix,icon}: 모든 탭 제목 앞 'X · ' + 이모지 탭 아이콘. 서버 재시작 없이 반영, env REVIEW_SHEET_TAB_PREFIX/ICON 이 이김. 빈 값 = 그 칸 지움
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
@@ -94,10 +95,10 @@ function parseArgs(argv) {
   const flags = {}, rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--notice' || a === '--open' || a === '--dry-run') flags[a.slice(2)] = true;
+    if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--notice' || a === '--open' || a === '--dry-run' || a === '--clear') flags[a.slice(2)] = true;
     else if (a === '--off') { flags.off = true; if (argv[i + 1] && !argv[i + 1].startsWith('--')) flags.offReason = argv[++i]; }   // --off [이유] — 라이브 근거로도 쓴다(#40)
     else if (a === '--port' || a === '--timeout' || a === '--hours') flags[a.slice(2)] = Number(argv[++i]);
-    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since' || a === '--domain' || a === '--pr' || a === '--sha' || a === '--issue' || a === '--repo' || a === '--rule') flags[a.slice(2)] = String(argv[++i] || '');
+    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since' || a === '--domain' || a === '--pr' || a === '--sha' || a === '--issue' || a === '--repo' || a === '--rule' || a === '--icon') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
@@ -1150,16 +1151,42 @@ export function transcribe(buf, c = sttConfig(), { from = 0, live = false } = {}
 }
 
 /* 탭 제목 앞 접두어(#51) — 여러 머신 받은편지함을 한 브라우저에서 같이 쓸 때 탭을 구분한다(hero 2026-10-19 '에어').
-   REVIEW_SHEET_TAB_PREFIX 를 주면 HTML 의 </title> 뒤에 작은 스크립트를 넣어, 페이지가 제목을 바꿔도 앞에 다시 붙인다. */
-export function tabPrefixed(html, prefix = process.env.REVIEW_SHEET_TAB_PREFIX || '') {
-  const p = String(prefix).trim(); if (!p) return html;
-  const s = String(html), i = s.indexOf('</title>'); if (i < 0) return html;
-  const P = JSON.stringify(p + ' · ').replace(/</g, '\\u003c');
-  const js = `<script>(()=>{const P=${P};const f=()=>{if(!document.title.startsWith(P))document.title=P+document.title};f();const t=document.querySelector('title');if(t)new MutationObserver(f).observe(t,{childList:true,characterData:true,subtree:true})})()</script>`;
-  return s.slice(0, i + 8) + js + s.slice(i + 8);
+   REVIEW_SHEET_TAB_PREFIX 를 주면 HTML 의 </title> 뒤에 작은 스크립트를 넣어, 페이지가 제목을 바꿔도 앞에 다시 붙인다.
+   탭 아이콘(hero 2026-10-19 '구맥' + 아이콘): icon 이 있으면 그 이모지를 그린 SVG favicon 을 같은 자리에 넣고 기존 icon 링크는 뺀다. */
+const TAB_ICON_MAX = 4;   // 글자(그래핌) 수 — 이모지 하나 또는 짧은 글자
+const graphemes = s => { try { return [...new Intl.Segmenter().segment(s)].length; } catch { return [...s].length; } };
+export function tabFile(dir) { return path.join(path.resolve(dir), 'tab.json'); }
+export function readTabFile(dir) {
+  try { const j = JSON.parse(fs.readFileSync(tabFile(dir), 'utf8')); return j && typeof j === 'object' && !Array.isArray(j) ? j : {}; } catch { return {}; }
+}
+/** 탭 이름표 설정 — <inbox>/tab.json {prefix, icon} 을 매번 읽고(서버 재시작 없이 반영), env REVIEW_SHEET_TAB_PREFIX/ICON 이 있으면 그게 이긴다. */
+export function tabConfig(dir) {
+  const f = dir ? readTabFile(dir) : {}, str = v => typeof v === 'string' ? v.trim() : '';
+  const prefix = str(process.env.REVIEW_SHEET_TAB_PREFIX) || str(f.prefix);
+  let icon = str(process.env.REVIEW_SHEET_TAB_ICON) || str(f.icon);
+  if (graphemes(icon) > TAB_ICON_MAX) icon = '';
+  return { prefix, icon };
+}
+export function faviconLink(icon) {
+  const x = String(icon).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text x="50" y="50" font-size="80" text-anchor="middle" dominant-baseline="central">${x}</text></svg>`;
+  return `<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(svg).replace(/'/g, '%27')}">`;
+}
+export function tabPrefixed(html, prefix = process.env.REVIEW_SHEET_TAB_PREFIX || '', icon = '') {
+  const p = String(prefix || '').trim(), ic = String(icon || '').trim(); if (!p && !ic) return html;
+  let s = String(html); if (s.indexOf('</title>') < 0) return html;
+  if (ic) s = s.replace(/<link\b[^>]*\brel=["']?(?:shortcut )?icon["']?[^>]*>/gi, '');   // 우리 아이콘이 이기게 — 기존 icon 링크 제거(apple-touch-icon 은 둔다)
+  const i = s.indexOf('</title>');
+  let add = '';
+  if (ic) add += faviconLink(ic);
+  if (p) {
+    const P = JSON.stringify(p + ' · ').replace(/</g, '\\u003c');
+    add += `<script>(()=>{const P=${P};const f=()=>{if(!document.title.startsWith(P))document.title=P+document.title};f();const t=document.querySelector('title');if(t)new MutationObserver(f).observe(t,{childList:true,characterData:true,subtree:true})})()</script>`;
+  }
+  return s.slice(0, i + 8) + add + s.slice(i + 8);
 }
 function send(res, code, type, body, extra = {}) {
-  if (String(type).startsWith('text/html') && process.env.REVIEW_SHEET_TAB_PREFIX) body = tabPrefixed(body);
+  if (String(type).startsWith('text/html')) { const t = tabConfig(res.rsRoot); if (t.prefix || t.icon) body = tabPrefixed(body, t.prefix, t.icon); }
   res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...extra });
   res.end(body);
 }
@@ -1273,6 +1300,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
   const root = path.resolve(dir);
   fs.mkdirSync(path.join(root, 'answers'), { recursive: true });
   const server = http.createServer((req, res) => {
+    res.rsRoot = root;   // send() 가 <root>/tab.json 탭 이름표를 읽는다
     const url = new URL(req.url, 'http://x');
     if (url.pathname === '/__answers/file' && req.method === 'POST') {   // raw body → answers/<id>.files/<name>, ?n=<original name>
       const id = url.searchParams.get('sheet') || '';
@@ -1653,6 +1681,19 @@ async function main() {
     let j; try { j = JSON.parse(src === '-' ? await (async () => { let t = ''; process.stdin.setEncoding('utf8'); for await (const c of process.stdin) t += c; return t; })() : fs.readFileSync(src, 'utf8')); } catch (e) { console.error('dash: JSON 읽기 실패 — ' + e.message); process.exit(1); }
     try { const d = writeDash(dir, j); console.log(`${dashFile(dir)}\t카드 ${d.cards.length}\t→ http://127.0.0.1:${INBOX_PORT}/dash`); }
     catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'tab') {   // tab [dir] [--prefix X] [--icon Y] [--clear] — 탭 이름표 tab.json 쓰기/보기
+    const f = tabFile(dir);
+    if (flags.clear) { fs.rmSync(f, { force: true }); console.log(`${f}\t지움`); return; }
+    if ('prefix' in flags || 'icon' in flags) {
+      const j = readTabFile(dir);
+      for (const k of ['prefix', 'icon']) if (k in flags) { const v = flags[k].trim(); if (v) j[k] = v; else delete j[k]; }
+      if (j.icon && graphemes(j.icon) > TAB_ICON_MAX) { console.error(`tab: --icon 은 이모지 하나 또는 ${TAB_ICON_MAX}글자까지`); process.exit(1); }
+      fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');
+    }
+    const t = tabConfig(dir), j = readTabFile(dir);
+    console.log(`${f}\t${JSON.stringify(j)}\nprefix\t${t.prefix || '—'}${process.env.REVIEW_SHEET_TAB_PREFIX ? ' (env)' : ''}\nicon\t${t.icon || '—'}${process.env.REVIEW_SHEET_TAB_ICON ? ' (env)' : ''}`);
     return;
   }
   if (cmd === 'links') {

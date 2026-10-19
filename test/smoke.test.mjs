@@ -1041,3 +1041,59 @@ test('탭 제목 접두어: REVIEW_SHEET_TAB_PREFIX 가 있으면 모든 HTML �
     assert.doesNotMatch(await (await fetch(base + '/sheet.css')).text(), /에어/);
   } finally { delete process.env.REVIEW_SHEET_TAB_PREFIX; await close(); }
 });
+
+test('탭 이름표 파일: <inbox>/tab.json prefix+icon → chat.html·받은편지함에 접두어+favicon, env 가 이김, 깨진 JSON 무시', async () => {
+  const { tabPrefixed, faviconLink } = await import('../bin/review-sheet.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-tabfile-'));
+  const { base, close } = await startServer(dir, 0);
+  const get = async p => (await fetch(base + p)).text();
+  const icons = h => h.match(/<link rel="icon"[^>]*>/g) || [];
+  try {
+    assert.doesNotMatch(await get('/chat.html'), /rel="icon"/);
+    fs.writeFileSync(path.join(dir, 'tab.json'), JSON.stringify({ prefix: '구맥', icon: '🖥' }));   // 서버 재시작 없이 반영
+    for (const p of ['/chat.html', '/']) {
+      const h = await get(p);
+      assert.match(h, /"구맥 · "/, p);
+      assert.equal(icons(h).length, 1, p);
+      assert.ok(decodeURIComponent(icons(h)[0].match(/href="data:image\/svg\+xml,([^"]*)"/)[1]).includes('>🖥</text>'), p);
+      assert.match(h, /rel="apple-touch-icon"/, p);   // 홈화면 아이콘은 그대로
+    }
+    fs.writeFileSync(path.join(dir, 'tab.json'), JSON.stringify({ prefix: '구맥' }));   // 아이콘 없으면 favicon 안 건드림
+    assert.equal(icons(await get('/chat.html')).length, 0);
+    process.env.REVIEW_SHEET_TAB_PREFIX = '뉴맥'; process.env.REVIEW_SHEET_TAB_ICON = '💻';
+    const h = await get('/chat.html');
+    assert.match(h, /"뉴맥 · "/); assert.doesNotMatch(h, /구맥/);
+    assert.ok(decodeURIComponent(icons(h)[0].match(/href="data:image\/svg\+xml,([^"]*)"/)[1]).includes('>💻</text>'));
+    delete process.env.REVIEW_SHEET_TAB_PREFIX; delete process.env.REVIEW_SHEET_TAB_ICON;
+    fs.writeFileSync(path.join(dir, 'tab.json'), '{ not json');
+    const bad = await get('/chat.html');
+    assert.equal((await fetch(base + '/chat.html')).status, 200);
+    assert.doesNotMatch(bad, /rel="icon"|" · "/);
+    fs.writeFileSync(path.join(dir, 'tab.json'), JSON.stringify({ prefix: '</script><img src=x onerror=alert(1)>', icon: '"><b' }));
+    const evil = await get('/chat.html');
+    assert.doesNotMatch(evil, /<img src=x/);
+    assert.equal(icons(evil).length, 1);
+    assert.match(icons(evil)[0], /^<link rel="icon" href="data:image\/svg\+xml,[^"<>]*">$/);   // href 밖으로 못 샌다
+    assert.ok(decodeURIComponent(icons(evil)[0].slice(41, -2)).includes('&quot;&gt;&lt;b</text>'));
+    fs.writeFileSync(path.join(dir, 'tab.json'), JSON.stringify({ icon: '너무 긴 아이콘 글자' }));   // 4글자 초과 → 무시
+    assert.equal(icons(await get('/chat.html')).length, 0);
+  } finally { delete process.env.REVIEW_SHEET_TAB_PREFIX; delete process.env.REVIEW_SHEET_TAB_ICON; await close(); }
+  // 기존 icon 링크는 빼고 우리 것만 남는다
+  const out = tabPrefixed('<link rel="icon" href="/a.png"><title>x</title><link rel="shortcut icon" href="/b.ico">', '', '🖥');
+  assert.equal((out.match(/rel="(shortcut )?icon"/g) || []).length, 1);
+  assert.ok(out.includes(faviconLink('🖥')));
+});
+
+test('tab CLI: tab.json 쓰기·빈 값 지움·--clear', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-tabcli-'));
+  const env = { ...process.env }; delete env.REVIEW_SHEET_TAB_PREFIX; delete env.REVIEW_SHEET_TAB_ICON;
+  const run = runIn(env), f = path.join(dir, 'tab.json');
+  assert.equal(run('tab', dir, '--prefix', '구맥', '--icon', '🖥').code, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f, 'utf8')), { prefix: '구맥', icon: '🖥' });
+  assert.match(run('tab', dir).out, /prefix\t구맥/);
+  run('tab', dir, '--icon', '');
+  assert.deepEqual(JSON.parse(fs.readFileSync(f, 'utf8')), { prefix: '구맥' });
+  assert.notEqual(run('tab', dir, '--icon', '다섯글자임').code, 0);
+  run('tab', dir, '--clear');
+  assert.equal(fs.existsSync(f), false);
+});
