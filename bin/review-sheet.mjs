@@ -147,10 +147,10 @@ const saveAssign = (dir, id, rec) => fs.writeFileSync(path.join(assignDir(dir), 
 
 /* gh 근거 확인 (hero 2026-10-18 "리뷰시트로 승인한 변경사항들이 반영안되고 누락") — 단계·문항·배정이 말로만 찍히지 않게 GitHub 에 물어 본다.
    전부 `gh api` 하나로(REVIEW_SHEET_GH 로 바꿀 수 있다 — 시험은 스텁). repo 를 안 주면 gh 가 지금 폴더 레포로 {owner}/{repo} 를 채운다. */
-export function ghApi(p, { input } = {}) {
-  const args = ['api', p]; if (input !== undefined) args.push('--input', '-');
+export function ghApi(p, { input, jq } = {}) {
+  const args = ['api', p]; if (input !== undefined) args.push('--input', '-'); if (jq) args.push('--jq', jq);   // jq = 필요한 필드만 받아 큰 응답(compare 의 files 등) 피함
   let out;
-  try { out = execFileSync(process.env.REVIEW_SHEET_GH || 'gh', args, { encoding: 'utf8', input: input === undefined ? '' : JSON.stringify(input), stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000 }); }
+  try { out = execFileSync(process.env.REVIEW_SHEET_GH || 'gh', args, { encoding: 'utf8', input: input === undefined ? '' : JSON.stringify(input), stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000, maxBuffer: 256 * 1024 * 1024 }); }
   catch (e) { throw new Error(`gh api ${p} 실패 — ${String(e.stderr || e.message).trim().split('\n')[0]}`); }
   return out.trim() ? JSON.parse(out) : null;
 }
@@ -173,7 +173,7 @@ export function ghIssue(ref) {
 }
 /** 운영 커밋 sha 가 commit 을 품는가 — compare commit...sha 가 identical·ahead 면 품는다 */
 export function ghContains(repo, commit, sha) {
-  const c = ghApi(`${repoPath(repo)}/compare/${commit}...${sha}`) || {};
+  const c = ghApi(`${repoPath(repo)}/compare/${commit}...${sha}`, { jq: '{status: .status}' }) || {};   // 오래된 커밋 compare 는 수 MB — status 만
   return c.status === 'identical' || c.status === 'ahead';
 }
 /** pr 을 되돌린 머지된 PR — GitHub Revert 버튼 본문 "Reverts o/r#N" 또는 제목 'Revert "<원제목>"' */
