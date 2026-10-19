@@ -70,7 +70,7 @@ function usage(code = 2) {
   review-sheet ls    [dir]
   review-sheet assign [dir] <id> <issue#> <도메인:창> [--repo o/r]   # 제출된 시트의 후속 일 담당 기록 (이슈인지 gh 로 확인, PR·뒤바뀐 순서 거부)
   review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [--pr N] [--sha S] [--off [이유]] [--eta <언제>] [메모…]   # 단계 보고 — 머지 = --pr(MERGED), 라이브 = --sha(머지 커밋 포함) 또는 --off <이유>
-  review-sheet items [dir] <id> [<문항> done --pr N | defer --issue N | reject [이유] | moved <시트>]   # 문항 장부 — 답한 문항마다 붙어야 시트가 닫힘. 문항 없이 = 현황
+  review-sheet items [dir] <id> [<문항> done --pr N | done --rule "<근거>" | defer --issue N | reject [이유] | moved <시트>]   # 문항 장부 — 답한 문항마다 붙어야 시트가 닫힘. 문항 없이 = 현황
   review-sheet record [dir] <id> [--issue N] [--repo o/r]   # read 출력 전체(메모·_ask·문항 질문)를 이슈 댓글로, 다시 부르면 바뀐 줄만
   review-sheet migrate-assign [dir] [--dry-run]   # 옛 뒤바뀐 assign(이슈 칸에 창, 담당 칸에 번호) 맞바꾸기 — assign/.backup-<시각>/ 에 백업
   review-sheet asks [dir] [<시트>] [--open] [--prefix P]   # 문항 질문(시트 안 '＋ 이것만 묻기')과 답 수 — --open 답 없는 것만
@@ -97,7 +97,7 @@ function parseArgs(argv) {
     if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--notice' || a === '--open' || a === '--dry-run') flags[a.slice(2)] = true;
     else if (a === '--off') { flags.off = true; if (argv[i + 1] && !argv[i + 1].startsWith('--')) flags.offReason = argv[++i]; }   // --off [이유] — 라이브 근거로도 쓴다(#40)
     else if (a === '--port' || a === '--timeout' || a === '--hours') flags[a.slice(2)] = Number(argv[++i]);
-    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since' || a === '--domain' || a === '--pr' || a === '--sha' || a === '--issue' || a === '--repo') flags[a.slice(2)] = String(argv[++i] || '');
+    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since' || a === '--domain' || a === '--pr' || a === '--sha' || a === '--issue' || a === '--repo' || a === '--rule') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
@@ -330,7 +330,7 @@ export function writeStage(dir, id, stage, note = '', by = fromId(), opt = {}) {
 }
 
 /* 문항 장부 (#40) — 답한 문항(고름·메모·첨부·섹션 메모·추가 질문 _ask)마다 어디로 갔는지 하나씩 붙어야 시트가 닫힌다.
-   done --pr N(머지된 PR) · defer --issue N(이슈, PR 아님) · reject [이유] · moved <시트>. 붙인 뒤 hero 가 그 문항 답을 바꾸면(해시) 다시 열린다. */
+   done --pr N(머지된 PR) · done --rule <근거>(코드 PR 없이 규칙·운영으로 적용, #49) · defer --issue N(이슈, PR 아님) · reject [이유] · moved <시트>. 붙인 뒤 hero 가 그 문항 답을 바꾸면(해시) 다시 열린다. */
 export const ITEM_KINDS = ['done', 'defer', 'reject', 'moved'];
 const hasAns = a => !!a && !!(a.pick || (typeof a.memo === 'string' && a.memo.trim()) || (a.files || []).length);
 export const answeredKeys = saved => Object.keys((saved && saved.answers) || {}).filter(k => hasAns(saved.answers[k]));
@@ -357,9 +357,14 @@ export function writeItem(dir, id, key, kind, opt = {}, by = fromId()) {
   const rec = { kind, ans: ansHash(saved.answers[key]), at: new Date().toISOString(), by };
   const repo = opt.repo || a.repo || '';
   if (kind === 'done') {
-    const ref = parseRef(opt.pr, repo); if (!ref) throw new Error(`${key} done 은 --pr <번호> 필요`);
+    const rule = String(opt.rule || '').trim();
+    if (rule && opt.pr) throw new Error(`${key} done 은 --pr 와 --rule 중 하나만`);
+    if (rule) rec.rule = rule.slice(0, 300);
+    else {
+    const ref = parseRef(opt.pr, repo); if (!ref) throw new Error(`${key} done 은 --pr <번호> 또는 --rule "<근거 한 줄>" 필요`);
     const p = ghPull(ref); if (!p.merged) throw new Error(`${key}: PR ${refStr(ref)} 는 머지 안 됨 (${p.state || '?'})`);
     Object.assign(rec, { pr: refStr({ repo: p.repo, n: p.n }), url: p.url, mergedAt: p.mergedAt, title: p.title });
+    }
   } else if (kind === 'defer') {
     const ref = parseRef(opt.issue, repo); if (!ref) throw new Error(`${key} defer 는 --issue <번호> 필요`);
     const i = ghIssue(ref); if (i.isPR) throw new Error(`${key}: ${refStr(ref)} 는 PR — 미룬 일은 이슈 번호로`);
@@ -1620,7 +1625,7 @@ async function main() {
     if (!s.submitted) { console.error(`${s.name}: 아직 제출 안 됨 — 답이 온 뒤에 배정한다`); process.exit(1); }
     let a; try { a = writeAssign(dir, s.id, issue, owner, undefined, { repo: flags.repo }); } catch (e) { console.error(e.message); process.exit(1); }
     console.log(`${s.name}\t배정 ${a.issue} → ${a.owner}${a.repo ? ' (' + a.repo + ')' : ''}`);
-    const left = itemsOpen(dir, s.id).open; if (left.length) console.log(`  문항 장부: ${left.length}개 남음 — items ${s.name} <문항> done --pr N | defer --issue N | reject | moved <시트>  (${left.map(x => x.k).join(' ')})`);
+    const left = itemsOpen(dir, s.id).open; if (left.length) console.log(`  문항 장부: ${left.length}개 남음 — items ${s.name} <문항> done --pr N | done --rule "<근거>" | defer --issue N | reject | moved <시트>  (${left.map(x => x.k).join(' ')})`);
     return;
   }
   if (cmd === 'stage') {
@@ -1688,19 +1693,19 @@ async function main() {
     }
     return;
   }
-  if (cmd === 'items') {   // items <시트> [<문항> done --pr N | defer --issue N | reject [이유] | moved <시트>] — 문항 장부(#40)
+  if (cmd === 'items') {   // items <시트> [<문항> done --pr N | done --rule <근거> | defer --issue N | reject [이유] | moved <시트>] — 문항 장부(#40)
     const [name, key, kind, ...words] = askArgs;
     const s = name && listSheets(dir).find(x => !x.error && (x.name === name || x.id === name));
     if (!s) { console.error(`${dir} 에 ${name || '?'} 시트 없음`); process.exit(name ? 1 : 2); }
     if (key) {
-      const opt = { pr: flags.pr, issue: flags.issue, repo: flags.repo, to: kind === 'moved' ? words[0] : '', note: (kind === 'moved' ? words.slice(1) : words).join(' ') };
-      try { const r = writeItem(dir, s.id, key, kind, opt); console.log(`${s.name}\t${key}\t${kind}${r.rec.pr ? ' ' + r.rec.pr : r.rec.issue ? ' ' + r.rec.issue : r.rec.to ? ' → ' + r.rec.to : ''}\t남음 ${r.open.length}/${r.keys.length}`); }
+      const opt = { pr: flags.pr, rule: flags.rule, issue: flags.issue, repo: flags.repo, to: kind === 'moved' ? words[0] : '', note: (kind === 'moved' ? words.slice(1) : words).join(' ') };
+      try { const r = writeItem(dir, s.id, key, kind, opt); console.log(`${s.name}\t${key}\t${kind}${r.rec.pr ? ' ' + r.rec.pr : r.rec.rule ? ' 규칙: ' + r.rec.rule : r.rec.issue ? ' ' + r.rec.issue : r.rec.to ? ' → ' + r.rec.to : ''}\t남음 ${r.open.length}/${r.keys.length}`); }
       catch (e) { console.error(e.message); process.exit(1); }
       return;
     }
     const a = readAssign(dir, s.id), { keys, open } = itemsOpen(dir, s.id, a), why = Object.fromEntries(open.map(x => [x.k, x.why]));
     const it = (a && a.items) || {};
-    for (const k of keys) { const x = it[k]; console.log(`${k}\t${why[k] ? { missing: '안 붙음', changed: '답 바뀜', reverted: '되돌려짐' }[why[k]] : 'ok'}${x ? `\t${x.kind}${x.pr ? ' ' + x.pr : x.issue ? ' ' + x.issue : x.to ? ' → ' + x.to : ''}${x.note ? ' — ' + x.note : ''}` : ''}`); }
+    for (const k of keys) { const x = it[k]; console.log(`${k}\t${why[k] ? { missing: '안 붙음', changed: '답 바뀜', reverted: '되돌려짐' }[why[k]] : 'ok'}${x ? `\t${x.kind}${x.pr ? ' ' + x.pr : x.rule ? ' 규칙: ' + x.rule : x.issue ? ' ' + x.issue : x.to ? ' → ' + x.to : ''}${x.note ? ' — ' + x.note : ''}` : ''}`); }
     if (open.length) process.exitCode = 5;
     return;
   }

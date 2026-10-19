@@ -640,14 +640,16 @@ test('AC3: items 장부 — 답한 문항(메모·_ask 포함)마다 붙어야 �
   assert.deepEqual(r.out.trim().split('\n'), ['A-1\t안 붙음', 'A-2\t안 붙음', 'A-memo\t안 붙음', '_ask\t안 붙음']);   // 빈 답(A-3)은 대상 아님
   assert.match(run('unassigned', dir).out, /^example\t문항안붙음\t.*\(A-1 A-2 A-memo _ask\)$/m);
   assert.match(run('items', dir, 'example', 'A-3', 'reject').out, /답이 없다/);
-  assert.match(run('items', dir, 'example', 'A-1', 'done').out, /--pr <번호> 필요/);
+  assert.match(run('items', dir, 'example', 'A-1', 'done').out, /--pr <번호> 또는 --rule/);
+  assert.match(run('items', dir, 'example', 'A-1', 'done', '--pr', '9', '--rule', '규칙').out, /하나만/);
   assert.match(run('items', dir, 'example', 'A-1', 'done', '--pr', '10').out, /머지 안 됨/);
   assert.match(run('items', dir, 'example', 'A-2', 'defer', '--issue', '9').out, /는 PR/);
   assert.match(run('items', dir, 'example', 'A-1', 'skip').out, /done · defer · reject · moved/);
   assert.match(run('items', dir, 'example', 'A-memo', 'moved', 'example').out, /자기 시트/);
   assert.match(run('items', dir, 'example', 'A-memo', 'moved', 'nope').out, /옮긴 시트 이름/);
   assert.match(run('items', dir, 'example', 'A-1', 'done', '--pr', '9').out, /^example\tA-1\tdone o\/r#9\t남음 3\/4$/m);
-  run('items', dir, 'example', 'A-2', 'defer', '--issue', '8');
+  assert.match(run('items', dir, 'example', 'A-2', 'done', '--rule', '새 창은 오퍼스 기본 — 메모리 규칙').out, /^example\tA-2\tdone 규칙: 새 창은 오퍼스 기본 — 메모리 규칙\t남음 2\/4$/m);   // 코드 PR 없이 규칙으로 적용(#49)
+  assert.match(run('items', dir, 'example').out, /^A-2\tok\tdone 규칙: 새 창은/m);
   run('items', dir, 'example', 'A-memo', 'moved', 'next');
   assert.equal(run('unassigned', dir).code, 5);
   assert.match(run('items', dir, 'example', '_ask', 'reject', '채팅으로', '답함').out, /남음 0\/4/);

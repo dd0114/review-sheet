@@ -101,7 +101,7 @@ hero 는 탭 하나만 둔다(5초마다 자동 갱신). 세션마다 서버·�
           옛 뒤바뀐 기록은 `migrate-assign [--dry-run]` 이 맞바꾼다(assign/.backup-<시각>/ 에 백업).
 4b'. 기록 … record <이름> [--issue N]  — read 출력 전체(메모·추가 질문 _ask·문항 질문)를 SoT 이슈 댓글로(배정이 있으면 그 이슈). 다시 저장된 뒤 또 부르면 **바뀐 줄만** 덧붙인다.
           4번 '기록'은 손으로 옮기지 말고 이것으로 — 제출 직후 덧붙인 묻기·메모가 빠지지 않는다.
-4b''. 문항 장부 … items <이름> <문항> done --pr N | defer --issue N | reject [이유] | moved <시트>   — **답한 문항마다**(고름·메모·첨부·섹션 메모 `<코드>-memo`·추가 질문 `_ask`) 어디로 갔는지 하나씩 붙인다.
+4b''. 문항 장부 … items <이름> <문항> done --pr N | done --rule "<근거>" | defer --issue N | reject [이유] | moved <시트>   — **답한 문항마다**(고름·메모·첨부·섹션 메모 `<코드>-memo`·추가 질문 `_ask`) 어디로 갔는지 하나씩 붙인다.
           다 붙어야 시트가 닫힌다 — 배정만으론 안 닫힘. done 은 머지된 PR, defer 는 이슈(PR 아님), moved 는 이어 물은 시트. `items <이름>` = 현황(남으면 exit 5).
           붙인 뒤 hero 가 그 문항 답을 바꾸면 그 문항만 다시 열린다. done 의 PR 이 되돌려져도 다시 열린다.
 4c. 상태  … stage <이름> 머지|배포대기|라이브|끝 [--pr N] [--sha <운영 커밋>] [--off <이유>] [--eta <언제>] "<한 줄>"  — 담당 세션이 단계마다 남긴다(끝났다는 보고를 채팅에 쌓지 않는다).
@@ -269,7 +269,7 @@ hero 체크리스트 (1회): Tailscale admin 콘솔 → **DNS → HTTPS Certific
 | `ls [dir]` | 시트 목록 + 대기/제출됨 + 진행(답한 수/전체) + 제출 시각 |
 | `assign [dir] <name|id> <issue#> <도메인:창> [--repo o/r]` | 제출된 시트의 후속 일 담당(이슈#·창) 기록. 미제출·PR 번호·뒤바뀐 순서·형식 틀린 담당이면 거부(gh 로 이슈 확인) |
 | `stage [dir] <name|id> <머지\|배포대기\|라이브\|끝> [--pr N] [--sha S] [--off <이유>] [--eta <언제>] [메모…]` | 배정된 시트의 끝난 상태 → 시트 줄 맨 앞 태그. 배정 전·근거 없음(머지 = MERGED PR, 라이브 = 머지 커밋을 품은 운영 커밋 또는 `--off <이유>`)·같은 단계 두 번이면 거부 |
-| `items [dir] <name|id> [<문항> done --pr N \| defer --issue N \| reject [이유] \| moved <시트>]` | 문항 장부 — 답한 문항마다 하나씩 붙어야 시트가 닫힘. 문항 없이 = 현황(`안 붙음`·`답 바뀜`·`되돌려짐`, 남으면 exit 5) |
+| `items [dir] <name|id> [<문항> done --pr N \| done --rule "<근거>" \| defer --issue N \| reject [이유] \| moved <시트>]` | 문항 장부 — 답한 문항마다 하나씩 붙어야 시트가 닫힘. 문항 없이 = 현황(`안 붙음`·`답 바뀜`·`되돌려짐`, 남으면 exit 5) |
 | `record [dir] <name|id> [--issue N] [--repo o/r]` | read 출력 전체(메모·`_ask`·문항 질문)를 이슈 댓글로. 다시 부르면 아직 안 붙인 줄만(붙인 줄 해시 = `record/<id>.json`). 바뀐 게 없으면 안 붙임 |
 | `migrate-assign [dir] [--dry-run]` | 옛 뒤바뀐 배정(이슈 칸에 창, 담당 칸에 번호) 맞바꾸기 — 고치기 전 `assign/.backup-<시각>/` 에 복사. `--dry-run` = 건수만 |
 | `board [dir] [<file\|->]` | 진행판(보기 전용, `/board`) — 바깥 생산자가 `{cards:[{title, status: todo\|doing\|done, priority, owner, mode: claude\|system\|idle, modeNote, group, url, note, at}]}` 를 넘기면 검증해 `board.json` 으로 원자 교체. 인자 없으면 칸별 개수. 판은 일을 바꾸지 않는다 |
