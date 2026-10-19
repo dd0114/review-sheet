@@ -820,7 +820,7 @@ test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it
   } finally { await srv.close(); }
 });
 
-test('추가 질문: _ask memo → owner channel gets one hero notice per new/changed text, read shows it on top, page has the box (hero 2026-10-13)', async () => {
+test('추가 질문: _ask memo → owner channel gets one hero notice per new/changed text, read shows it on top, page no longer has the box (hero 2026-10-13 → 10-19)', async () => {
   const dir = tmpDir();
   const { newChat, readChatLog } = await import('../bin/review-sheet.mjs');
   fs.writeFileSync(path.join(dir, 'a-data.js'), `window.SHEET = { id: 'a', title: 'T-a', from: 'infra', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
@@ -838,7 +838,7 @@ test('추가 질문: _ask memo → owner channel gets one hero notice per new/ch
     assert.equal(log.length, 1); assert.equal(log[0].from, 'hero'); assert.match(log[0].text, /추가 질문 \(시트 a · T-a\): 이거 언제 끝나\?/);
     const md = execFileSync('node', [BIN, 'read', dir, 'a'], { encoding: 'utf8' });
     assert.match(md.split('\n').slice(0, 5).join('\n'), /hero 추가 질문.*이거 언제 끝나\?/);
-    assert.match(fs.readFileSync(path.join(path.dirname(BIN), '..', 'web', 'sheet.html'), 'utf8'), /data-q="_ask"/);
+    assert.doesNotMatch(fs.readFileSync(path.join(path.dirname(BIN), '..', 'web', 'sheet.html'), 'utf8'), /data-q="_ask"/);   // 칸은 뺐다(hero 2026-10-19) — 예전 _ask 답은 계속 읽는다
   } finally { await close(); }
 });
 
