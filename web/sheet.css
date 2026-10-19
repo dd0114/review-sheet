@@ -154,7 +154,12 @@ body.rs-page.rs-submitted{background:#DCE8DF}
 .rs-page .c-msg.me .c-quote{border-left-color:#D8CDB0;background:rgba(255,255,255,.12)}
 .rs-page .c-qwho{display:block;font-weight:800;color:#8A6D2E;margin-bottom:1px}
 .rs-page .c-msg.me .c-qwho{color:#D8CDB0}
-.rs-page .c-qtxt{display:block;max-width:62vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8}
+/* 답장 인용 한 줄(hero 2026-10-19 버그): 62vw 는 창 기준이라 허브 옆칸처럼 좁은 칸에선 말풍선이 칸보다 넓어져 왼쪽으로 잘렸다.
+   인용 줄은 말풍선 폭 계산에서 빠지고(width:0) 말풍선 폭만큼만 채운다(min-width:100%) — 말풍선은 칸을 못 넘는다 */
+.rs-page .c-qtxt{display:block;width:0;min-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.8}
+.rs-page .c-bubble{max-width:100%;min-width:0;box-sizing:border-box}
+.rs-page .c-msg:has(.c-quote){min-width:min(260px,84%)}
+.rs-page .c-msg:has(.c-quote) .c-bubble{align-self:stretch}
 .rs-page .c-msg .c-bubble{transition:box-shadow .3s}
 .rs-page .c-msg.flash .c-bubble{box-shadow:0 0 0 3px rgba(138,109,46,.6)}
 .rs-page .c-re{border:0;background:none;color:#AAA;font:inherit;font-size:13px;line-height:1;padding:2px 4px;min-height:0;cursor:pointer;vertical-align:middle;-webkit-tap-highlight-color:transparent}
