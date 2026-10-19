@@ -1026,3 +1026,18 @@ test('links: 받은편지함 위 줄 외부 링크 — 같은 label 덮어씀, u
     assert.match(html, /<a class="rs-boardlink" href="\/q\/board.html" target="_blank" rel="noopener">뉴맥 →<\/a>/);
   } finally { await close(); }
 });
+
+test('탭 제목 접두어: REVIEW_SHEET_TAB_PREFIX 가 있으면 모든 HTML 탭 앞에 붙음 (#51)', async () => {
+  const { tabPrefixed } = await import('../bin/review-sheet.mjs');
+  assert.equal(tabPrefixed('<title>배치</title>', ''), '<title>배치</title>');
+  assert.match(tabPrefixed('<title>배치</title><b>', '에어'), /^<title>배치<\/title><script>.*"에어 · ".*<\/script><b>$/);
+  assert.doesNotMatch(tabPrefixed('<title>x</title>', '</script><i>'), /<\/script><i>/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-tab-'));
+  const { base, close } = await startServer(dir, 0);
+  try {
+    assert.doesNotMatch(await (await fetch(base + '/batch')).text(), /에어 · /);
+    process.env.REVIEW_SHEET_TAB_PREFIX = '에어';
+    for (const p of ['/', '/batch', '/board', '/chat.html', '/sheet.html']) assert.match(await (await fetch(base + p)).text(), /"에어 · "/, p);
+    assert.doesNotMatch(await (await fetch(base + '/sheet.css')).text(), /에어/);
+  } finally { delete process.env.REVIEW_SHEET_TAB_PREFIX; await close(); }
+});

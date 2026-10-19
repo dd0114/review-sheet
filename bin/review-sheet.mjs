@@ -1149,7 +1149,17 @@ export function transcribe(buf, c = sttConfig(), { from = 0, live = false } = {}
   return job;
 }
 
+/* 탭 제목 앞 접두어(#51) — 여러 머신 받은편지함을 한 브라우저에서 같이 쓸 때 탭을 구분한다(hero 2026-10-19 '에어').
+   REVIEW_SHEET_TAB_PREFIX 를 주면 HTML 의 </title> 뒤에 작은 스크립트를 넣어, 페이지가 제목을 바꿔도 앞에 다시 붙인다. */
+export function tabPrefixed(html, prefix = process.env.REVIEW_SHEET_TAB_PREFIX || '') {
+  const p = String(prefix).trim(); if (!p) return html;
+  const s = String(html), i = s.indexOf('</title>'); if (i < 0) return html;
+  const P = JSON.stringify(p + ' · ').replace(/</g, '\\u003c');
+  const js = `<script>(()=>{const P=${P};const f=()=>{if(!document.title.startsWith(P))document.title=P+document.title};f();const t=document.querySelector('title');if(t)new MutationObserver(f).observe(t,{childList:true,characterData:true,subtree:true})})()</script>`;
+  return s.slice(0, i + 8) + js + s.slice(i + 8);
+}
 function send(res, code, type, body, extra = {}) {
+  if (String(type).startsWith('text/html') && process.env.REVIEW_SHEET_TAB_PREFIX) body = tabPrefixed(body);
   res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...extra });
   res.end(body);
 }
