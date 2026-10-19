@@ -1097,3 +1097,20 @@ test('tab CLI: tab.json 쓰기·빈 값 지움·--clear', () => {
   run('tab', dir, '--clear');
   assert.equal(fs.existsSync(f), false);
 });
+
+test('chat pin/unpin: 방 맨 위 고정 글 하나 — 링크도 그대로, 새로 걸면 바뀌고 unpin 이면 사라진다 (#55)', async () => {
+  const dir = tmpDir();
+  const env = { ...process.env, REVIEW_SHEET_INBOX: dir };
+  execFileSync('node', [BIN, 'chat', 'new', 'docs', '--owner', 'pkch:docs'], { encoding: 'utf8', env });
+  execFileSync('node', [BIN, 'chat', 'pin', 'docs', '로드맵 http://x:5641/'], { encoding: 'utf8', env });
+  const { base, close } = await startServer(dir, 0);
+  try {
+    let j = await (await fetch(base + '/api/chat?c=docs')).json();
+    assert.equal(j.meta.pin.text, '로드맵 http://x:5641/'); assert.equal(j.messages.length, 0);   // 고정은 메시지가 아니다
+    execFileSync('node', [BIN, 'chat', 'pin', 'docs', '새 고정'], { encoding: 'utf8', env });
+    j = await (await fetch(base + '/api/chat?c=docs')).json(); assert.equal(j.meta.pin.text, '새 고정');
+    execFileSync('node', [BIN, 'chat', 'unpin', 'docs'], { encoding: 'utf8', env });
+    j = await (await fetch(base + '/api/chat?c=docs')).json(); assert.equal(j.meta.pin, undefined);
+  } finally { await close(); }
+  assert.throws(() => execFileSync('node', [BIN, 'chat', 'pin', 'nope', 'x'], { encoding: 'utf8', env, stdio: 'pipe' }));
+});

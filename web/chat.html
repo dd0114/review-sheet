@@ -18,6 +18,7 @@
   <div class="eyebrow"><a href="/" class="rs-back">← 받은편지함</a> <button type="button" class="rs-refresh" id="rs-refresh">↻ 새로고침</button> <span id="c-upd"></span></div>
   <h1 id="c-title">…</h1><span id="rs-push"></span>
   <p class="lede" id="c-lede"></p>
+  <div class="c-pin" id="c-pin" hidden></div>
   <div class="c-log" id="c-log"></div>
   <form class="c-bar" id="c-form">
     <div class="c-att" id="c-att" hidden></div>
@@ -56,6 +57,8 @@ const render = (m, msgs) => {
   meta = m;
   document.title = m.title; document.getElementById('c-title').textContent = m.title;
   document.getElementById('c-lede').textContent = m.owner + ' 와 직접 대화 · 세션은 "chat wait" 로 받고 답한다';
+  const pin = document.getElementById('c-pin'), pt = m.pin && m.pin.text ? '📌 ' + m.pin.text : '';   // 고정 글(chat pin) — 메시지 키와 별개로 매번 맞춘다
+  if (pin.dataset.t !== pt) { pin.dataset.t = pt; pin.innerHTML = pt ? linkify(pt) : ''; pin.hidden = !pt; }
   const key = msgs.length + ':' + (msgs.length ? msgs[0].id + ':' + msgs[msgs.length - 1].id : '') + ':' + (m.seenAt || '');
   if (key === lastKey) return; lastKey = key;
   const atBottom = nearBottom();
