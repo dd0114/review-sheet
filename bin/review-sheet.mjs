@@ -777,7 +777,7 @@ export function askItem(root, name, q, label, text) {
     child = spawn(hook, [s.name, s.from || '', q, a.id], { detached: true, stdio: ['pipe', 'ignore', 'ignore'],
       env: { ...process.env, REVIEW_SHEET_ASK_TEXT: text, REVIEW_SHEET_ASK_LABEL: where, REVIEW_SHEET_INBOX: root, REVIEW_SHEET_ASK_FILE: asksFile(root, s.name) } });
   } catch { return { id: a.id, via: 'chat', ch: fallback(-1) }; }
-  const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } finish(-2); }, Number(process.env.REVIEW_SHEET_ASK_HOOK_MS) || 120000);
+  const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGTERM'); } catch { try { child.kill(); } catch { /* gone */ } } finish(-2); }, Number(process.env.REVIEW_SHEET_ASK_HOOK_MS) || 300000);   // 훅의 자식(fleet send 등)까지 그룹째 — 늦게 닿아 채널과 두 번 가지 않게
   timer.unref();
   child.on('error', () => finish(-1));
   child.on('exit', code => finish(code));
