@@ -5,8 +5,9 @@
    5초 새로고침으로 목록이 다시 그려져도 커서는 같은 주소(href)를 따라가고, 그 줄이 없어지면(제출됨으로 내려감 등) 원래 자리 줄로.
    뒤로가기로 돌아오면 sessionStorage 에 둔 마지막 줄에서 다시 시작.
    채널·메모(#c-log/#m-log, hero 2026-10-20): ⌘J = 메시지 커서 켜기/끄기(켜면 맨 아래 최신, 입력칸 안에서도 — 켜면 입력칸 blur) · ↓/j ↑/k · g/G 처음/끝
+     f/b = 10개 아래/위 · 맨 아래(최신)에서 ↓/j 또는 f 로 끝을 넘으면 = 커서 끄고 입력칸(#c-in/#m-in)으로 (hero 2026-10-20 "바로 채팅창으로")
      r = 그 메시지에 답장(↩ 와 같음 → 답장 띠 + 입력칸 포커스, 커서 끔) · Enter = 인용 있으면 원문으로 · 메모 Enter/Space = 복사 · Esc 커서 끄기
-     입력칸 안에서는 ⌘J 말고 모든 키 무시. 3초 새로고침 뒤에도 커서는 같은 메시지 id 를 따라감.
+     입력칸 안에서는 ⌘J 말고 모든 키 무시(f·b 도 글자로). 3초 새로고침 뒤에도 커서는 같은 메시지 id 를 따라감.
    그 밖 페이지(시트·채널·메모): 커서 꺼진 상태에서 입력칸 밖 Esc = 받은편지함으로 (iframe 안·팝업 열림·녹음 중엔 안 함). 폰은 키보드가 없어 영향 없음. */
 (() => {
   const KEY = 'rs-kb-cur';
@@ -31,6 +32,13 @@
     };
     const mgo = i => { const ms = msgs(); if (!ms.length) return; i = Math.max(0, Math.min(ms.length - 1, i)); mcur = idOf(ms[i]); mIdx = i; mpaint(true); };
     const moff = () => { mcur = null; mpaint(false); };
+    const toInput = () => {   // 끝을 넘어 내려감 → 커서 끄고 입력칸으로 (맨 아래로 스크롤)
+      moff();
+      const inp = document.getElementById('c-in') || document.getElementById('m-in');
+      if (log) log.scrollTop = log.scrollHeight;
+      if (inp) { inp.focus(); inp.scrollIntoView({ block: 'nearest' }); }
+    };
+    const down = (i, n) => { if (i + n > msgs().length - 1) toInput(); else mgo(i + n); };   // 끝을 넘으면 입력칸
     if (log) new MutationObserver(() => mpaint(false)).observe(log, { childList: true });   // 3초 새로고침으로 다시 그려도 같은 메시지 id 를 따라감
     document.addEventListener('keydown', ev => {
       if (ev.defaultPrevented || ev.altKey || ev.isComposing) return;
@@ -45,8 +53,10 @@
       if (mcur) {
         const ms = msgs(), i = ms.findIndex(el => el.classList.contains('rs-kb')), m = ms[i];
         if (!m) return;
-        if (k === 'ArrowDown' || k === 'j') { ev.preventDefault(); mgo(i + 1); }
+        if (k === 'ArrowDown' || k === 'j') { ev.preventDefault(); down(i, 1); }
         else if (k === 'ArrowUp' || k === 'k') { ev.preventDefault(); mgo(i - 1); }
+        else if (k === 'f') { ev.preventDefault(); down(i, 10); }
+        else if (k === 'b') { ev.preventDefault(); mgo(i - 10); }
         else if (k === 'g') { ev.preventDefault(); mgo(0); }
         else if (k === 'G') { ev.preventDefault(); mgo(ms.length - 1); }
         else if (k === 'r') { const b = m.querySelector('.c-re'); if (b) { ev.preventDefault(); moff(); b.click(); } }   // 답장 띠 + 입력칸 포커스 (메모는 ↩ 없음 → 무시)
