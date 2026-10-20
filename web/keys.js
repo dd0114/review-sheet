@@ -1,6 +1,6 @@
 /* review-sheet 키보드 탐색 (hero 2026-10-19 "마우스 안 쓰고 큐 내려가며 빠르게 열기", 시트 root-hub-keyboard-1019 추천안).
    받은편지함(#rs-list 가 있는 페이지):
-     ↓/j 첫 누름 = 커서 켜기("답 기다리는 중" 첫 줄, 없으면 맨 위) · ↓/j ↑/k 한 줄씩 · Tab/⇧Tab 다음/이전 묶음 첫 줄 · g/G 맨 위/아래
+     ⌘J(Ctrl+J) = 커서 켜기/끄기(켜면 "답 기다리는 중" 첫 줄, 없으면 맨 위 — hero 2026-10-20 #144) · ↓/j ↑/k 한 줄씩 · Tab/⇧Tab 다음/이전 묶음 첫 줄 · g/G 맨 위/아래
      Enter/→ 열기 · ⌘/Ctrl+Enter 새 탭 · x = ✓ 확인(보고 시트) · f = 🔥 긴급 · Esc 커서 끄기
    5초 새로고침으로 목록이 다시 그려져도 커서는 같은 주소(href)를 따라가고, 그 줄이 없어지면(제출됨으로 내려감 등) 원래 자리 줄로.
    뒤로가기로 돌아오면 sessionStorage 에 둔 마지막 줄에서 다시 시작.
@@ -55,11 +55,12 @@
   document.addEventListener('keydown', ev => {
     if (ev.defaultPrevented || ev.altKey || ev.isComposing || typing(document.activeElement)) return;
     const on = !!list.querySelector('.rs-kb'), k = ev.key, mod = ev.metaKey || ev.ctrlKey;
+    if (mod && (k === 'j' || k === 'J' || ev.code === 'KeyJ')) { ev.preventDefault(); if (on) { cur = null; save(); paint(false); } else start(); return; }   // ⌘J = 켜기/끄기
     if (mod && k !== 'Enter') return;
+    if (!on) return;   // 커서가 꺼져 있으면 모든 키가 브라우저 기본 동작 그대로
     const rs = rows(), i = rs.findIndex(li => li.classList.contains('rs-kb'));
-    if (k === 'ArrowDown' || k === 'j') { ev.preventDefault(); on ? go(i + 1) : start(); return; }
-    if (!on) return;   // 아래 키들은 커서가 켜져 있을 때만 — 꺼져 있으면 브라우저 기본 동작 그대로
-    if (k === 'ArrowUp' || k === 'k') { ev.preventDefault(); go(i - 1); }
+    if (k === 'ArrowDown' || k === 'j') { ev.preventDefault(); go(i + 1); }
+    else if (k === 'ArrowUp' || k === 'k') { ev.preventDefault(); go(i - 1); }
     else if (k === 'Tab') { ev.preventDefault(); groupJump(ev.shiftKey ? -1 : 1); }
     else if (k === 'g') { ev.preventDefault(); go(0); }
     else if (k === 'G') { ev.preventDefault(); go(rs.length - 1); }
