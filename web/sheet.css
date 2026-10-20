@@ -296,5 +296,6 @@ body.rs-page.rs-checked{background:#DCE8DF}
 .rs-page .v-askq-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:76px;z-index:30;max-width:calc(100% - 32px);padding:10px 16px;border:0;border-radius:999px;background:#C96442;color:#fff;font:inherit;font-size:14px;box-shadow:0 4px 14px rgba(0,0,0,.18);cursor:pointer}
 /* ⌨ 키보드 탐색 커서 (hero 2026-10-19, web/keys.js) */
 .rs-page .rs-index li.rs-kb{outline:2px solid #C96442;outline-offset:2px;border-radius:12px}
+.rs-page .c-msg.rs-kb .c-bubble{outline:2px solid #C96442;outline-offset:2px}
 .rs-page .rs-kbhint{font-size:12px;color:#8A6D2E;cursor:help;white-space:nowrap}
 @media (hover:none){.rs-page .rs-kbhint{display:none}}
