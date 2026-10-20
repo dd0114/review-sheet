@@ -1201,10 +1201,10 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 
 function indexHtml(dir) {
   const init = JSON.stringify({ dir, ...inboxSheets(dir, false), chats: listChats(path.resolve(dir)), memos: listMemos(path.resolve(dir)) }).replace(/</g, '\\u003c');
-  return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="리뷰시트"><script src="/push.js" defer></script>
+  return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="리뷰시트"><script src="/push.js" defer></script><script src="/keys.js" defer></script>
 <title>review-sheet</title><link rel="stylesheet" href="/sheet.css">
 <body class="rs-page"><main><div class="eyebrow">REVIEW-SHEET · 받은편지함</div><h1>답변 시트</h1>
-<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a> <a class="rs-boardlink" href="/dash">자원 →</a> <a class="rs-boardlink" href="/batch">배치 →</a> ${readLinks(dir).map(l => `<a class="rs-boardlink" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)} →</a> `).join('')}<span id="rs-push"></span></p><div id="rs-list"></div></main>
+<p class="lede">${esc(dir)} · <span id="rs-upd"></span> <button type="button" class="rs-refresh" id="rs-refresh" title="목록 새로고침">↻ 새로고침</button> <a class="rs-boardlink" href="/board">진행판 →</a> <a class="rs-boardlink" href="/dash">자원 →</a> <a class="rs-boardlink" href="/batch">배치 →</a> ${readLinks(dir).map(l => `<a class="rs-boardlink" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)} →</a> `).join('')}<span id="rs-push"></span> <span class="rs-kbhint" title="↓·j 커서 · ↑↓ 이동 · Tab 다음 묶음 · Enter 열기 · ⌘Enter 새 탭 · x 확인 · f 긴급 · Esc 끄기 (시트·채널에선 Esc = 여기로)">⌨ ↓ 키보드</span></p><div id="rs-list"></div></main>
 <script>
 const INIT = ${init};
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1526,7 +1526,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
-    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/dash.html', '/batch.html', '/mic.js', '/compose.js', '/push.js', '/sw.js', '/manifest.webmanifest', '/icon-180.png', '/icon-512.png'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
+    if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/dash.html', '/batch.html', '/mic.js', '/compose.js', '/push.js', '/keys.js', '/sw.js', '/manifest.webmanifest', '/icon-180.png', '/icon-512.png'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
     serveFile(res, file);
