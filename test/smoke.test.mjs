@@ -842,37 +842,89 @@ test('추가 질문: _ask memo → owner channel gets one hero notice per new/ch
   } finally { await close(); }
 });
 
-test('문항 질문: ＋ 이것만 묻기 → 담당 채널로 그 문항만, 시트는 제출 안 됨, ask-reply/↩ 답장이 시트에 뜸, 답 없으면 허브에 한 번 (hero 2026-10-16)', async () => {
+test('문항 질문: ＋ 이것만 묻기 → 시트 안(asks/<시트>.jsonl)에만, 훅이 쓴 창으로 전달, ask-reply 가 시트에 뜸, 답 없으면 담당 채널에 한 줄 한 번 (#64)', async () => {
   const dir = tmpDir();
-  const { newChat, readChatLog, appendChat, askReply, askWatch, setHub } = await import('../bin/review-sheet.mjs');
+  const { newChat, readChatLog, askWatch } = await import('../bin/review-sheet.mjs');
   fs.writeFileSync(path.join(dir, 'infra-x-data.js'), `window.SHEET = { id: 'infra-x', title: 'T-x', from: 'infra', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a', '② b'], '①', 'w']] }] };`);
   newChat(dir, 'root', 'root', 'root:fleet2', true); newChat(dir, 'infra', 'infra', 'infra:fleet2');
+  const hookOut = path.join(dir, 'hook.out'), hook = path.join(dir, 'hook.sh');
+  fs.writeFileSync(hook, `#!/bin/sh\nprintf '%s|' "$@" > "${hookOut}"\ncat >> "${hookOut}"\nexit 0\n`, { mode: 0o755 });
+  const prevHook = process.env.REVIEW_SHEET_ASK_HOOK; process.env.REVIEW_SHEET_ASK_HOOK = hook;
   const { base, close } = await startServer(dir, 0);
+  const until = async f => { for (let i = 0; i < 100 && !f(); i++) await new Promise(r => setTimeout(r, 30)); };
+  const recs = () => fs.readFileSync(path.join(dir, 'asks', 'infra-x.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
   try {
     const ask = (body, ct = 'application/json') => fetch(base + '/__ask?d=infra-x', { method: 'POST', headers: { 'content-type': ct }, body: JSON.stringify(body) });
     assert.equal((await ask({ q: 'S-1', text: 'x' }, 'text/plain')).status, 415);
     assert.equal((await ask({ q: 'S-1', text: '  ' })).status, 400);
     const j = await (await ask({ q: 'S-1', label: '1 <b>q</b>', text: '② 고르면 뭐가 달라져?' })).json();
-    assert.equal(j.ch, 'infra');                                            // 담당 세션 직행
-    const m = readChatLog(dir, 'infra').at(-1);
-    assert.equal(m.from, 'hero'); assert.deepEqual(m.ask, { d: 'infra-x', q: 'S-1', text: '② 고르면 뭐가 달라져?', label: '1 q' });
-    assert.match(m.text, /문항 질문 \(시트 infra-x · S-1 「1 q」\): ② 고르면/);
+    assert.equal(j.via, 'hook'); assert.equal(j.ch, null);
+    const q0 = recs()[0];
+    assert.deepEqual({ from: q0.from, q: q0.q, label: q0.label, text: q0.text }, { from: 'hero', q: 'S-1', label: '1 q', text: '② 고르면 뭐가 달라져?' });
+    assert.equal(q0.id, j.id);
+    await until(() => recs().some(r => r.deliv === j.id));
+    assert.equal(recs().find(r => r.deliv === j.id).via, 'hook');
+    assert.equal(fs.readFileSync(hookOut, 'utf8'), `infra-x|infra|S-1|${j.id}|② 고르면 뭐가 달라져?`);   // 인자 4개 + stdin 질문
+    assert.equal(readChatLog(dir, 'infra').length + readChatLog(dir, 'root').length, 0);     // 채널엔 아무것도 안 감
     assert.equal((await (await fetch(base + '/__answers?sheet=infra-x', { cache: 'no-store' })).json()).savedAt, undefined);   // 제출 안 됨
     let asks = await (await fetch(base + '/api/asks?d=infra-x')).json();
     assert.equal(asks.length, 1); assert.deepEqual(asks[0].replies, []);
-    appendChat(dir, 'infra', 'infra:fleet2', '② 면 배포가 하루 늦어요', null, m.id);          // chat say --re 와 같은 길
-    execFileSync('node', [BIN, 'ask-reply', dir, 'infra-x', 'S-1', '덧붙여: 비용은 같아요'], { encoding: 'utf8' });
+    assert.match(execFileSync('node', [BIN, 'ask-reply', dir, 'infra-x', 'S-1', '② 면 배포가 하루 늦어요'], { encoding: 'utf8' }), /→ asks\/infra-x ↩#/);
     asks = await (await fetch(base + '/api/asks?d=infra-x')).json();
-    assert.deepEqual(asks[0].replies.map(r => r.text), ['② 면 배포가 하루 늦어요', '덧붙여: 비용은 같아요']);
-    assert.match(execFileSync('node', [BIN, 'asks', dir, 'infra-x'], { encoding: 'utf8' }), /S-1\t#\w+\t답 2/);
-    // 답 없는 질문 → stale 지나면 허브(root)에 한 번만
-    await ask({ q: 'S-memo', text: '이건 언제?' });
-    const stop = askWatch(dir, 30, 0); await new Promise(r => setTimeout(r, 150)); stop();
-    const hub = readChatLog(dir, 'root').filter(x => x.askStale);
-    assert.equal(hub.length, 1); assert.match(hub[0].text, /답 없음.*S-memo.*이건 언제\?/);
+    assert.deepEqual(asks[0].replies.map(r => [r.from, r.text]), [['infra', '② 면 배포가 하루 늦어요']]);
+    assert.match(execFileSync('node', [BIN, 'asks', dir, 'infra-x'], { encoding: 'utf8' }), /S-1\t#\w+\t답 1/);
+    assert.equal(readChatLog(dir, 'infra').length, 0);
+    // 답 없는 질문 → stale 지나면 담당 채널(infra)에 한 줄, 한 번만
+    const j2 = await (await ask({ q: 'S-memo', text: '이건 언제?' })).json();
+    assert.match(execFileSync('node', [BIN, 'asks', dir, '--open', '--prefix', 'infra'], { encoding: 'utf8' }), /S-memo\t#\w+\t답 없음/);
+    let stop = askWatch(dir, 30, 0); await new Promise(r => setTimeout(r, 150)); stop();
+    stop = askWatch(dir, 30, 0); await new Promise(r => setTimeout(r, 100)); stop();
+    const st = readChatLog(dir, 'infra').filter(x => x.askStale);
+    assert.equal(st.length, 1); assert.equal(st[0].askStale, j2.id);
+    assert.match(st[0].text, /^문항 질문 답 없음 \d+분 \(시트 infra-x · 문항 S-memo\) — review-sheet ask-reply infra-x S-memo "…" 로 답하거나 담당 창 확인$/);
+    assert.equal(readChatLog(dir, 'root').length, 0);
+    assert.equal(recs().filter(r => r.staleSent === j2.id).length, 1);
     const page = fs.readFileSync(path.join(path.dirname(BIN), '..', 'web', 'sheet.html'), 'utf8');
     assert.match(page, /＋ 이것만 묻기/); assert.match(page, /\/__ask\?d=/);
-  } finally { await close(); }
+  } finally { await close(); if (prevHook === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = prevHook; }
+});
+
+test('문항 질문: 훅이 없거나 실패하면 예전처럼 담당 채널로 — 그 ↩ 답장도 시트에 뜸 (#64)', async () => {
+  const dir = tmpDir();
+  const { newChat, readChatLog, appendChat, askItem, asksFor } = await import('../bin/review-sheet.mjs');
+  fs.writeFileSync(path.join(dir, 'infra-f-data.js'), `window.SHEET = { id: 'infra-f', title: 'T-f', from: 'infra', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
+  newChat(dir, 'root', 'root', 'root:hub', true); newChat(dir, 'infra', 'infra', 'infra:fleet2');
+  const prevHook = process.env.REVIEW_SHEET_ASK_HOOK;
+  try {
+    delete process.env.REVIEW_SHEET_ASK_HOOK;
+    const a = askItem(dir, 'infra-f', 'S-1', '1 q', '훅 없음');
+    assert.deepEqual([a.via, a.ch], ['chat', 'infra']);
+    const m = readChatLog(dir, 'infra').at(-1);
+    assert.deepEqual(m.askRef, { d: 'infra-f', q: 'S-1', id: a.id }); assert.equal(m.ask, undefined);
+    assert.match(m.text, /문항 질문 \(시트 infra-f · S-1 「1 q」\): 훅 없음/);
+    appendChat(dir, 'infra', 'infra:fleet2', '채널 답', null, m.id);        // chat say --re 길
+    assert.deepEqual(asksFor(dir, 'infra-f').map(x => [x.text, x.replies.map(r => r.text)]), [['훅 없음', ['채널 답']]]);
+    const bad = path.join(dir, 'bad.sh'); fs.writeFileSync(bad, '#!/bin/sh\nexit 3\n', { mode: 0o755 });
+    process.env.REVIEW_SHEET_ASK_HOOK = bad;
+    const b = askItem(dir, 'infra-f', 'S-1', '', '훅 실패');
+    assert.equal(b.via, 'hook');
+    for (let i = 0; i < 100 && !readChatLog(dir, 'infra').some(x => x.askRef && x.askRef.id === b.id); i++) await new Promise(r => setTimeout(r, 30));
+    assert.match(readChatLog(dir, 'infra').at(-1).text, /훅 실패/);
+    const d = fs.readFileSync(path.join(dir, 'asks', 'infra-f.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).find(r => r.deliv === b.id);
+    assert.deepEqual([d.via, d.ch, d.code], ['chat', 'infra', 3]);
+  } finally { if (prevHook === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = prevHook; }
+});
+
+test('문항 질문: 예전 시트(채널 로그의 ask)도 그대로 보이고 chat --re / ask-reply 답이 붙음 (#64)', async () => {
+  const dir = tmpDir();
+  const { newChat, appendChat, asksFor, askReply } = await import('../bin/review-sheet.mjs');
+  fs.writeFileSync(path.join(dir, 'infra-o-data.js'), `window.SHEET = { id: 'infra-o', title: 'T-o', from: 'infra', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
+  newChat(dir, 'root', 'root', 'root:hub', true); newChat(dir, 'infra', 'infra', 'infra:fleet2');
+  const m = appendChat(dir, 'infra', 'hero', '문항 질문 (옛)', null, null, { ask: { d: 'infra-o', q: 'S-1', text: '옛 질문', label: '' } });
+  appendChat(dir, 'infra', 'infra:fleet2', '옛 답', null, m.id);
+  const r = askReply(dir, 'infra-o', 'S-1', '덧붙임');
+  assert.deepEqual([r.ch, r.re], ['infra', m.id]);
+  assert.deepEqual(asksFor(dir, 'infra-o').map(x => [x.id, x.text, x.replies.map(y => y.text)]), [[m.id, '옛 질문', ['옛 답', '덧붙임']]]);
 });
 
 test('문항 질문: from 이 창 이름까지(pkch:서버)면 그 도메인 :main 채널로 — 허브로 새지 않음 (hero 2026-10-18)', async () => {

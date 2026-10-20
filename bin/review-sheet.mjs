@@ -74,7 +74,7 @@ function usage(code = 2) {
   review-sheet record [dir] <id> [--issue N] [--repo o/r]   # read 출력 전체(메모·_ask·문항 질문)를 이슈 댓글로, 다시 부르면 바뀐 줄만
   review-sheet migrate-assign [dir] [--dry-run]   # 옛 뒤바뀐 assign(이슈 칸에 창, 담당 칸에 번호) 맞바꾸기 — assign/.backup-<시각>/ 에 백업
   review-sheet asks [dir] [<시트>] [--open] [--prefix P]   # 문항 질문(시트 안 '＋ 이것만 묻기')과 답 수 — --open 답 없는 것만
-  review-sheet ask-reply [dir] <시트> <문항> "답" [--notice]   # 그 문항 질문에 ↩ 답장 → 시트 그 문항 밑에 바로 뜬다(chat say --re 와 같음)
+  review-sheet ask-reply [dir] <시트> <문항> "답" [--notice]   # 그 문항 질문에 ↩ 답장 → 시트 그 문항 밑에 바로 뜬다(asks/<시트>.jsonl)
   review-sheet checks [dir] [--open] [--since ISO] [--prefix P]   # 보고 시트(report:) — hero 가 ✓ 확인한 것 / --open 아직 안 한 것. 체크는 세션을 깨우지 않는다
   review-sheet unassigned [dir] [--prefix P]  # 문항 안 붙음(배정없음 포함)·되돌림·이슈 닫혔는데 단계 덜 됨 — 있으면 exit 5
   review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
@@ -720,53 +720,129 @@ function notifyAsk(root, id, text) {
   return c.name;
 }
 
-/* 문항 질문 (hero 2026-10-16) — 시트 안 '＋ 이것만 묻기'. 그 문항 하나만 담당 세션 채널로 hero 이름으로 보낸다(제출·다른 답과 무관 —
-   시트는 계속 '답 기다리는 중'). 메시지에 ask:{d,q,text} 를 달아 두고, 세션의 ↩ 답장(chat say --re 또는 ask-reply)을 시트가 그 문항 밑에 보여 준다.
-   담당 세션 직행(맥락 가진 쪽이 바로 답) — 담당 채널이 없으면 허브. 답 없이 ASK_STALE_MS 지나면 허브에 한 번 '답 없음' 알림(askWatch). */
+/* 문항 질문 (hero 2026-10-16, 2026-10-20 #64) — 시트 안 '＋ 이것만 묻기'. 그 문항 하나만 묻는다(제출·다른 답과 무관 — 시트는 계속 '답 기다리는 중').
+   질문과 답은 시트 안에만 산다: inbox/asks/<시트>.jsonl
+     질문 { id, ts, from: 'hero', q, label, text }   답 { id, ts, from, re: <질문 id>, text }
+     기록 { id, ts, deliv: <질문 id>, via: 'hook'|'chat', ch?, code? }   { id, ts, staleSent: <질문 id>, ch }
+   전달: REVIEW_SHEET_ASK_HOOK(명령 경로)이 있으면 `hook <시트> <from> <문항> <질문 id>` (질문 글 = stdin 과 env REVIEW_SHEET_ASK_TEXT)
+   로 떼어 실행 — 시트를 쓴 창에 바로 넣는 일은 설치 쪽 훅이 한다. 훅이 없거나 0 아닌 값으로 끝나면(또는 시간 초과) 예전처럼
+   담당 채널(없으면 허브)에 hero 이름으로 한 통 — 그 메시지의 ↩ 답장도 시트에 뜬다.
+   답: review-sheet ask-reply <시트> <문항> "…" → asks 파일에. 답 없이 ASK_STALE_MS 지나면 담당 채널(없으면 허브)에 한 줄, 한 번만(askWatch).
+   예전 시트의 문항 질문(채널 로그의 ask:{d,q,text}) 은 그대로 읽고, chat say --re 답장도 그대로 붙는다. */
 const ASK_MAX = 2000;
 const sheetByName = (root, name) => listSheets(root).find(x => !x.error && x.name === name) || null;
 const askChans = (root, s) => [chatFor(root, s.from, s.name), hubChat(root)].filter((c, i, a) => c && a.findIndex(x => x && x.name === c.name) === i);
+const asksDir = root => path.join(root, 'asks');
+const asksFile = (root, name) => path.join(asksDir(root), name + '.jsonl');
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+function readAsksFile(root, name) {
+  try { return fs.readFileSync(asksFile(root, name), 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); }
+  catch { return []; }
+}
+function appendAsks(root, name, rec) {
+  fs.mkdirSync(asksDir(root), { recursive: true });
+  const r = { id: newId(), ts: new Date().toISOString(), ...rec };
+  fs.appendFileSync(asksFile(root, name), JSON.stringify(r) + '\n');
+  return r;
+}
+/** 훅이 없거나 실패했을 때: 예전처럼 담당 채널(없으면 허브)로 한 통. askRef 로 시트 질문과 이어 둔다(↩ 답장이 시트에 뜨게). */
+function askToChat(root, s, a) {
+  const c = askChans(root, s)[0]; if (!c) return null;
+  const where = a.label ? ` 「${a.label}」` : '';
+  const msg = appendChat(root, c.name, 'hero', `문항 질문 (시트 ${s.name} · ${a.q}${where}): ${a.text}\n— 이 문항 하나만 묻는 것(시트는 제출 안 됨). review-sheet ask-reply ${s.name} ${a.q} "…" (또는 chat say ${c.name} --re 이 메시지)로 답하면 시트 그 문항 밑에 바로 뜬다. 시트를 다시 보내지 말 것. 물은 것에 빠짐없이(${CHAT_REPLY_MAX}자까지).`,
+    null, null, { askRef: { d: s.name, q: a.q, id: a.id } });
+  return c.name;
+}
 export function askItem(root, name, q, label, text) {
   root = path.resolve(root);
   const s = sheetByName(root, name); if (!s) throw new Error(`시트 ${name} 없음`);
   q = String(q || '').trim(); text = String(text || '').trim();
   if (!/^[^\s]{1,64}$/.test(q)) throw new Error('문항 키가 이상합니다');
   if (!text) throw new Error('질문이 비었습니다'); if (text.length > ASK_MAX) throw new Error(`질문은 ${ASK_MAX}자까지`);
-  const c = askChans(root, s)[0]; if (!c) throw new Error('보낼 채널 없음');
   const where = String(label || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
-  const msg = appendChat(root, c.name, 'hero', `문항 질문 (시트 ${s.name} · ${q}${where ? ` 「${where}」` : ''}): ${text}\n— 이 문항 하나만 묻는 것(시트는 제출 안 됨). 답장(chat say ${c.name} --re 이 메시지 또는 review-sheet ask-reply ${s.name} ${q} "…")으로 답하면 시트 그 문항 밑에 바로 뜬다. 시트를 다시 보내지 말 것. 물은 것에 빠짐없이(${CHAT_REPLY_MAX}자까지).`,
-    null, null, { ask: { d: s.name, q, text, label: where } });
-  return { ch: c.name, id: msg.id };
+  const a = appendAsks(root, s.name, { from: 'hero', q, label: where, text });
+  const fallback = code => {
+    try { const ch = askToChat(root, s, a); appendAsks(root, s.name, { deliv: a.id, via: 'chat', ch, ...(code !== undefined ? { code } : {}) }); return ch; }
+    catch (e) { console.error('ask:', e.message || e); return null; }
+  };
+  const hook = process.env.REVIEW_SHEET_ASK_HOOK;
+  if (!hook) return { id: a.id, via: 'chat', ch: fallback() };
+  let done = false;
+  const finish = code => {
+    if (done) return; done = true; clearTimeout(timer);
+    if (code === 0) appendAsks(root, s.name, { deliv: a.id, via: 'hook' }); else fallback(code);
+  };
+  let child;
+  try {
+    child = spawn(hook, [s.name, s.from || '', q, a.id], { detached: true, stdio: ['pipe', 'ignore', 'ignore'],
+      env: { ...process.env, REVIEW_SHEET_ASK_TEXT: text, REVIEW_SHEET_ASK_LABEL: where, REVIEW_SHEET_INBOX: root, REVIEW_SHEET_ASK_FILE: asksFile(root, s.name) } });
+  } catch { return { id: a.id, via: 'chat', ch: fallback(-1) }; }
+  const timer = setTimeout(() => { try { child.kill(); } catch { /* gone */ } finish(-2); }, Number(process.env.REVIEW_SHEET_ASK_HOOK_MS) || 120000);
+  timer.unref();
+  child.on('error', () => finish(-1));
+  child.on('exit', code => finish(code));
+  child.stdin.on('error', () => {}); child.stdin.end(text);
+  child.unref();
+  return { id: a.id, via: 'hook', ch: null };
 }
 export function asksFor(root, name) {
   root = path.resolve(root);
   const s = sheetByName(root, name); if (!s) return [];
-  const out = [];
+  const out = [], byChatMsg = new Map();
+  const recs = readAsksFile(root, name);
+  for (const m of recs) if (m.from === 'hero' && m.q && !m.re)
+    out.push({ id: m.id, ch: null, q: m.q, label: m.label || '', text: m.text, ts: m.ts,
+      replies: recs.filter(r => r.re === m.id && r.from !== 'hero').map(r => ({ from: r.from, ts: r.ts, text: r.text })) });
   for (const c of askChans(root, s)) {
     const log = readChatLog(root, c.name);
-    for (const m of log) if (m.from === 'hero' && m.ask && m.ask.d === name)
-      out.push({ id: m.id, ch: c.name, q: m.ask.q, label: m.ask.label || '', text: m.ask.text, ts: m.ts,
-        replies: log.filter(r => r.re === m.id && r.from !== 'hero' && !r.askStale).map(r => ({ from: r.from, ts: r.ts, text: r.text })) });
+    for (const m of log) {
+      if (m.from !== 'hero') continue;
+      if (m.askRef && m.askRef.d === name) { byChatMsg.set(m.id, { ch: c.name, log, ask: m.askRef.id }); continue; }
+      if (m.ask && m.ask.d === name)   // 예전 시트: 질문이 채널 로그에 산다
+        out.push({ id: m.id, ch: c.name, q: m.ask.q, label: m.ask.label || '', text: m.ask.text, ts: m.ts,
+          replies: log.filter(r => r.re === m.id && r.from !== 'hero' && !r.askStale).map(r => ({ from: r.from, ts: r.ts, text: r.text })) });
+    }
+  }
+  for (const [mid, { log, ask }] of byChatMsg) {   // 채널로 넘어간(훅 없음·실패) 질문의 ↩ 답장도 시트에
+    const a = out.find(x => x.id === ask && !x.ch); if (!a) continue;
+    for (const r of log) if (r.re === mid && r.from !== 'hero' && !r.askStale) a.replies.push({ from: r.from, ts: r.ts, text: r.text });
+    a.replies.sort((x, y) => x.ts < y.ts ? -1 : 1);
   }
   return out.sort((a, b) => a.ts < b.ts ? -1 : 1);
 }
-/** 세션이 답할 때: 그 문항의 가장 최근 질문(답 없는 것 우선)에 ↩ 답장으로 붙인다. from = 그 채널 owner */
-export function askReply(root, name, q, text) {
+/** 세션이 답할 때: 그 문항의 가장 최근 질문(답 없는 것 우선)에 ↩ 답장으로 붙인다. 새 질문 → asks 파일, 예전 질문 → 그 채널 */
+export function askReply(root, name, q, text, from) {
   root = path.resolve(root);
   const all = asksFor(root, name).filter(a => a.q === q); if (!all.length) throw new Error(`시트 ${name} 문항 ${q} 에 온 질문 없음 — asks ${name} 로 확인`);
   const a = [...all].reverse().find(x => !x.replies.length) || all.at(-1);
-  const meta = readChatMeta(root, a.ch);
-  return { ch: a.ch, re: a.id, msg: appendChat(root, a.ch, meta.owner || a.ch, String(text), null, a.id) };
+  if (a.ch) { const meta = readChatMeta(root, a.ch); return { ch: a.ch, re: a.id, msg: appendChat(root, a.ch, from || meta.owner || a.ch, String(text), null, a.id) }; }
+  const s = sheetByName(root, name);
+  return { ch: `asks/${name}`, re: a.id, msg: appendAsks(root, name, { from: from || (s && s.from) || 'session', re: a.id, text: String(text) }) };
 }
 export function askWatch(root, ms = Number(process.env.REVIEW_SHEET_ASK_MS) || 60000, stale = Number(process.env.REVIEW_SHEET_ASK_STALE_MS) || 600000) {
   const tick = () => {
     try {
-      root = path.resolve(root); const hub = hubChat(root); if (!hub) return;
-      const now = Date.now();
+      root = path.resolve(root);
+      const now = Date.now(), old = ts => now - Date.parse(ts) < stale || now - Date.parse(ts) > 864e5;
+      let files = []; try { files = fs.readdirSync(asksDir(root)).filter(f => f.endsWith('.jsonl')).map(f => f.slice(0, -6)); } catch { /* none */ }
+      for (const name of files) {
+        const recs = readAsksFile(root, name);
+        const open = recs.filter(m => m.from === 'hero' && m.q && !m.re && !old(m.ts) && !recs.some(r => r.staleSent === m.id));
+        if (!open.length) continue;
+        const s = sheetByName(root, name); if (!s) continue;
+        const answered = new Set(asksFor(root, name).filter(a => a.replies.length).map(a => a.id));
+        for (const m of open) {
+          if (answered.has(m.id)) continue;
+          const c = askChans(root, s)[0]; if (!c) continue;
+          appendChat(root, c.name, 'hero', `문항 질문 답 없음 ${Math.round((now - Date.parse(m.ts)) / 60000)}분 (시트 ${name} · 문항 ${m.q}) — review-sheet ask-reply ${name} ${m.q} "…" 로 답하거나 담당 창 확인`, null, null, { askStale: m.id });
+          appendAsks(root, name, { staleSent: m.id, ch: c.name });
+        }
+      }
+      const hub = hubChat(root); if (!hub) return;   // 예전 시트: 채널 로그에 사는 질문
       for (const c of listChats(root)) {
         const log = readChatLog(root, c.name);
         for (const m of log) {
-          if (m.from !== 'hero' || !m.ask || m.askStaleSent || now - Date.parse(m.ts) < stale || now - Date.parse(m.ts) > 864e5) continue;
+          if (m.from !== 'hero' || !m.ask || m.askStaleSent || old(m.ts)) continue;
           if (log.some(r => r.re === m.id && r.from !== 'hero')) continue;
           const hl = readChatLog(root, hub.name);
           if (hl.some(r => r.askStale === m.id)) continue;
