@@ -278,7 +278,8 @@ export function reportOf(sheet) {
   let kind = sheet.report ? (REPORTS[sheet.report] ? sheet.report : REPORT_ALIAS[sheet.report] || 'note') : '', title = t;
   // 제목만 보고 고를 땐 결정할 게 없는 시트만 — '머지했습니다 · 이렇게 해놓겠습니다'(승인 요청)가 ✓ 로 끝나면 세션이 답을 못 받는다
   const plan = PLAN_RE.test(t + String(sheet.lede || ''));
-  if (!kind && decides(sheet, plan ? GO_OPT : undefined)) return null;
+  // report 를 직접 넣었어도 진짜 고를 질문(승인·A/B)이 있으면 결정 시트 — 📌 보고로 내려가면 Peter 가 못 보고 지나간다(hero 2026-10-21 infra-dorm-iam-narrow-1020)
+  if (decides(sheet, plan ? GO_OPT : undefined)) return null;
   for (const [re, k] of REPORT_TITLE) if (re.test(t)) { title = t.replace(re, '') || t; kind = kind || k; break; }
   if (!kind && plan) kind = 'note';
   return kind ? { kind, label: REPORTS[kind], title } : null;
