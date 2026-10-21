@@ -109,10 +109,11 @@ function parseArgs(argv) {
 /** Chat is for short notices; anything hero must look at or confirm belongs on a sheet (hero 2026-10-14).
  *  Returns why a chat message looks like review material, or null. `chat say --notice` skips it.
  *  heroReply = hero 메시지에 다는 답장(--re): 물은 걸 다 답하라고 2000자까지(hero 2026-10-15, 시트 root-terse-answers-1015 —
- *  500자에 막혀 답을 깎아 보내 "왜 대충 답하냐"가 나왔다). 링크·확인 요청 막기는 그대로. */
+ *  500자에 막혀 답을 깎아 보내 "왜 대충 답하냐"가 나왔다). 링크·확인 요청 막기는 그대로 — 단 '보고:' 로 시작하면 링크 통과. */
 export const CHAT_MAX = 500, CHAT_REPLY_MAX = 2000;
 export function chatGate(text, { heroReply = false } = {}) {
-  if (/https?:\/\/|\b\d{1,3}(\.\d{1,3}){3}:\d+/.test(text)) return '링크가 들어 있음';
+  // '보고:' 로 시작하는 끝·머지·배포 보고는 확인할 URL 이 필수라 링크를 허용한다(hero 2026-10-21). 확인 요청·길이 막기는 그대로
+  if (!/^\s*보고\s*:/.test(text) && /https?:\/\/|\b\d{1,3}(\.\d{1,3}){3}:\d+/.test(text)) return '링크가 들어 있음';
   if (/말씀\s*(해\s*)?주세요|알려\s*주세요|확인\s*(해\s*)?주세요|봐\s*주세요|골라\s*주세요|정해\s*주세요|컨펌|괜찮은지|괜찮을까요|어떠세요|어떤가요|할까요\?|될까요\?|맞나요\?/.test(text)) return '확인·결정 요청이 들어 있음';
   const max = heroReply ? CHAT_REPLY_MAX : CHAT_MAX;
   if (text.length > max) return heroReply ? `긴 글(${text.length}자 > ${max}) — 답을 줄이지 말고 메시지 두 개로 나눠 보내거나 시트로` : `긴 글(${text.length}자 — 결과 보고는 시트로. hero 질문에 답하는 거면 --re <그 메시지 id> 로 답장하면 ${CHAT_REPLY_MAX}자까지)`;

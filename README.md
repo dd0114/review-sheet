@@ -16,7 +16,7 @@
 - **자원판(`/dash`)** — 바깥 스크립트가 넘긴 숫자 카드(메모리·디스크·사용량 …)와 줄 목록(무엇이 얼마나 쓰나)을 보여 주는 보기 전용 판. 카드나 줄을 누르면 그 항목의 시계열 그래프(선=자원, 막대=누적량). 생산자가 주간 토큰 총량을 주면 제목 옆 ⓘ 로 토큰을 주간 % 로 바꿔 본다. 30초 갱신.
 - **받은편지함 하나, 서버 하나, 탭 하나** — 모든 세션이 `~/.review-sheet/inbox` 에 시트를 넣고, 상주 서버(`:5600`)가 큐처럼 보여 준다(답 기다리는 중 / 제출됨).
 - **탭 이름표** — 맥 여러 대의 받은편지함을 한 브라우저에서 같이 열 때 `review-sheet tab --prefix 구맥 --icon 🖥` 하면 그 서버의 모든 탭이 `구맥 · …` 제목 + 🖥 아이콘이 된다(`<inbox>/tab.json`, 재시작 없이 반영, env `REVIEW_SHEET_TAB_PREFIX`/`REVIEW_SHEET_TAB_ICON` 이 우선).
-- **폰에서** — [Tailscale](https://tailscale.com) 로 맥과 폰을 같은 tailnet 에 두면 밖에서도 `http://<맥 tailnet 주소>:5600/` 로 열린다.
+- **폰에서** — 서버는 기본 127.0.0.1 이라 폰에서 바로 안 열린다. [Tailscale](https://tailscale.com) 로 맥과 폰을 같은 tailnet 에 두고 `bin/tailscale-serve.sh on` 하면 `https://<맥>.<tailnet>.ts.net/` 로 열린다(마이크도 https 에서만). `--lan` 으로 띄우면 `http://<맥 tailnet 주소>:5600/` 도 된다.
 
 이 문서에서 **hero** = 결정을 내리는 사람(리뷰어). 채팅 기록의 `from: 'hero'` 도 같은 뜻이다.
 
@@ -26,11 +26,11 @@
 git clone https://github.com/dd0114/review-sheet ~/review-sheet
 mkdir -p ~/bin && ln -sf ~/review-sheet/bin/review-sheet.mjs ~/bin/review-sheet   # PATH 에 ~/bin
 mkdir -p ~/.claude/skills && ln -sf ~/review-sheet ~/.claude/skills/review-sheet   # Claude Code 스킬로 등록
-review-sheet install-inbox            # launchd plist 생성(:5600, 기본 --lan) → 출력된 launchctl bootstrap 명령 실행(부팅 시 자동)
+review-sheet install-inbox            # launchd plist 생성(:5600, 기본 127.0.0.1 — --lan 을 줄 때만 0.0.0.0) → 출력된 launchctl bootstrap 명령 실행(부팅 시 자동)
 open http://127.0.0.1:5600/
 ```
 
-Linux 는 `install-inbox` 대신 `review-sheet serve --port 5600 --lan` 을 systemd user 서비스 등으로 띄운다.
+Linux 는 `install-inbox` 대신 `review-sheet serve --port 5600` 을 systemd user 서비스 등으로 띄운다(기본 127.0.0.1). 폰은 `bin/tailscale-serve.sh on`(tailnet HTTPS)으로 감싸는 것을 권한다 — `--lan`(0.0.0.0)은 아래 보안 절을 읽고 필요할 때만.
 
 ## 쓰기
 
@@ -42,13 +42,13 @@ review-sheet read myproj-v1-rules [--json]
 review-sheet ls                       # 대기 / 제출됨
 review-sheet assign myproj-v1-rules '#12' myproj:main     # 후속 일 배정 → 시트가 닫힘
 review-sheet stage myproj-v1-rules 라이브 --off --eta "다음 시즌" "16:05 배포"   # 끝난 상태 → 시트 줄 맨 앞 태그
-review-sheet unassigned               # 배정 없음 · 답 바뀜 · 멈춤 시트
+review-sheet unassigned               # 배정 없음 · 문항 안 붙음 · 답 바뀜 · 되돌림 · 이슈 닫힘 시트 (시간 기준 '멈춤'은 없음)
 
 review-sheet chat new main --title "메인 허브" --owner main --hub   # → http://127.0.0.1:5600/hub
 review-sheet chat wait main --timeout 14400   # 세션: 사람이 쓸 때까지 블록 → chat say main "…" 로 답 → 다시 wait
 review-sheet chat say main "답장"
-review-sheet chat say main --re <id> "그 메시지에 대한 답"   # 카톡식 답장 — wait/read 출력 맨 앞 #id. 답장일 때만, 강제 아님
-# 링크·"말씀 주세요" 같은 확인 요청·500자 넘는 글은 막힘(exit 6) — 결과물은 시트로. 꼭 채팅인 알림만 --notice
+review-sheet chat say main --re <id> "그 메시지에 대한 답"   # 카톡식 답장 — wait/read 출력 맨 앞 #id. hero 메시지에 답할 땐 항상
+# 링크·"말씀 주세요" 같은 확인 요청·500자 넘는 글은 막힘(exit 6) — 결과물은 시트로. '보고:' 로 시작하는 글은 링크 통과(끝·머지·배포 보고의 확인 URL). 그 밖에 꼭 채팅인 알림만 --notice
 # hero 메시지에 다는 답장(--re)은 2000자까지 — 물은 건 줄이지 말고 다 답한다(hero 2026-10-15)
 node --test test/
 ```
@@ -60,7 +60,7 @@ node --test test/
 1. **대답하기** — 세션: `new` → 시트 작성 → `wait`/`read`. hero: 고르고 메모·첨부, 모자라면 문항의 '＋ 이것만 묻기'. 세션은 그 질문을 자기 창에서 받아 `ask-reply <시트> <문항> "…"` 로 답한다.
 
    **문항 질문 전달 훅** — `REVIEW_SHEET_ASK_HOOK=<명령 경로>` 를 서버 환경에 두면 질문마다 `<훅> <시트> <from> <문항> <질문 id>` 를 떼어 실행한다(질문 글은 stdin 과 `REVIEW_SHEET_ASK_TEXT`, 그 밖에 `REVIEW_SHEET_ASK_LABEL`·`REVIEW_SHEET_INBOX`·`REVIEW_SHEET_ASK_FILE`). 시트를 쓴 창을 찾아 넣는 일(창이 닫혔으면 그 대화를 다시 여는 일)은 설치 쪽 훅이 맡는다. 훅이 없거나 0 아닌 값으로 끝나면(또는 `REVIEW_SHEET_ASK_HOOK_MS`, 기본 5분 초과) 담당 채널(없으면 허브)로 한 통 — 그 메시지의 `chat say --re` 답장도 시트에 뜬다. 무응답 알림 시간은 `REVIEW_SHEET_ASK_STALE_MS`(기본 10분).
-2. **끝난 상태 알리기** — 세션: 답을 받으면 `assign <시트> <이슈#> <담당>`, 일이 진행될 때마다 `stage <시트> 머지|배포대기|라이브|끝 [--off] [--eta <언제>] "<한 줄>"`. 태그는 `머지`=🔀 머지됨, `배포대기`=⏳ 배포 대기, `라이브`=🚀 배포됨, `--off`=스위치 꺼짐(어드민 스위치, 켜야 보임), `--eta <언제>`=배포·공개 예정(시각이나 '다음 시즌'). hero 는 시트 줄 맨 앞 태그만 보면 된다. `unassigned` 는 담당이 안 정해졌거나 24시간 넘게 멈춘 시트를 찾는다(exit 5).
+2. **끝난 상태 알리기** — 세션: 답을 받으면 `assign <시트> <이슈#> <담당>`, 일이 진행될 때마다 `stage <시트> 머지|배포대기|라이브|끝 [--off] [--eta <언제>] "<한 줄>"`. 태그는 `머지`=🔀 머지됨, `배포대기`=⏳ 배포 대기, `라이브`=🚀 배포됨, `--off`=스위치 꺼짐(어드민 스위치, 켜야 보임), `--eta <언제>`=배포·공개 예정(시각이나 '다음 시즌'). hero 는 시트 줄 맨 앞 태그만 보면 된다. `unassigned` 는 담당이 안 정해졌거나(배정없음) · 답한 문항이 장부에 안 붙었거나(문항안붙음) · 배정 뒤 답이 바뀌었거나(답바뀜) · 근거 PR 이 되돌려졌거나(되돌림) · 이슈는 닫혔는데 라이브·끝 전인(이슈닫힘) 시트를 찾는다(exit 5). 시간으로 '멈춤'을 재지 않는다(예전 24시간 기준은 뺐다).
 3. **진행판 보기** — 프로젝트마다 생산자 스크립트를 하나 둔다(이슈 목록·작업 창·CI 상태를 읽어 60초마다):
 
    ```bash
@@ -80,7 +80,7 @@ node --test test/
 
 ## 보안 — 꼭 읽기
 
-서버에 **인증이 없다.** `--lan` 이면 같은 네트워크의 누구나 시트를 읽고 채팅에 글을 쓸 수 있다(CORS 도 열려 있음).
+서버에 **인증이 없다.** 기본은 127.0.0.1(이 기기만)이고, `--lan` 이면 같은 네트워크의 누구나 시트를 읽고 채팅에 글을 쓸 수 있다(CORS 도 열려 있음).
 
 - 집·회사처럼 믿을 수 있는 네트워크 + Tailscale 에서만 `--lan` 을 쓴다. 카페·공용 와이파이에선 `--lan` 을 끄거나 방화벽으로 막는다.
 - 폰 접속은 Tailscale 주소로만 하는 것을 권한다(tailnet 은 내 기기끼리만 보인다). 인터넷에 포트를 열지 않는다.

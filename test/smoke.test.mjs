@@ -123,6 +123,19 @@ test('wait: returns when the answers file is saved', async () => {
   } finally { await close(); }
 });
 
+test("chat say: '보고:' 로 시작하면 링크 통과, 그냥 링크는 exit 6 (hero 2026-10-21)", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-chat-report-'));
+  const { newChat, readChatLog, chatGate } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root:hub');
+  const env = { ...process.env, REVIEW_SHEET_INBOX: dir };
+  execFileSync('node', [BIN, 'chat', 'say', 'root', '보고: 머지 끝 — PR https://github.com/o/r/pull/9'], { encoding: 'utf8', env, stdio: 'pipe' });
+  assert.equal(readChatLog(dir, 'root').length, 1);
+  assert.throws(() => execFileSync('node', [BIN, 'chat', 'say', 'root', '머지 끝 https://github.com/o/r/pull/9'], { encoding: 'utf8', env, stdio: 'pipe' }), e => e.status === 6 && /링크/.test(String(e.stderr)));
+  assert.equal(readChatLog(dir, 'root').length, 1);
+  // 링크만 풀린다 — 확인 요청은 '보고:' 여도 막힘
+  assert.match(chatGate('보고: http://x:1/p 괜찮은지 봐 주세요'), /요청/);
+});
+
 test('chat: new → page posts as hero → owner reads/says → hero sees 읽음 + unread counts', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-chat-'));
   const { newChat, listChats, appendChat, readChatLog, chatGate } = await import('../bin/review-sheet.mjs');
