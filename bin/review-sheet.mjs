@@ -255,34 +255,46 @@ export function stageTag(x) {   // 아이콘 + 한 단어 (hero 2026-10-15 "문�
     default: return x.stage;
   }
 }
-/* 보고 시트 (hero 2026-10-15) — 결정할 게 없는 알림(머지·배포·끝). 시트 데이터에 report: 'merged'|'deployed'|'done'|'note'
-   (또는 '머지'·'배포'·'끝'·'보고'). 받은편지함 줄·시트 맨 위에 아이콘+한 단어 배지, 제출 대신 ✓ 확인 체크.
+/* 보고 시트 (hero 2026-10-15) — 결정할 게 없는 알림(머지·배포·끝). 시트 데이터에 report: 'merged'|'deployed'|'done'
+   (또는 '머지'·'배포'·'끝'). 받은편지함 줄·시트 맨 위에 아이콘+한 단어 배지, 제출 대신 ✓ 확인 체크.
    체크는 answers 가 아니라 inbox/checked.json 에만 남는다 → wait 가 안 깨고 세션 토큰을 안 쓴다. 세션은 나중에 `checks` 로 한 번에 본다.
-   report 가 없는 옛 시트도 제목이 '✅ 머지했습니다 — …' 처럼 시작하면 보고로 보고, 그 긴 머리는 배지로 옮긴다. */
-export const REPORTS = { merged: '🔀 머지됨', deployed: '🚀 배포됨', done: '✅ 끝남', note: '📌 보고' };
+   report 가 없는 옛 시트도 제목이 '✅ 머지했습니다 — …' 처럼 시작하면 보고로 보고, 그 긴 머리는 배지로 옮긴다.
+   📌 note('보고'·'이렇게 해놓겠습니다' 제목)는 더 이상 보고가 아니다(hero 2026-10-22) — 읽고 확인할 시트(스터디 요약·계획)가 보고 칸으로
+   내려가 Peter 가 놓쳤다. 이제 일반 리뷰 시트. 단 이미 ✓ 확인된(checked.json 에 있는) 옛 시트는 예전 분류 그대로(목록 폭주 방지). */
+export const REPORTS = { merged: '🔀 머지됨', deployed: '🚀 배포됨', done: '✅ 끝남', note: '📌 보고' };   // note = 옛 ✓ 시트 표시용
 const REPORT_ALIAS = { 머지: 'merged', 배포: 'deployed', 끝: 'done', 보고: 'note' };
 const REPORT_TITLE = [
   [/^\s*(?:(?:✅|🔀|📌)\s*)?머지(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'merged'],
   [/^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'deployed'],
   [/^\s*(?:📌\s*)?(?:이렇게\s*)?해\s*놓겠습니다\s*[—:·-]?\s*/, 'note'],
 ];
-/* '이렇게 해놓겠습니다'는 답 기다림이 아니라 보고(hero 2026-10-15 "보고 라고 라벨을 띄워줘도 될거같은데 진행해놓고").
-   이런 시트의 '① 머지·진행·이대로 실행' 같은 첫 선택지는 고르는 게 아니라 진행 알림 — 결정으로 치지 않는다. */
+/* '이렇게 해놓겠습니다' 계획 시트 = report 없는 리뷰 시트(hero 2026-10-22). 첫 선택지가 '이대로 진행'·'머지' 여도 리뷰 칸에 남는다
+   — 제목에서 보고를 자동으로 잡지 않는다. */
 const PLAN_RE = /해\s*놓겠습니다/;
-const GO_OPT = /확인|그대로|진행|머지|이대로|실행|적용/;
-/** 결정할 게 있는 시트: 첫 선택지가 '확인'·'그대로' 류(해놓겠습니다 시트면 진행 알림 류까지)가 아닌 질문이 있거나, lede·제목에 승인 요청.
- *  해놓겠습니다 시트는 lede 첫 줄이 늘 '승인 요청 = …' 이라(시트 규칙) 그 문구로는 가르지 않고 진짜 고를 질문으로만 가른다. */
+const GO_OPT = /확인|그대로|진행|머지|이대로|실행|적용/;   // 옛 ✓ 계획 시트(legacyReportOf) 전용
+const kindOf = r => r ? (REPORTS[r] ? r : REPORT_ALIAS[r] || 'note') : '';
+/** 결정할 게 있는 시트: 첫 선택지가 '확인'·'그대로' 류가 아닌 질문이 있거나, lede·제목에 승인 요청. */
 const decides = (sheet, ok = /확인|그대로/) => (ok !== GO_OPT && /승인 요청/.test(String(sheet.title || '') + String(sheet.lede || ''))) ||
   (sheet.sections || []).some(s => (s.questions || []).some(q => { const o = Array.isArray(q) ? q[2] : q.opts; const f = o && o[0]; const l = Array.isArray(f) ? f[0] : f; return l && !ok.test(String(l)); }));
-export function reportOf(sheet) {
+/** 2026-10-22 전 규칙(note·해놓겠습니다 = 보고). 이미 ✓ 확인된 시트만 이걸로 본다. */
+function legacyReportOf(sheet) {
   const t = String(sheet.title || sheet.id || '');
-  let kind = sheet.report ? (REPORTS[sheet.report] ? sheet.report : REPORT_ALIAS[sheet.report] || 'note') : '', title = t;
-  // 제목만 보고 고를 땐 결정할 게 없는 시트만 — '머지했습니다 · 이렇게 해놓겠습니다'(승인 요청)가 ✓ 로 끝나면 세션이 답을 못 받는다
+  let kind = kindOf(sheet.report), title = t;
   const plan = PLAN_RE.test(t + String(sheet.lede || ''));
-  // report 를 직접 넣었어도 진짜 고를 질문(승인·A/B)이 있으면 결정 시트 — 📌 보고로 내려가면 Peter 가 못 보고 지나간다(hero 2026-10-21 infra-dorm-iam-narrow-1020)
   if (decides(sheet, plan ? GO_OPT : undefined)) return null;
   for (const [re, k] of REPORT_TITLE) if (re.test(t)) { title = t.replace(re, '') || t; kind = kind || k; break; }
   if (!kind && plan) kind = 'note';
+  return kind ? { kind, label: REPORTS[kind], title } : null;
+}
+/** 보고 시트면 { kind, label, title }, 아니면 null. opt.checked = 그 시트가 checked.json 에 있음(옛 note ✓ 시트를 보고로 남김). */
+export function reportOf(sheet, { checked = false } = {}) {
+  if (checked) { const old = legacyReportOf(sheet); if (old) return old; }
+  const t = String(sheet.title || sheet.id || '');
+  let kind = kindOf(sheet.report), title = t;
+  // 고를 질문(승인·A/B)이 있으면 결정 시트 — report 를 직접 넣었어도(hero 2026-10-21 infra-dorm-iam-narrow-1020)
+  if (kind === 'note' || decides(sheet)) return null;
+  const plan = PLAN_RE.test(t + String(sheet.lede || ''));
+  for (const [re, k] of REPORT_TITLE) if (re.test(t)) { if (k === 'note' || (!kind && plan)) break; title = t.replace(re, '') || t; kind = kind || k; break; }
   return kind ? { kind, label: REPORTS[kind], title } : null;
 }
 const checkedFile = dir => path.join(dir, 'checked.json');
@@ -902,7 +914,7 @@ function listSheetsRaw(dir) {
   const out = files.map(f => {
     const name = f.slice(0, -'-data.js'.length);
     const ck = path.join(path.resolve(dir), name), hit = summaryCache.get(ck), dataM = mtimeOf(path.join(dir, f));
-    if (hit && hit.dataM === dataM && (hit.sum.error || hit.ansM === mtimeOf(answersFile(dir, hit.sum.id))))
+    if (hit && hit.dataM === dataM && (hit.sum.error || (hit.ansM === mtimeOf(answersFile(dir, hit.sum.id)) && hit.ckd === !!checked[name])))
       return hit.sum.error ? hit.sum : live(name, hit.sum);
     dirty = true;
     try {
@@ -914,13 +926,13 @@ function listSheetsRaw(dir) {
       let createdAt = sheet.createdAt || null;
       if (!createdAt) { try { createdAt = fs.statSync(path.join(dir, f)).mtime.toISOString(); } catch { /* ignore */ } }
       const savedAt = saved && saved.savedAt || null;
-      const rep = reportOf(sheet);
+      const rep = reportOf(sheet, { checked: !!checked[name] });
       const sum = { name, id: sheet.id, title: rep ? rep.title : sheet.title || sheet.id, from: sheet.from || '', createdAt,
                total: qs.length, picked, savedAt, submitted: !!savedAt, report: rep ? rep.label : '' };
       // 부분 제출 (hero 2026-10-15) — 제출됐는데 고르지 않은 문항(메모만 포함)이 남음 = 미결. 배지로만 보이고(hero 의 '답 기다림' 칸엔 안 올림 —
       // 남은 문항은 세션 몫), read/wait 출력과 unassigned 가 세션에게 '남은 문항만 새 시트로' 를 알린다
       if (savedAt && !rep && unpicked) sum.partial = unpicked;
-      summaryCache.set(ck, { dataM, ansM: mtimeOf(answersFile(dir, sheet.id)), sum });
+      summaryCache.set(ck, { dataM, ansM: mtimeOf(answersFile(dir, sheet.id)), ckd: !!checked[name], sum });
       return live(name, sum);
     } catch (e) { const sum = { name, error: String(e.message || e) }; summaryCache.set(ck, { dataM, sum }); return sum; }
   });

@@ -759,11 +759,11 @@ test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세
     assert.deepEqual([by('rep-new').report, by('rep-new').title], ['🔀 머지됨', '제출 버튼 위치']);
     assert.deepEqual([by('rep-old').report, by('rep-old').title], ['🔀 머지됨', '마이크 단축키 (PR #13)']);
     assert.deepEqual([by('plain').report, by('plain').title], ['', '머지 순서 정하기']);
-    assert.deepEqual([by('plan').report, by('plan').title], ['📌 보고', '부분 제출 표시']);   // 해놓겠습니다 = 보고, 진행(hero 2026-10-15)
-    assert.equal(by('plan-ask').report, '📌 보고');                         // 해놓겠습니다 시트의 '승인 요청 = …' 첫 줄은 결정 신호 아님
-    assert.equal(by('plan-go').report, '📌 보고');                         // '① 머지' 는 진행 알림
+    assert.deepEqual([by('plan').report, by('plan').title], ['', '이렇게 해놓겠습니다 — 부분 제출 표시']);   // 해놓겠습니다 = 리뷰 시트(hero 2026-10-22)
+    assert.equal(by('plan-ask').report, '');                              // 승인 요청은 답 기다림
+    assert.equal(by('plan-go').report, '');                               // 첫 선택지 '① 머지' 여도 계획 시트는 리뷰 칸(hero 2026-10-22)
     assert.equal(by('plan-pick').report, '');                              // 진짜 고를 게 있으면 결정                               // 승인 요청은 답 기다림
-    assert.notEqual(by('mixed').report, '');                               // 머지했습니다 · 해놓겠습니다 + '① 머지' = 보고(hero 2026-10-15, #21 뒤집음)
+    assert.equal(by('mixed').report, '');                                  // 머지했습니다 · 해놓겠습니다 + '① 머지' = 리뷰 칸(hero 2026-10-22)
     const post = (d, on) => fetch(base + '/__check?d=' + d, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) });
     assert.equal((await post('plain', true)).status, 400);                 // 보고 시트만
     assert.equal((await fetch(base + '/__check?d=rep-new', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' })).status, 415);
@@ -780,6 +780,38 @@ test('report: 보고 시트 ✓ 확인 — checked.json 만, answers 안 씀(세
     assert.equal(run('checks', dir).out, '');
     const html = await (await fetch(base + '/')).text();
     assert.match(html, /rs-check/); assert.match(html, /확인할 보고/);
+  } finally { await close(); }
+});
+
+test('report: 📌 note 는 보고 칸에서 빠짐 — 보고는 머지·배포·끝만, 이미 ✓ 된 옛 note 는 그대로 보고 (hero 2026-10-22)', async () => {
+  const dir = tmpDir();
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const sheet = (id, extra) => fs.writeFileSync(path.join(dir, id + '-data.js'), 'window.SHEET = ' + JSON.stringify({ id, title: 't', sections: [{ id: 'a', code: 'A', title: 's', questions: [] }], ...extra }) + ';');
+  sheet('note-new', { report: 'note', title: '스터디 요약' });
+  sheet('note-ko', { report: '보고', title: '읽을 거리' });
+  sheet('note-old', { report: 'note', title: '옛 보고' });
+  sheet('plan-old', { title: '이렇게 해놓겠습니다 — 옛 계획', lede: '승인 요청 = 아래대로', sections: [{ id: 'a', code: 'A', title: 's', questions: [{ k: '1', q: '진행', opts: [['① 이대로 진행'], ['② 보류']] }] }] });
+  sheet('plan-new', { title: '이렇게 해놓겠습니다 — 새 계획', sections: [{ id: 'a', code: 'A', title: 's', questions: [{ k: '1', q: '진행', opts: [['① 이대로 진행'], ['② 보류']] }] }] });
+  sheet('merged', { report: 'merged', title: '버튼 위치' });
+  sheet('done', { report: '끝', title: '정리' });
+  fs.writeFileSync(path.join(dir, 'checked.json'), JSON.stringify({ 'note-old': '2026-10-20T00:00:00.000Z', 'plan-old': '2026-10-20T00:00:00.000Z' }));
+  const { base, close } = await startServer(dir, 0);
+  try {
+    let inbox = await (await fetch(base + '/api/inbox')).json();
+    const by = n => inbox.sheets.find(s => s.name === n);
+    assert.deepEqual([by('note-new').report, by('note-new').checkedAt], ['', null]);   // 미확인 note → 리뷰 시트
+    assert.equal(by('note-ko').report, '');
+    assert.equal(by('plan-new').report, '');                                         // 해놓겠습니다 제목 → 보고 아님
+    assert.equal(by('plan-new').title, '이렇게 해놓겠습니다 — 새 계획');
+    assert.deepEqual([by('note-old').report, by('note-old').checkedAt], ['📌 보고', '2026-10-20T00:00:00.000Z']);   // ✓ 된 옛 note → 보고 그대로
+    assert.deepEqual([by('plan-old').report, by('plan-old').title], ['📌 보고', '옛 계획']);
+    assert.deepEqual([by('merged').report, by('done').report], ['🔀 머지됨', '✅ 끝남']);
+    const post = (d, on) => fetch(base + '/__check?d=' + d, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ on }) });
+    assert.equal((await post('note-new', true)).status, 400);                        // 새 note 는 ✓ 대상 아님
+    assert.equal((await post('note-old', false)).status, 200);                       // 옛 note ✓ 해제는 된다
+    inbox = await (await fetch(base + '/api/inbox')).json();
+    assert.equal(by('note-old').report, '');                                         // 해제하면 리뷰 시트로
+    assert.equal(by('plan-old').report, '📌 보고');
   } finally { await close(); }
 });
 
