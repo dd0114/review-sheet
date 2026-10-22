@@ -51,16 +51,17 @@ const norm = qq => Array.isArray(qq) ? { k: qq[0], q: qq[1], opts: qq[2].map(x =
 
 /* 보고 시트 (hero 2026-10-15) — D.report 또는 '✅ 머지했습니다 — …' 같은 제목 → 아이콘+한 단어 배지, 아래 줄 ✓ 확인 체크(세션 안 깨움).
    bin/review-sheet.mjs reportOf 와 같은 규칙. */
-const REPORTS = { merged: '🔀 머지됨', deployed: '🚀 배포됨', done: '✅ 끝남', note: '📌 보고' }, RALIAS = { 머지: 'merged', 배포: 'deployed', 끝: 'done', 보고: 'note' };
+const REPORTS = { merged: '🔀 머지됨', deployed: '🚀 배포됨', done: '✅ 끝남' }, RALIAS = { 머지: 'merged', 배포: 'deployed', 끝: 'done' };
+/* 📌 note·'이렇게 해놓겠습니다'는 보고가 아니라 리뷰 시트(hero 2026-10-22). 옛 ✓ note 시트는 받은편지함 줄에서만 보고로 남는다. */
 const REP = (() => {
   const t = String(D.title || D.id);
-  let k = D.report ? (REPORTS[D.report] ? D.report : RALIAS[D.report] || 'note') : '', title = t;
-  const plan = /해\s*놓겠습니다/.test(t + String(D.lede || '')), ok = plan ? /확인|그대로|진행|머지|이대로|실행|적용/ : /확인|그대로/;
-  const decides = (!plan && /승인 요청/.test(t + String(D.lede || ''))) || (D.sections || []).some(s => (s.questions || []).some(q => { const o = Array.isArray(q) ? q[2] : q.opts; const f = o && o[0]; const l = Array.isArray(f) ? f[0] : f; return l && !ok.test(String(l)); }));
-  if (!k && decides) return null;
-  for (const [re, kk] of [[/^\s*(?:(?:✅|🔀|📌)\s*)?머지(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'merged'], [/^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, 'deployed'], [/^\s*(?:📌\s*)?(?:이렇게\s*)?해\s*놓겠습니다\s*[—:·-]?\s*/, 'note']])
-    if (re.test(t)) { title = t.replace(re, '') || t; k = k || kk; break; }
-  if (!k && plan) k = 'note';   // '이렇게 해놓겠습니다' = 보고(hero 2026-10-15)
+  let k = D.report ? (REPORTS[D.report] ? D.report : RALIAS[D.report] || '') : '', title = t;
+  if (D.report && !k) return null;   // note·'보고'·모르는 값
+  const plan = /해\s*놓겠습니다/.test(t + String(D.lede || ''));
+  const decides = /승인 요청/.test(t + String(D.lede || '')) || (D.sections || []).some(s => (s.questions || []).some(q => { const o = Array.isArray(q) ? q[2] : q.opts; const f = o && o[0]; const l = Array.isArray(f) ? f[0] : f; return l && !/확인|그대로/.test(String(l)); }));
+  if (decides) return null;
+  for (const re of [/^\s*(?:(?:✅|🔀|📌)\s*)?머지(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/, /^\s*(?:(?:✅|🚀|📌)\s*)?배포(?:했습니다|되었습니다|됨|완료)\s*[—:·-]?\s*/])
+    if (re.test(t)) { if (!k && plan) break; title = t.replace(re, '') || t; k = k || (re.source.includes('머지') ? 'merged' : 'deployed'); break; }
   return k ? { label: REPORTS[k], title } : null;
 })();
 if (REP) document.body.classList.add('rs-report');
