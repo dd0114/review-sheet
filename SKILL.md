@@ -160,7 +160,7 @@ hero 는 탭 하나만 둔다(5초마다 자동 갱신). 세션마다 서버·�
 ```
 세션(소유자) 쪽
   review-sheet chat new <ch> --title "<표시 이름>" --owner <세션>   # 1회. inbox/chat/<ch>.json + .jsonl
-  review-sheet chat wait <ch> --timeout 14400                      # 백그라운드. hero 새 메시지가 오면 출력하고 exit 0 (읽음 처리) → 답하고 다시 wait
+  review-sheet wait-any <ch> --sheets <prefix> --timeout 14400    # 백그라운드. hero 새 글·해당 시트 새 제출을 모아 출력하고 exit 0 → 처리한 뒤 다시 대기
   review-sheet chat say  <ch> "<답>"      (또는  … say <ch> - <<< "$text")   # 소유자 이름으로 기록
   review-sheet chat say  <ch> --re <id> "<답>"                    # 답장(카톡식 인용) — wait/read 출력 맨 앞의 #id 가 원문. hero 메시지에 답할 땐 항상
   review-sheet chat read <ch> [--all] [--json]                     # 안 읽은 hero 메시지(또는 전부)
@@ -188,8 +188,8 @@ review-sheet chat hub <ch>       # 허브 바꾸기(하나만)
   - `[이슈제기]` — 불명확해도 **먼저** SoT 이슈를 만들고(SoT 이슈 레포) 답장(`--re`)에 링크. 애매한 점은 그 뒤에 묻고 이슈 본문을 고쳐 쓴다 — 컴팩트해도 제기한 이슈가 사라지지 않게.
   - `[버그제보]` — `bug` 라벨 이슈를 만들고 바로 고친다. 답장에 링크.
   - `[지난이슈확인]` — 관련 이슈를 찾아 현재 상태(진행·막힘·끝남)부터 답한다. 이슈가 없으면 지금 만든다.
-- 세션은 채널에 **항상 `wait` 를 걸어 둔다**(백그라운드 1개). 끝나면(hero 메시지 수신 / 타임아웃 exit 3) 답하고 즉시 다시 건다. 컴팩션·재기동 후에도 첫 할 일은 `chat read <ch>` → 답 → `wait` 재장전.
-- ⚠️ **`chat wait` 는 hero 글에만 깬다** — 다른 세션이 그 채널에 쓴 글은 깨우지 않는다. 세션 글까지 보려면 대기가 끝날 때마다 `chat read <ch> --all` 로 한 번 훑는다.
+- 세션은 **채널 대기와 시트 감시를 `wait-any` 하나로 건다**(백그라운드 1개). `--sheets` 에 담당 시트 이름의 접두어를 쉼표로 묶어 넣는다. hero 의 새 채팅 글이나 답 내용이 바뀐 새 제출을 받으면 기본 20초 동안 더 모아 한 번에 출력한다(시트 `read` 요약 포함). 끝나면 처리하고 즉시 다시 건다. 첫 실행은 기존 제출도 통지한다. 컴팩션·재기동 뒤 같은 채널·접두어로 재장전하면 이미 출력한 제출은 다시 알리지 않는다. 상태 파일이 손상되면 격리하고 현재 제출을 다시 통지한다.
+- `chat wait` 와 `wait-any` 는 hero 의 직접 쓴 글과 긴급 지정·해제, 답이 필요한 시트 질문에 깬다. 일반 자동 게시와 세션 글에는 깨지 않는다. 세션 글까지 보려면 대기가 끝날 때 `chat read <ch> --all` 로 한 번 훑는다.
 - 대화창 말투 그대로, 물은 것은 빠짐없이(§답을 받은 뒤 19). 긴 결정은 시트로 보낸다.
 
 ### 채널 글 기준 (hero 2026-10-21)
@@ -313,10 +313,11 @@ hero 체크리스트 (1회): Tailscale admin 콘솔 → **DNS → HTTPS Certific
 | `chat new <ch> [--title T] [--owner S]` | 상시 채널 생성(inbox 고정) |
 | `chat hub [<ch>]` | 메인 허브 채널 보기/지정 — 받은편지함 맨 위 ★, `/hub` 리다이렉트 |
 | `chat wait <ch> [--timeout SEC]` | hero 의 새 메시지까지 블록(exit 3 = 타임아웃, 세션 글엔 안 깸 — `chat read --all`) → 출력 + 읽음 처리. 첨부 이미지는 `[이미지] <절대경로>` 줄로 나온다 → Read 로 열어 본다 |
+| `wait-any <ch> [--sheets <prefix>[,<prefix>…]] [--timeout SEC] [--settle SEC]` | hero 새 글과 접두어가 맞는 시트의 새 제출을 한 번에 기다림(기본 모음 20초). 시트는 `SUBMITTED:` 와 `read` 요약으로 출력. 사건 exit 0, 타임아웃 exit 3; 제출 상태는 inbox 에 저장 |
 | `chat say <ch> [--re <id>] [--notice] <text…\|->` | 소유자 이름으로 답 기록 (`-` = stdin). `--re` = 그 메시지에 답장 — 말풍선 위에 원문 인용, 누르면 원문으로 이동. 링크 · 확인 요청 · 500자 넘는 글은 시트로 보내라며 막음(exit 6). 단 `보고:` 로 시작하면 링크는 통과(확인 요청·길이는 그대로). `--notice` = 꼭 채팅인 알림만 통과 |
 | `chat read <ch> [--all] [--json]` · `chat ls` | 안 읽은 메시지 / 전부 · 채널 목록(미읽 수). 줄마다 `#<id>` 로 시작 — `--re` 에 쓴다 |
 
-HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모 건수), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text, files?, re?, kind?}`(페이지 = hero; `re` = 답장 원문 id, 없는 id 면 평문으로 저장; `kind` = `issue|bug|followup`, 그 밖의 값은 버림), 전부 CORS 열림. 메모: `GET /api/memo?m=` · `POST /__memo?m=` `{text}` 보냄 / `{del: id}` 지움 (CORS 없음 — 페이지만 쓴다, 세션 금지).
+HTTP: `/hub`(허브 채널로 302), `/api/inbox`(시트+채널+메모 건수), `/api/chats`, `/api/chat?c=`, `POST /__chat?c=` `{text, files?, re?, kind?, auto?}`(페이지 = hero; 중요하지 않은 자동 게시만 `auto: true` 로 대기를 건너뛴다. 리소스 hold/해제·준비된 일처럼 조치할 일은 `auto` 를 빼고 보낸다; `re` = 답장 원문 id, 없는 id 면 평문으로 저장; `kind` = `issue|bug|followup`, 그 밖의 값은 버림), 전부 CORS 열림. 메모: `GET /api/memo?m=` · `POST /__memo?m=` `{text}` 보냄 / `{del: id}` 지움 (CORS 없음 — 페이지만 쓴다, 세션 금지).
 
 의존성 없음, Node 18+. 테스트: `node --test <SKILL_DIR>/test/`.
 
