@@ -734,6 +734,47 @@ function notifyAsk(root, id, text) {
   return c.name;
 }
 
+/* 답 저장 훅 (room #171) — 세션은 `wait` 로 기다리는 동안만 답을 안다. 대기가 끝나 있으면 놓치니, 답 파일을 쓴 직후 설치 쪽 훅을 부른다.
+   전달: REVIEW_SHEET_ANSWER_HOOK(명령 경로)이 있으면 `hook <시트> <from> <답 파일 절대경로>` 를 떼어 실행
+   (env REVIEW_SHEET_INBOX, REVIEW_SHEET_ANSWER_SUMMARY = '3/4 선택 · 메모 2' 같은 한 줄). 훅이 없으면 아무 일 없음.
+   저장은 '제출' 버튼으로만 오지만 고쳐서 몇 초 안에 다시 내는 일이 있어 시트별 ANSWER_HOOK_GAP 안의 재저장은 한 번으로 묶는다
+   — 첫 저장은 바로, 그 사이 저장들은 창이 끝날 때 한 번(그때 답 파일 = 마지막 답). 실패·시간 초과는 로그 한 줄, 저장·응답과 무관. */
+const ANSWER_HOOK_GAP = 5000;
+const answerHookAt = new Map();   // <root>/<시트 id> → { last, timer }
+/** '3/4 선택 · 메모 2' — 고른 문항/전체, 메모 쓴 칸 수(전체 메모 포함). */
+export function answerSummary(sheet, saved) {
+  const A = (saved && saved.answers) || {};
+  const qs = sheet.sections.flatMap(s => (s.questions || []).map(q => `${s.code}-${normQ(q).k}`));
+  const memos = Object.values(A).filter(a => a && typeof a.memo === 'string' && a.memo.trim()).length;
+  return `${qs.filter(k => A[k] && A[k].pick).length}/${qs.length} 선택${memos ? ` · 메모 ${memos}` : ''}`;
+}
+function runAnswerHook(root, id) {
+  const hook = process.env.REVIEW_SHEET_ANSWER_HOOK; if (!hook) return;
+  const s = listSheets(root).find(x => !x.error && x.id === id);
+  let sum = '';
+  try { if (s) sum = answerSummary(loadSheet(root, s.name), readAnswers(root, id)); } catch { /* 요약 없이 부른다 */ }
+  let child;
+  try {
+    child = spawn(hook, [s ? s.name : id, (s && s.from) || '', answersFile(root, id)], { detached: true, stdio: 'ignore',
+      env: { ...process.env, REVIEW_SHEET_INBOX: root, REVIEW_SHEET_ANSWER_SUMMARY: sum } });
+  } catch (e) { console.error('answer hook:', e.message || e); return; }
+  const timer = setTimeout(() => { console.error(`answer hook: ${id} 시간 초과`); try { process.kill(-child.pid, 'SIGTERM'); } catch { try { child.kill(); } catch { /* gone */ } } }, Number(process.env.REVIEW_SHEET_ANSWER_HOOK_MS) || 60000);   // 훅의 자식까지 그룹째
+  timer.unref();
+  child.on('error', e => { clearTimeout(timer); console.error('answer hook:', e.message || e); });
+  child.on('exit', code => { clearTimeout(timer); if (code) console.error(`answer hook: ${id} exit ${code}`); });
+  child.unref();
+}
+function answerHook(root, id) {
+  if (!process.env.REVIEW_SHEET_ANSWER_HOOK) return;
+  const k = path.join(root, id), st = answerHookAt.get(k) || { last: 0, timer: null };
+  answerHookAt.set(k, st);
+  if (st.timer) return;   // 창 끝에 이미 한 번 잡혀 있다
+  const wait = st.last + ANSWER_HOOK_GAP - Date.now();
+  if (wait <= 0) { st.last = Date.now(); return runAnswerHook(root, id); }
+  st.timer = setTimeout(() => { st.timer = null; st.last = Date.now(); runAnswerHook(root, id); }, wait);
+  st.timer.unref();
+}
+
 /* 문항 질문 (hero 2026-10-16, 2026-10-20 #64) — 시트 안 '＋ 이것만 묻기'. 그 문항 하나만 묻는다(제출·다른 답과 무관 — 시트는 계속 '답 기다리는 중').
    질문과 답은 시트 안에만 산다: inbox/asks/<시트>.jsonl
      질문 { id, ts, from: 'hero', q, label, text }   답 { id, ts, from, re: <질문 id>, text }
@@ -1445,6 +1486,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
             fs.writeFileSync(file + '.tmp', JSON.stringify(json, null, 2) + '\n');
             fs.renameSync(file + '.tmp', file);
             const notified = askOf(json) && askOf(json) !== prevAsk ? notifyAsk(root, id, askOf(json)) : null;
+            try { answerHook(root, id); } catch (e) { console.error('answer hook:', e.message || e); }
             send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, savedAt: json.savedAt, file, notified }));
           } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
         });

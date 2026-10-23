@@ -934,6 +934,37 @@ test('문항 질문: ＋ 이것만 묻기 → 시트 안(asks/<시트>.jsonl)에
   } finally { await close(); if (prevHook === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = prevHook; }
 });
 
+test('답 저장 훅: REVIEW_SHEET_ANSWER_HOOK 이 있으면 저장 직후 `<훅> <시트> <from> <답 파일>` (+요약 env), 몇 초 안 재저장은 묶음, 없으면 그대로 (room #171)', async () => {
+  const dir = tmpDir();
+  fs.writeFileSync(path.join(dir, 'infra-h-data.js'), `window.SHEET = { id: 'infra-h', title: 'T-h', from: 'infra', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a', '② b'], '①', 'w'], ['2', 'q2', ['① a'], '①', 'w']] }] };`);
+  const hookOut = path.join(dir, 'ahook.out'), hook = path.join(dir, 'ahook.sh');
+  fs.writeFileSync(hook, `#!/bin/sh\nprintf '%s|' "$@" "$REVIEW_SHEET_INBOX" "$REVIEW_SHEET_ANSWER_SUMMARY" >> "${hookOut}"\necho >> "${hookOut}"\n`, { mode: 0o755 });
+  const prev = process.env.REVIEW_SHEET_ANSWER_HOOK;
+  const until = async f => { for (let i = 0; i < 100 && !f(); i++) await new Promise(r => setTimeout(r, 30)); };
+  const lines = () => { try { return fs.readFileSync(hookOut, 'utf8').split('\n').filter(Boolean); } catch { return []; } };
+  try {
+    delete process.env.REVIEW_SHEET_ANSWER_HOOK;   // 훅 없음 → 저장은 그대로, 아무것도 안 부름
+    let srv = await startServer(dir, 0);
+    const post = (base, answers) => fetch(base + '/__answers?sheet=infra-h', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answers }) });
+    assert.equal((await post(srv.base, { 'S-1': { pick: '① a' } })).status, 200);
+    await new Promise(r => setTimeout(r, 150));
+    assert.deepEqual(lines(), []);
+    await srv.close();
+    process.env.REVIEW_SHEET_ANSWER_HOOK = hook;
+    srv = await startServer(dir, 0);
+    try {
+      const j = await (await post(srv.base, { 'S-1': { pick: '② b', memo: '왜냐면' }, 'S-memo': { memo: '전체' } })).json();
+      assert.equal(j.ok, true);
+      await until(() => lines().length);
+      assert.deepEqual(lines(), [`infra-h|infra|${path.resolve(dir, 'answers', 'infra-h.json')}|${path.resolve(dir)}|1/2 선택 · 메모 2|`]);
+      assert.equal(j.file, path.resolve(dir, 'answers', 'infra-h.json'));
+      assert.equal((await post(srv.base, { 'S-1': { pick: '① a' } })).status, 200);   // 5초 안 재저장 → 바로 안 부름(창 끝에 한 번)
+      await new Promise(r => setTimeout(r, 200));
+      assert.equal(lines().length, 1);
+    } finally { await srv.close(); }
+  } finally { if (prev === undefined) delete process.env.REVIEW_SHEET_ANSWER_HOOK; else process.env.REVIEW_SHEET_ANSWER_HOOK = prev; }
+});
+
 test('문항 질문: 훅이 없거나 실패하면 예전처럼 담당 채널로 — 그 ↩ 답장도 시트에 뜸 (#64)', async () => {
   const dir = tmpDir();
   const { newChat, readChatLog, appendChat, askItem, asksFor } = await import('../bin/review-sheet.mjs');
