@@ -157,6 +157,8 @@ document.addEventListener('keydown', ev => {
   ev.preventDefault(); const b = chkBtn || saveBtn; if(!b.disabled) b.click();
 });
 
+/* 실행 기록 (Jack 10-20 120초 무수정 승인) — 연 때·고른 때·메모 바뀐 때를 서버 events/<id>.jsonl 에. 실패해도 화면은 그대로. */
+const track = (ev, q, value, bulk) => { try { fetch('/__ev?sheet=' + encodeURIComponent(D.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ev, q, value, bulk: !!bulk }), keepalive: true }).catch(() => {}); } catch(_){} };
 /* answers: tap an option to pick (tap again to clear), memo per question. */
 const KEY = 'review-sheet-' + D.id;
 const st = document.getElementById('v-st');
@@ -221,8 +223,10 @@ document.getElementById('app').addEventListener('click', ev => {
   li.parentNode.querySelectorAll('li').forEach(x => x.classList.remove('pick'));
   if(!on) li.classList.add('pick');
   draft();
+  track('pick', li.closest('.v-q').dataset.q, on ? '' : li.dataset.t);
 });
 document.getElementById('app').addEventListener('input', ev => { if(ev.target.matches('textarea')) draft(); });
+document.getElementById('app').addEventListener('change', ev => { if(ev.target.matches('textarea.v-memo')) track('memo', ev.target.closest('.v-q').dataset.q, ev.target.value.trim().length); });
 /* attachments: each file uploads right away (so a draft only ever holds names the server has), then shows as a chip —
    images as a thumbnail, others as a name — with ✕ to drop it from the answer. */
 const IMGX = /\.(png|jpe?g|gif|webp)$/i;
@@ -266,7 +270,7 @@ document.getElementById('app').addEventListener('drop', ev => {
   ev.preventDefault(); q.classList.remove('drop'); attach(q, [...ev.dataTransfer.files]);
 });
 document.getElementById('v-all').addEventListener('click', () => {
-  document.querySelectorAll('.v-q ul').forEach(ul => { if(!ul.querySelector('li.pick')){ const r = ul.querySelector('li.on'); if(r) r.classList.add('pick'); } });
+  document.querySelectorAll('.v-q ul').forEach(ul => { if(!ul.querySelector('li.pick')){ const r = ul.querySelector('li.on'); if(r){ r.classList.add('pick'); track('pick', ul.closest('.v-q').dataset.q, r.dataset.t, true); } } });
   draft();
 });
 saveBtn.addEventListener('click', async () => {
@@ -290,7 +294,7 @@ saveBtn.addEventListener('click', async () => {
 });
 (async () => {
   let saved = null;
-  try { const r = await fetch('/__answers?sheet=' + encodeURIComponent(D.id), { cache: 'no-store' }); if(r.ok) saved = await r.json(); } catch(_){}
+  try { const r = await fetch('/__answers?sheet=' + encodeURIComponent(D.id) + '&open=1', { cache: 'no-store' }); if(r.ok) saved = await r.json(); } catch(_){}
   if(!saved || !saved.answers){ try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch(_){} }
   apply(saved);
   markSubmitted(saved && saved.savedAt);

@@ -24,6 +24,7 @@
  *   answers/<id>.files/ files the reviewer attached to a question (page: 📎·paste·drop → POST /__answers/file), served at /answers/<id>.files/<name>
  *   assign/<id>.json    { issue, owner, repo, at, stages:[{stage,note,at,by,pr,sha,…}], items:{<q>:{kind,pr|issue|to,ans,at,by}}, heroSeenAt } written by `assign`/`stage`/`items`;
  *                       assign/.since = when the gate started (older answers are exempt), assign/.items-since = when the per-question ledger started
+ *   events/<id>.jsonl   append-only 실행 기록 {ts,sheet,ev:open|pick|memo|submit|check,…} — 페이지가 열 때·고를 때·제출·✓ 때 남김, `executions` 가 내보냄
  *   record/<id>.json    { "<repo>#N": { hashes, at, url } } lines already posted by `record`
  *   anything else       images etc. the sheet references by relative path
  *
@@ -75,6 +76,7 @@ function usage(code = 2) {
   review-sheet migrate-assign [dir] [--dry-run]   # 옛 뒤바뀐 assign(이슈 칸에 창, 담당 칸에 번호) 맞바꾸기 — assign/.backup-<시각>/ 에 백업
   review-sheet asks [dir] [<시트>] [--open] [--prefix P]   # 문항 질문(시트 안 '＋ 이것만 묻기')과 답 수 — --open 답 없는 것만
   review-sheet ask-reply [dir] <시트> <문항> "답" [--notice]   # 그 문항 질문에 ↩ 답장 → 시트 그 문항 밑에 바로 뜬다(asks/<시트>.jsonl)
+  review-sheet executions [dir] [--since ISO] [--by <hero>] [--playbook <owner/slug>]   # 실행 기록(events/<시트>.jsonl) → playbook-execution jsonl — 시트 하나 제출·✓ = 실행 하나, approval_time_seconds = 그 끝 − 사람이 시트를 처음 연 때
   review-sheet checks [dir] [--open] [--since ISO] [--prefix P]   # 보고 시트(report:) — hero 가 ✓ 확인한 것 / --open 아직 안 한 것. 체크는 세션을 깨우지 않는다
   review-sheet unassigned [dir] [--prefix P]  # 문항 안 붙음(배정없음 포함)·되돌림·이슈 닫혔는데 단계 덜 됨 — 있으면 exit 5
   review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
@@ -99,7 +101,7 @@ function parseArgs(argv) {
     if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--notice' || a === '--open' || a === '--dry-run' || a === '--clear') flags[a.slice(2)] = true;
     else if (a === '--off') { flags.off = true; if (argv[i + 1] && !argv[i + 1].startsWith('--')) flags.offReason = argv[++i]; }   // --off [이유] — 라이브 근거로도 쓴다(#40)
     else if (a === '--port' || a === '--timeout' || a === '--hours') flags[a.slice(2)] = Number(argv[++i]);
-    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since' || a === '--domain' || a === '--pr' || a === '--sha' || a === '--issue' || a === '--repo' || a === '--rule' || a === '--icon') flags[a.slice(2)] = String(argv[++i] || '');
+    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since' || a === '--domain' || a === '--pr' || a === '--sha' || a === '--issue' || a === '--repo' || a === '--rule' || a === '--icon' || a === '--by' || a === '--playbook') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
@@ -670,6 +672,88 @@ export function readAnswers(dir, id) {
 export function normQ(q) {
   if (Array.isArray(q)) return { k: String(q[0]), q: q[1], opts: (q[2] || []).map(o => Array.isArray(o) ? o : [o]), rec: q[3] || '', why: q[4] || '' };
   return { ...q, k: String(q.k), opts: (q.opts || []).map(o => Array.isArray(o) ? o : [o]), rec: q.rec || '', why: q.why || '' };
+}
+
+/* ── 실행 기록 (Jack 10-20 「L4 스타팅 폼」 — 120초 무수정 승인) ─────────────────────────────────────────────
+   events/<sheet-id>.jsonl  append-only, 한 줄 = { ts, sheet, ev:'open'|'pick'|'memo'|'submit'|'check', q?, value?, rec?, … }
+     open   = 시트 페이지가 답을 불러올 때(GET /__answers?open=1) — 120초는 시트를 만든 때가 아니라 사람이 연 때부터(Peter 2026-10-23)
+     pick   = 선택지 탭(value = 고른 것, '' = 취소, bulk = '빈 칸 = 추천') · memo = 메모칸 바뀜(value = 글자 수만, 내용은 answers 에)
+     submit = 제출 — 그 세션의 첫 open(openedAt)·걸린 초(sec)·edited·문항별 { rec, pick, changed, firstPickAt, memo }
+     check  = 보고 시트 ✓ (on true/false)
+   세션 = 직전 submit·check(on) 다음부터 다음 submit·check(on) 까지. `executions` 가 이걸 playbook-execution jsonl 로 낸다.
+   기록 실패는 삼킨다 — 화면·제출 동작에 영향 없게. */
+const eventsDir = root => path.join(root, 'events');
+const eventsFile = (root, id) => path.join(eventsDir(root), id + '.jsonl');
+export function logEvent(root, id, ev, extra = {}) {
+  try {
+    fs.mkdirSync(eventsDir(root), { recursive: true });
+    const rec = { ts: new Date().toISOString(), sheet: id, ev, ...extra };
+    fs.appendFileSync(eventsFile(root, id), JSON.stringify(rec) + '\n');
+    return rec;
+  } catch { return null; }
+}
+export function readEvents(root, id) {
+  try { return fs.readFileSync(eventsFile(root, id), 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); }
+  catch { return []; }
+}
+const isEnd = x => x.ev === 'submit' || (x.ev === 'check' && x.on);
+/** 지금 세션(마지막 submit·check(on) 뒤)의 이벤트 */
+function openSession(evs) { let i = -1; evs.forEach((x, j) => { if (isEnd(x)) i = j; }); return evs.slice(i + 1); }
+/** 페이지와 같은 규칙(sheet.html li.on): rec 첫 토큰 + ' ' 으로 시작하는 첫 선택지, 선택지 2개 이상일 때만 */
+export function recOption(q) {
+  const n = normQ(q), tok = String(n.rec).split(' ')[0];
+  if (!tok || n.opts.length < 2) return null;
+  const o = n.opts.find(x => String(x[0]).startsWith(tok + ' '));
+  return o ? String(o[0]) : null;
+}
+function sheetById(root, id) {
+  for (const f of fs.readdirSync(root).filter(f => f.endsWith('-data.js'))) {
+    const name = f.slice(0, -'-data.js'.length);
+    try { const s = loadSheet(root, name); if (s.id === id) return { name, sheet: s }; } catch { /* 깨진 시트 */ }
+  }
+  return null;
+}
+/** 제출 때 남길 요약: 문항별 첫 선택 시각·추천에서 바꿨는지·메모 여부, 그리고 세션 첫 open 부터 걸린 초 */
+export function submitTrace(root, id, answers, now = new Date().toISOString()) {
+  const ses = openSession(readEvents(root, id));
+  const open = ses.find(x => x.ev === 'open');
+  const found = sheetById(root, id), A = answers || {}, qs = {};
+  const has = a => !!a && ((typeof a.memo === 'string' && a.memo.trim()) || (a.files || []).length);
+  let edited = Object.values(A).some(has);   // 메모·첨부가 하나라도 있으면 손댄 것
+  for (const s of (found ? found.sheet.sections : [])) for (const raw of s.questions || []) {
+    const q = `${s.code}-${normQ(raw).k}`, rec = recOption(raw), a = A[q] || {}, pick = a.pick || null;
+    const first = ses.find(x => x.ev === 'pick' && x.q === q && x.value);
+    const changed = rec ? pick !== rec : false;   // 추천 없는 문항은 '바꿈'을 못 잰다 / 추천 있는데 비워 둔 것 = 바꿈
+    if (changed) edited = true;
+    qs[q] = { rec, pick, changed, firstPickAt: first ? first.ts : null, memo: has(a) ? true : false };
+  }
+  return { openedAt: open ? open.ts : null, sec: open ? Math.round((Date.parse(now) - Date.parse(open.ts)) / 1000) : null, edited, playbook: found && found.sheet.playbook || undefined, qs };
+}
+const PB_RE = /^[a-z0-9._-]+\/[a-z0-9-]+$/;
+const isoLocal = ms => { const d = new Date(ms), o = -d.getTimezoneOffset(), p = n => String(Math.trunc(Math.abs(n))).padStart(2, '0');
+  return new Date(ms + o * 60e3).toISOString().slice(0, 19) + (o >= 0 ? '+' : '-') + p(o / 60) + ':' + p(o % 60); };
+/** playbook-execution 레코드 (sidekick _knowledge/_schemas/playbook-execution.md) — submit·check(on) 하나 = 실행 하나.
+ *  approval_time_seconds = 그 끝 시각 − 그 세션의 첫 open (open 없으면 null = 못 잼). 같은 이벤트면 같은 execution_id(다시 내도 중복 제거 가능). */
+export function executions(root, { since = '', by = '', playbook = '' } = {}) {
+  const out = [], sinceMs = since ? Date.parse(since) : 0;
+  let files = []; try { files = fs.readdirSync(eventsDir(root)).filter(f => f.endsWith('.jsonl')).sort(); } catch { return out; }
+  const pbOf = new Map();
+  for (const f of files) {
+    const id = f.slice(0, -6), evs = readEvents(root, id).sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    let open = null;
+    for (const x of evs) {
+      if (x.ev === 'open' && !open) open = x;
+      if (!isEnd(x)) continue;
+      const end = Date.parse(x.ts), first = open; open = null;
+      if (sinceMs && end < sinceMs) continue;
+      if (!pbOf.has(id)) { const s = sheetById(root, id); pbOf.set(id, s && s.sheet.playbook); }
+      const pb = [x.playbook, pbOf.get(id), playbook].find(v => v && PB_RE.test(v)) || `${by}/review-sheet`;
+      out.push({ playbook_id: pb, execution_id: `rs-${id}-${x.ts.replace(/\D/g, '')}`, executed_at: isoLocal(end), approved: true,
+        edited: x.ev === 'check' ? false : !!x.edited, approval_time_seconds: first ? Math.round((end - Date.parse(first.ts)) / 1000) : null,
+        recorded_by: by, sheet: id, via: x.ev });
+    }
+  }
+  return out.sort((a, b) => Date.parse(a.executed_at) - Date.parse(b.executed_at));
 }
 
 /** Answers joined with the questions, as markdown the session pastes into the SoT. */
@@ -1465,6 +1549,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       const qid = url.searchParams.get('sheet') || '';
       if (req.method === 'GET') {
         if (!ID_RE.test(qid)) return send(res, 400, 'text/plain', 'sheet=<id> required ([a-z0-9-])');
+        if (url.searchParams.get('open') === '1') logEvent(root, qid, 'open');   // 시트 페이지가 열릴 때만 붙인다 — 세션의 curl·다른 판은 안 셈
         return fs.readFile(answersFile(root, qid), (err, buf) => send(res, 200, 'application/json; charset=utf-8', err ? '{}' : buf));
       }
       if (req.method === 'POST') {
@@ -1485,6 +1570,7 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
             const prevAsk = askOf(readAnswers(root, id));
             fs.writeFileSync(file + '.tmp', JSON.stringify(json, null, 2) + '\n');
             fs.renameSync(file + '.tmp', file);
+            try { const t = submitTrace(root, id, json.answers, json.savedAt); logEvent(root, id, 'submit', t); } catch { /* 기록 실패는 제출에 영향 없음 */ }
             const notified = askOf(json) && askOf(json) !== prevAsk ? notifyAsk(root, id, askOf(json)) : null;
             try { answerHook(root, id); } catch (e) { console.error('answer hook:', e.message || e); }
             send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, savedAt: json.savedAt, file, notified }));
@@ -1583,6 +1669,20 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       });
       return;
     }
+    if (url.pathname === '/__ev' && req.method === 'POST') {   // ?sheet=<id> {ev:'pick'|'memo', q, value?, bulk?} — 페이지(hero) 전용 실행 기록, CORS 없음, 늘 204
+      const id = url.searchParams.get('sheet') || '';
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 4e3) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const j = JSON.parse(body || '{}');
+          if (ID_RE.test(id) && (j.ev === 'pick' || j.ev === 'memo') && typeof j.q === 'string' && j.q.length <= 80)
+            logEvent(root, id, j.ev, { q: j.q, value: j.ev === 'memo' ? Math.min(Number(j.value) || 0, 1e6) : String(j.value || '').slice(0, 200), ...(j.bulk ? { bulk: true } : {}) });
+        } catch { /* 무시 */ }
+        send(res, 204, 'text/plain', '');
+      });
+      return;
+    }
     if (url.pathname === '/__check') {   // ?d=<보고 시트> GET → {checkedAt} · POST {on} — 페이지(hero) 전용, CORS 없음, 알림 없음
       const name = url.searchParams.get('d') || '';
       if (!ID_RE.test(name)) return send(res, 400, 'text/plain', 'd=<sheet> ([a-z0-9-])');
@@ -1592,7 +1692,11 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       let body = '';
       req.on('data', c => { body += c; if (body.length > 1e4) req.destroy(); });
       req.on('end', () => {
-        try { send(res, 200, TYPES['.json'], JSON.stringify(setChecked(root, name, !!JSON.parse(body || '{}').on))); }
+        try {
+          const on = !!JSON.parse(body || '{}').on, r = setChecked(root, name, on);
+          const s = sheetByName(root, name); if (s) logEvent(root, s.id, 'check', { on, name });
+          send(res, 200, TYPES['.json'], JSON.stringify(r));
+        }
         catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
       });
       return;
@@ -1877,6 +1981,12 @@ async function main() {
     if (!name || !q || !text) { console.error('ask-reply <시트> <문항> "답"'); process.exit(2); }
     const gate = !flags.notice && chatGate(text, { heroReply: true }); if (gate) { console.error(gate + " — 꼭 필요하면 --notice"); process.exit(2); }
     try { const r = askReply(dir, name, q, text); console.log(`#${r.msg.id} → ${r.ch} ↩#${r.re}`); } catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'executions') {   // 실행 기록 → playbook-execution jsonl (stdout). 120초 무수정 승인 = approved && !edited && approval_time_seconds ≤ 120
+    const by = flags.by || process.env.REVIEW_SHEET_HERO || os.userInfo().username;
+    if (flags.since && !Number.isFinite(Date.parse(flags.since))) { console.error(`--since ${flags.since}: 날짜(ISO)가 아님`); process.exit(2); }
+    for (const r of executions(dir, { since: flags.since, by, playbook: flags.playbook })) console.log(JSON.stringify(r));
     return;
   }
   if (cmd === 'checks') {   // 보고 시트 확인 현황 — hero 가 ✓ 한 것(기본) / --open 아직 안 한 것. 세션이 나중에 한 번에 본다

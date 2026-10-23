@@ -1270,3 +1270,43 @@ test('inbox: 각 칸 안에서 최근순 — +09:00 과 Z 섞여도 실제 시�
     assert.ok(inbox.sheets.every(s => s.activeAt));
   } finally { close(); }
 });
+
+test('실행 기록: 연 때(open)부터 제출까지 — 문항별 첫 선택·추천에서 바꿈·메모, executions 가 playbook-execution 줄로 (Jack 10-20, Peter 10-23)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-sheet-'));
+  fs.writeFileSync(path.join(dir, 'ex-data.js'), fs.readFileSync(TEMPLATE, 'utf8').replace("id: 'example'", "id: 'ex'"));
+  const { base, close } = await startServer(dir, 0);
+  const ev = body => fetch(base + '/__ev?sheet=ex', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const submit = answers => fetch(base + '/__answers?sheet=ex', { method: 'POST', body: JSON.stringify({ answers }) }).then(r => r.json());
+  const evs = () => fs.readFileSync(path.join(dir, 'events', 'ex.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  try {
+    await fetch(base + '/__answers?sheet=ex');   // 세션의 curl 은 open 이 아니다
+    assert.ok(!fs.existsSync(path.join(dir, 'events', 'ex.jsonl')));
+    await fetch(base + '/__answers?sheet=ex&open=1');
+    assert.equal((await ev({ ev: 'pick', q: 'A-1', value: '① 선택지 하나' })).status, 204);
+    await ev({ ev: 'pick', q: 'A-2', value: '② 아니오', bulk: true });
+    assert.equal((await ev({ ev: 'nope', q: 'A-1' })).status, 204);   // 모르는 건 버리고 늘 204
+    assert.ok((await submit({ 'A-1': { pick: '① 선택지 하나' }, 'A-2': { pick: '② 아니오' } })).ok);
+    let s = evs().at(-1);
+    assert.equal(s.ev, 'submit'); assert.equal(s.edited, false); assert.ok(s.openedAt); assert.equal(typeof s.sec, 'number');
+    assert.deepEqual(Object.keys(s.qs), ['A-1', 'A-2']);
+    assert.equal(s.qs['A-1'].rec, '① 선택지 하나'); assert.equal(s.qs['A-1'].changed, false); assert.ok(s.qs['A-1'].firstPickAt);
+    assert.equal(evs().filter(x => x.ev === 'nope').length, 0);
+    // 두 번째 세션: 다시 열고 추천과 다르게 + 메모 → edited
+    await fetch(base + '/__answers?sheet=ex&open=1');
+    await ev({ ev: 'pick', q: 'A-2', value: '① 예' });
+    await ev({ ev: 'memo', q: 'A-1', value: 5 });
+    await submit({ 'A-1': { pick: '① 선택지 하나', memo: '조금 다름' }, 'A-2': { pick: '① 예' } });
+    s = evs().at(-1);
+    assert.equal(s.edited, true); assert.equal(s.qs['A-2'].changed, true); assert.equal(s.qs['A-1'].memo, true);
+    assert.equal(s.openedAt, evs().filter(x => x.ev === 'open')[1].ts, '세션 첫 open = 직전 제출 뒤의 open');
+    const out = execFileSync('node', [BIN, 'executions', dir, '--by', 'peter.park'], { encoding: 'utf8' }).trim().split('\n').map(l => JSON.parse(l));
+    assert.equal(out.length, 2);
+    for (const r of out) {
+      assert.equal(r.playbook_id, 'peter.park/review-sheet'); assert.equal(r.recorded_by, 'peter.park'); assert.equal(r.approved, true);
+      assert.match(r.executed_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$/); assert.equal(typeof r.approval_time_seconds, 'number');
+    }
+    assert.deepEqual(out.map(r => r.edited), [false, true]);
+    assert.notEqual(out[0].execution_id, out[1].execution_id);
+    assert.equal(execFileSync('node', [BIN, 'executions', dir, '--since', '2999-01-01'], { encoding: 'utf8' }).trim(), '');
+  } finally { close(); }
+});
