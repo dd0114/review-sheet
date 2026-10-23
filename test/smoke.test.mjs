@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startServer, loadSheet, readAnswers, renderMarkdown, dropHallucination, stageTag } from '../bin/review-sheet.mjs';
 
@@ -38,11 +38,239 @@ const ghPrFx = (n, merged, extra) => ({ number: n, merged, state: merged ? 'clos
   merge_commit_sha: merged ? 'm' + String(n).padStart(6, '0') + 'aaaa' : null, merged_at: merged ? new Date().toISOString() : null, base: { repo: { full_name: 'o/r' } }, ...extra });
 const runIn = env => (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
 
+function waitProcess(dir, args) {
+  const child = spawn(process.execPath, [BIN, ...args], { env: { ...process.env, REVIEW_SHEET_INBOX: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '', err = '';
+  child.stdout.on('data', c => { out += c; });
+  let readyResolve;
+  const ready = new Promise(resolve => { readyResolve = resolve; });
+  child.stderr.on('data', c => { err += c; if (err.includes('waiting for')) readyResolve(); });
+  const done = new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', code => { readyResolve(); resolve({ code, out, err }); });
+  });
+  return { child, ready, done };
+}
+
 function tmpDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-sheet-'));
   fs.copyFileSync(TEMPLATE, path.join(dir, 'example-data.js'));
   return dir;
 }
+
+test('wait-any wakes for hero posts, preserves kind output, and settles adjacent posts once', async () => {
+  const dir = tmpDir();
+  const { newChat, appendChat, readChatMeta } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root');
+  const p = waitProcess(dir, ['wait-any', 'root', '--timeout', '5', '--settle', '1']);
+  try {
+    await p.ready;
+    appendChat(dir, 'root', 'root', '내 글');
+    appendChat(dir, 'root', 'other', '다른 세션 글');
+    appendChat(dir, 'root', 'hero', '자동 알림', null, null, { auto: true });
+    appendChat(dir, 'root', 'hero', '첫 글', null, null, { kind: 'bug' });
+    await new Promise(r => setTimeout(r, 200));
+    appendChat(dir, 'root', 'hero', '둘째 글');
+    const r = await p.done;
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /hero: \[버그제보\] 첫 글/);
+    assert.match(r.out, /hero: 둘째 글/);
+    assert.doesNotMatch(r.out, /내 글|다른 세션 글|자동 알림/);
+    assert.ok(readChatMeta(dir, 'root').seenAt);
+    const again = waitProcess(dir, ['wait-any', 'root', '--timeout', '0.6', '--settle', '0']);
+    const second = await again.done;
+    assert.equal(second.code, 3, second.out + second.err);
+    assert.equal(second.out, '');
+  } finally { p.child.kill(); }
+});
+
+test('wait-any reports only new answer content and survives a restart', async () => {
+  const dir = tmpDir();
+  const { newChat } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root');
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const file = path.join(dir, 'answers', 'example.json');
+  const save = (pick, ask = '') => fs.writeFileSync(file, JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers: { 'A-1': { pick }, ...(ask ? { _ask: { memo: ask } } : {}) } }));
+  const p = waitProcess(dir, ['wait-any', 'root', '--sheets', 'ex', '--timeout', '5', '--settle', '0']);
+  try {
+    await p.ready;
+    save('① 첫 선택');
+    const first = await p.done;
+    assert.equal(first.code, 0, first.err);
+    assert.match(first.out, /SUBMITTED: example .*\n## .* — 답변/);
+    assert.match(first.out, /① 첫 선택/);
+    save('① 첫 선택', '이것만 묻기');
+    const ask = await waitProcess(dir, ['wait-any', 'root', '--sheets', 'ex', '--timeout', '2', '--settle', '0']).done;
+    assert.equal(ask.code, 0, ask.err);
+    assert.match(ask.out, /hero 추가 질문.*이것만 묻기/);
+    const same = await waitProcess(dir, ['wait-any', 'root', '--sheets', 'ex', '--timeout', '0.6', '--settle', '0']).done;
+    assert.equal(same.code, 3, same.out + same.err);
+    assert.equal(same.out, '');
+    const changed = waitProcess(dir, ['wait-any', 'root', '--sheets', 'ex', '--timeout', '5', '--settle', '0']);
+    await changed.ready;
+    save('② 바꾼 선택', '이것만 묻기');
+    const next = await changed.done;
+    assert.equal(next.code, 0, next.err);
+    assert.match(next.out, /SUBMITTED: example /);
+    assert.match(next.out, /② 바꾼 선택/);
+  } finally { p.child.kill(); }
+});
+
+test('chat wait --all preserves the full log, exit 0, and unread cursor', async () => {
+  const dir = tmpDir();
+  const { newChat, appendChat, readChatMeta } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root');
+  appendChat(dir, 'root', 'root', '세션 글');
+  appendChat(dir, 'root', 'hero', '자동 글', null, null, { auto: true });
+  const r = await waitProcess(dir, ['chat', 'wait', 'root', '--all', '--timeout', '0.1']).done;
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /root: 세션 글/);
+  assert.match(r.out, /hero: 자동 글/);
+  assert.equal(readChatMeta(dir, 'root').seenAt, null);
+});
+
+test('urgent on and off wake wait-any and chat wait', async () => {
+  const dir = tmpDir();
+  const { newChat, setUrgent } = await import('../bin/review-sheet.mjs');
+  fs.writeFileSync(path.join(dir, 'example-data.js'), fs.readFileSync(path.join(dir, 'example-data.js'), 'utf8').replace("from: ''", "from: 'root'"));
+  newChat(dir, 'root', 'root', 'root');
+  for (const [args, on, expected] of [
+    [['wait-any', 'root', '--timeout', '5', '--settle', '0'], true, /🔥 긴급 지정/],
+    [['chat', 'wait', 'root', '--timeout', '5'], false, /긴급 해제/],
+  ]) {
+    const p = waitProcess(dir, args);
+    try {
+      await p.ready;
+      assert.equal(setUrgent(dir, 'example', on).notified, 'root');
+      const r = await p.done;
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, expected);
+    } finally { p.child.kill(); }
+  }
+});
+
+test('extra question save and item question delivery both wake the owner', async () => {
+  const dir = tmpDir();
+  const { newChat, notifyAsk, askItem, readChatLog } = await import('../bin/review-sheet.mjs');
+  fs.writeFileSync(path.join(dir, 'example-data.js'), fs.readFileSync(path.join(dir, 'example-data.js'), 'utf8').replace("from: ''", "from: 'root'"));
+  newChat(dir, 'root', 'root', 'root');
+  const previous = process.env.REVIEW_SHEET_ASK_HOOK;
+  try {
+    delete process.env.REVIEW_SHEET_ASK_HOOK;
+    const p = waitProcess(dir, ['wait-any', 'root', '--sheets', 'ex', '--timeout', '5', '--settle', '1']);
+    try {
+      await p.ready;
+      fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(),
+        answers: { 'A-1': { pick: '① 첫 선택' }, _ask: { memo: '답이 필요한 추가 질문' } } }));
+      assert.equal(notifyAsk(dir, 'example', '답이 필요한 추가 질문'), 'root');
+      const r = await p.done;
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /hero: 추가 질문.*답이 필요한 추가 질문/);
+      assert.match(r.out, /SUBMITTED: example/);
+    } finally { p.child.kill(); }
+    const q = waitProcess(dir, ['chat', 'wait', 'root', '--timeout', '5']);
+    try {
+      await q.ready;
+      const sent = askItem(dir, 'example', 'A-1', '첫 문항', '문항 하나만 답해 주세요');
+      assert.equal(sent.ch, 'root');
+      const r = await q.done;
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.out, /문항 질문.*문항 하나만 답해 주세요/);
+      assert.equal(readChatLog(dir, 'root').at(-1).askRef.id, sent.id);
+    } finally { q.child.kill(); }
+  } finally { if (previous === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = previous; }
+});
+
+test('an item question wakes wait-any without a sheet submission', async () => {
+  const dir = tmpDir();
+  const { newChat, askItem } = await import('../bin/review-sheet.mjs');
+  fs.writeFileSync(path.join(dir, 'example-data.js'), fs.readFileSync(path.join(dir, 'example-data.js'), 'utf8').replace("from: ''", "from: 'root'"));
+  newChat(dir, 'root', 'root', 'root');
+  const previous = process.env.REVIEW_SHEET_ASK_HOOK;
+  delete process.env.REVIEW_SHEET_ASK_HOOK;
+  const p = waitProcess(dir, ['wait-any', 'root', '--sheets', 'ex', '--timeout', '5', '--settle', '0']);
+  try {
+    await p.ready;
+    assert.equal(askItem(dir, 'example', 'A-1', '', '제출 없이 묻는 질문').ch, 'root');
+    const result = await p.done;
+    assert.equal(result.code, 0, result.err);
+    assert.match(result.out, /문항 질문.*제출 없이 묻는 질문/);
+    assert.doesNotMatch(result.out, /SUBMITTED:/);
+    assert.equal(fs.existsSync(path.join(dir, 'answers', 'example.json')), false);
+  } finally {
+    p.child.kill();
+    if (previous === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = previous;
+  }
+});
+
+test('older actionable auto posts are still delivered after an upgrade', async () => {
+  const dir = tmpDir();
+  const { newChat, appendChat } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root');
+  appendChat(dir, 'root', 'hero', '🔥 긴급 지정: 예전 알림', null, null, { auto: true });
+  appendChat(dir, 'root', 'hero', '추가 질문 (시트 example): 예전 질문', null, null, { auto: true });
+  appendChat(dir, 'root', 'hero', '문항 질문 (시트 example): 예전 문항', null, null, { auto: true, askRef: { d: 'example', q: 'A-1' } });
+  const result = await waitProcess(dir, ['wait-any', 'root', '--timeout', '2', '--settle', '0']).done;
+  assert.equal(result.code, 0, result.err);
+  assert.match(result.out, /🔥 긴급 지정/);
+  assert.match(result.out, /추가 질문.*예전 질문/);
+  assert.match(result.out, /문항 질문.*예전 문항/);
+});
+
+test('wait-any reports a submission present before its first run, then remembers it', async () => {
+  const dir = tmpDir();
+  const { newChat } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root');
+  fs.mkdirSync(path.join(dir, 'answers'));
+  fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers: { 'A-1': { pick: '① 첫 선택' } } }));
+  const args = ['wait-any', 'root', '--sheets', 'ex', '--timeout', '1', '--settle', '0'];
+  const first = await waitProcess(dir, args).done;
+  assert.equal(first.code, 0, first.err);
+  assert.match(first.out, /SUBMITTED: example/);
+  const second = await waitProcess(dir, args).done;
+  assert.equal(second.code, 3, second.out + second.err);
+  assert.equal(second.out, '');
+});
+
+test('wait-any quarantines corrupt state and redelivers submissions', async () => {
+  for (const broken of ['{bad', JSON.stringify({ version: 1, ch: 'root', prefixes: ['ex'], submissions: [] })]) {
+    const dir = tmpDir();
+    const { newChat } = await import('../bin/review-sheet.mjs');
+    newChat(dir, 'root', 'root', 'root');
+    fs.mkdirSync(path.join(dir, 'answers'));
+    fs.writeFileSync(path.join(dir, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date().toISOString(), answers: { 'A-1': { pick: '① 첫 선택' } } }));
+    const args = ['wait-any', 'root', '--sheets', 'ex', '--timeout', '1', '--settle', '0'];
+    assert.equal((await waitProcess(dir, args).done).code, 0);
+    const file = path.join(dir, 'wait-any', fs.readdirSync(path.join(dir, 'wait-any'))[0]);
+    fs.writeFileSync(file, broken);
+    const recovered = await waitProcess(dir, args).done;
+    assert.equal(recovered.code, 0, recovered.err);
+    assert.match(recovered.out, /SUBMITTED: example/);
+    assert.match(recovered.err, /상태 파일 손상/);
+    assert.ok(fs.readdirSync(path.dirname(file)).some(name => name.includes('.corrupt.')));
+    assert.equal((await waitProcess(dir, args).done).code, 3);
+  }
+});
+
+test('the owner cursor stops at the last printed hero message, even for equal timestamps', async () => {
+  const dir = tmpDir();
+  const { newChat, appendChat, markSeen, readChatMeta } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root');
+  const printed = appendChat(dir, 'root', 'hero', '출력된 글');
+  const late = appendChat(dir, 'root', 'hero', '출력 직후 온 글');
+  const logFile = path.join(dir, 'chat', 'root.jsonl');
+  const log = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(JSON.parse);
+  log[1].ts = log[0].ts;
+  fs.writeFileSync(logFile, log.map(m => JSON.stringify(m)).join('\n') + '\n');
+  markSeen(dir, 'root', 'owner', [printed]);
+  assert.equal(readChatMeta(dir, 'root').seenId, printed.id);
+  const result = await waitProcess(dir, ['wait-any', 'root', '--timeout', '2', '--settle', '0']).done;
+  assert.equal(result.code, 0, result.err);
+  assert.match(result.out, /출력 직후 온 글/);
+  assert.doesNotMatch(result.out, /출력된 글/);
+  assert.equal(readChatMeta(dir, 'root').seenId, late.id);
+});
 
 test('template loads and renders without answers', () => {
   const dir = tmpDir();
@@ -1006,11 +1234,15 @@ test('문항 질문: 예전 시트(채널 로그의 ask)도 그대로 보이고 
 test('문항 질문: from 이 창 이름까지(pkch:서버)면 그 도메인 :main 채널로 — 허브로 새지 않음 (hero 2026-10-18)', async () => {
   const dir = tmpDir();
   const { newChat, askItem } = await import('../bin/review-sheet.mjs');
-  fs.writeFileSync(path.join(dir, 'pkch-y-data.js'), `window.SHEET = { id: 'pkch-y', title: 'T-y', from: 'pkch:서버', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
-  newChat(dir, 'root', 'root', 'root:hub', true); newChat(dir, 'pkch-main', 'pkch', 'pkch:main');
-  assert.equal(askItem(dir, 'pkch-y', 'S-1', '', '이거 뭐야?').ch, 'pkch-main');
-  fs.writeFileSync(path.join(dir, 'zz-data.js'), `window.SHEET = { id: 'zz', title: 'T-z', from: 'zz:w', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
-  assert.equal(askItem(dir, 'zz', 'S-1', '', '도메인 채널 없음').ch, 'root');      // 그 도메인 채널이 없으면 허브
+  const previous = process.env.REVIEW_SHEET_ASK_HOOK;
+  delete process.env.REVIEW_SHEET_ASK_HOOK;
+  try {
+    fs.writeFileSync(path.join(dir, 'pkch-y-data.js'), `window.SHEET = { id: 'pkch-y', title: 'T-y', from: 'pkch:서버', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
+    newChat(dir, 'root', 'root', 'root:hub', true); newChat(dir, 'pkch-main', 'pkch', 'pkch:main');
+    assert.equal(askItem(dir, 'pkch-y', 'S-1', '', '이거 뭐야?').ch, 'pkch-main');
+    fs.writeFileSync(path.join(dir, 'zz-data.js'), `window.SHEET = { id: 'zz', title: 'T-z', from: 'zz:w', sections: [{ id: 's', code: 'S', title: 's', questions: [['1', 'q', ['① a'], '①', 'w']] }] };`);
+    assert.equal(askItem(dir, 'zz', 'S-1', '', '도메인 채널 없음').ch, 'root');      // 그 도메인 채널이 없으면 허브
+  } finally { if (previous === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = previous; }
 });
 
 test('push: 폰 알림 — RFC 8291 시험값, VAPID 서명, 구독 → 새 시트·세션 글만 알림(hero 글·보고 시트 X) → 410 이면 구독 삭제 (hero 2026-10-16)', async () => {

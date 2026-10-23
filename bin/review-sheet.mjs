@@ -67,6 +67,7 @@ function usage(code = 2) {
   review-sheet new   [dir] <name>
   review-sheet read  [dir] <id> [--json]
   review-sheet wait  [dir] <id> [--timeout SEC]
+  review-sheet wait-any <ch> [--sheets <prefix>[,<prefix>…]] [--timeout SEC] [--settle SEC]
   review-sheet ls    [dir]
   review-sheet assign [dir] <id> <issue#> <도메인:창> [--repo o/r]   # 제출된 시트의 후속 일 담당 기록 (이슈인지 gh 로 확인, PR·뒤바뀐 순서 거부)
   review-sheet stage [dir] <id> <머지|배포대기|라이브|끝> [--pr N] [--sha S] [--off [이유]] [--eta <언제>] [메모…]   # 단계 보고 — 머지 = --pr(MERGED), 라이브 = --sha(머지 커밋 포함) 또는 --off <이유>
@@ -87,6 +88,7 @@ function usage(code = 2) {
   review-sheet chat hub  [<ch>]                                  # 메인 허브 채널 보기/지정 — 받은편지함 맨 위 고정, /hub 가 그 채널로
   review-sheet chat pin <ch> <text|->  /  chat unpin <ch>       # 방 맨 위 고정 글 하나 (meta.pin) — 링크 그대로 둬도 됨, 새로 걸면 바뀜
   review-sheet chat ls | read <ch> [--all] [--json] | say <ch> [--re <id>] [--notice] <text…|-> | wait <ch> [--timeout SEC]   # --re = 그 메시지에 답장(카톡식 인용)
+  review-sheet wait-any <ch> [--sheets <prefix>[,<prefix>…]] [--timeout SEC] [--settle SEC]   # hero 글과 새 시트 제출을 한 번에 기다림
   (메모: http://127.0.0.1:${INBOX_PORT}/memo.html — hero 가 자기한테 보내는 메시지, CLI 없음·세션은 읽지 않는다)
   [dir] omitted → inbox ${INBOX} (one folder for every session; served on :${INBOX_PORT})`);
   process.exit(code);
@@ -98,8 +100,8 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--lan' || a === '--json' || a === '--all' || a === '--hub' || a === '--notice' || a === '--open' || a === '--dry-run' || a === '--clear') flags[a.slice(2)] = true;
     else if (a === '--off') { flags.off = true; if (argv[i + 1] && !argv[i + 1].startsWith('--')) flags.offReason = argv[++i]; }   // --off [이유] — 라이브 근거로도 쓴다(#40)
-    else if (a === '--port' || a === '--timeout' || a === '--hours') flags[a.slice(2)] = Number(argv[++i]);
-    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--eta' || a === '--since' || a === '--domain' || a === '--pr' || a === '--sha' || a === '--issue' || a === '--repo' || a === '--rule' || a === '--icon') flags[a.slice(2)] = String(argv[++i] || '');
+    else if (a === '--port' || a === '--timeout' || a === '--hours' || a === '--settle') flags[a.slice(2)] = Number(argv[++i]);
+    else if (a === '--title' || a === '--owner' || a === '--re' || a === '--prefix' || a === '--sheets' || a === '--eta' || a === '--since' || a === '--domain' || a === '--pr' || a === '--sha' || a === '--issue' || a === '--repo' || a === '--rule' || a === '--icon') flags[a.slice(2)] = String(argv[++i] || '');
     else if (a.startsWith('--')) { console.error(`unknown flag ${a}`); usage(); }
     else rest.push(a);
   }
@@ -727,10 +729,10 @@ function chatFor(root, from, sheetName) {
 }
 /* 추가 질문 (hero 2026-10-13) — answers._ask.memo. 새로 쓰거나 바뀌면 담당 세션 채널에 hero 이름으로 알림, read 맨 위에 뜬다. */
 const askOf = saved => (saved && saved.answers && saved.answers._ask && typeof saved.answers._ask.memo === 'string' && saved.answers._ask.memo.trim()) || '';
-function notifyAsk(root, id, text) {
+export function notifyAsk(root, id, text) {
   const s = listSheets(root).find(x => !x.error && x.id === id); if (!s) return null;
   const c = chatFor(path.resolve(root), s.from, s.name); if (!c) return null;
-  appendChat(path.resolve(root), c.name, 'hero', `추가 질문 (시트 ${s.name} · ${s.title}): ${text}\n— 채팅 답장(--re 이 메시지)으로 답할 것. 물은 것마다 빠짐없이 — 짧게 줄이지 말 것(답장은 ${CHAT_REPLY_MAX}자까지). 질문이 여럿이면 번호 매겨 하나씩. 답이 일을 바꾸면 SoT 이슈에도 한 줄.`);
+  appendChat(path.resolve(root), c.name, 'hero', `추가 질문 (시트 ${s.name} · ${s.title}): ${text}\n— 채팅 답장(--re 이 메시지)으로 답할 것. 물은 것마다 빠짐없이 — 짧게 줄이지 말 것(답장은 ${CHAT_REPLY_MAX}자까지). 질문이 여럿이면 번호 매겨 하나씩. 답이 일을 바꾸면 SoT 이슈에도 한 줄.`, null, null, { auto: true, wake: true });
   return c.name;
 }
 
@@ -805,7 +807,7 @@ function askToChat(root, s, a) {
   const c = askChans(root, s)[0]; if (!c) return null;
   const where = a.label ? ` 「${a.label}」` : '';
   const msg = appendChat(root, c.name, 'hero', `문항 질문 (시트 ${s.name} · ${a.q}${where}): ${a.text}\n— 이 문항 하나만 묻는 것(시트는 제출 안 됨). review-sheet ask-reply ${s.name} ${a.q} "…" (또는 chat say ${c.name} --re 이 메시지)로 답하면 시트 그 문항 밑에 바로 뜬다. 시트를 다시 보내지 말 것. 물은 것에 빠짐없이(${CHAT_REPLY_MAX}자까지).`,
-    null, null, { askRef: { d: s.name, q: a.q, id: a.id } });
+    null, null, { auto: true, wake: true, askRef: { d: s.name, q: a.q, id: a.id } });
   return c.name;
 }
 export function askItem(root, name, q, label, text) {
@@ -889,7 +891,7 @@ export function askWatch(root, ms = Number(process.env.REVIEW_SHEET_ASK_MS) || 6
         for (const m of open) {
           if (answered.has(m.id)) continue;
           const c = askChans(root, s)[0]; if (!c) continue;
-          appendChat(root, c.name, 'hero', `문항 질문 답 없음 ${Math.round((now - Date.parse(m.ts)) / 60000)}분 (시트 ${name} · 문항 ${m.q}) — review-sheet ask-reply ${name} ${m.q} "…" 로 답하거나 담당 창 확인`, null, null, { askStale: m.id });
+          appendChat(root, c.name, 'hero', `문항 질문 답 없음 ${Math.round((now - Date.parse(m.ts)) / 60000)}분 (시트 ${name} · 문항 ${m.q}) — review-sheet ask-reply ${name} ${m.q} "…" 로 답하거나 담당 창 확인`, null, null, { auto: true, wake: true, askStale: m.id });
           appendAsks(root, name, { staleSent: m.id, ch: c.name });
         }
       }
@@ -901,7 +903,7 @@ export function askWatch(root, ms = Number(process.env.REVIEW_SHEET_ASK_MS) || 6
           if (log.some(r => r.re === m.id && r.from !== 'hero')) continue;
           const hl = readChatLog(root, hub.name);
           if (hl.some(r => r.askStale === m.id)) continue;
-          appendChat(root, hub.name, 'hero', `문항 질문 답 없음 ${Math.round((now - Date.parse(m.ts)) / 60000)}분 (채널 ${c.name} #${m.id} · 시트 ${m.ask.d} · ${m.ask.q}): ${m.ask.text}\n— 담당 세션을 깨우거나 대신 답할 것: review-sheet ask-reply ${m.ask.d} ${m.ask.q} "…"`, null, null, { askStale: m.id });
+          appendChat(root, hub.name, 'hero', `문항 질문 답 없음 ${Math.round((now - Date.parse(m.ts)) / 60000)}분 (채널 ${c.name} #${m.id} · 시트 ${m.ask.d} · ${m.ask.q}): ${m.ask.text}\n— 담당 세션을 깨우거나 대신 답할 것: review-sheet ask-reply ${m.ask.d} ${m.ask.q} "…"`, null, null, { auto: true, wake: true, askStale: m.id });
         }
       }
     } catch (e) { console.error('ask:', e.message || e); }
@@ -921,7 +923,7 @@ export function setUrgent(dir, name, on) {
     if (c) {
       appendChat(path.resolve(dir), c.name, 'hero', on
         ? `🔥 긴급 지정: ${s.title} (시트 ${s.name}) — 하던 일을 안전한 지점까지만 정리하고 이 일부터 처리. SoT 이슈가 있으면 긴급 라벨.`
-        : `긴급 해제: ${s.title} (시트 ${s.name}) — 평소 순서로. SoT 이슈의 긴급 라벨 제거.`);
+        : `긴급 해제: ${s.title} (시트 ${s.name}) — 평소 순서로. SoT 이슈의 긴급 라벨 제거.`, null, null, { auto: true, wake: true });
       notified = c.name;
     }
   }
@@ -1046,6 +1048,20 @@ export const CHAT_KINDS = {
   bug: { tag: '버그제보', todo: '— 버그 제보: bug 라벨 이슈 만들고 바로 고친다. 답장에 링크.' },
   followup: { tag: '지난이슈확인', todo: '— 지난 이슈 확인: 관련 이슈를 찾아 현재 상태(진행·막힘·끝남)부터 답한다. 이슈가 없으면 지금 만든다.' },
 };
+const wakesOwner = m => m.from === 'hero' && (m.wake === true || !!m.ask || !!m.askRef || !!m.askStale ||
+  /^🔥 긴급 지정:|^긴급 해제:|^추가 질문 \(시트 /.test(m.text || '') || !m.auto);
+function formatChat(root, ch, m) {
+  const k = Object.hasOwn(CHAT_KINDS, m.kind || '') ? CHAT_KINDS[m.kind] : null;
+  return `#${m.id} ${m.ts.replace('T', ' ').slice(0, 16)}  ${m.from === 'hero' ? 'hero' : m.from}: ${k ? `[${k.tag}] ` : ''}${m.re ? `↩#${m.re} ` : ''}${m.text}` +
+    (m.files || []).map(f => `\n  [이미지] ${chatFilePath(root, ch, f)}`).join('') + (k ? `\n  ${k.todo}` : '');
+}
+const unseenHero = (root, ch, predicate) => {
+  const { seenAt, seenId } = readChatMeta(root, ch) || {};
+  const log = readChatLog(root, ch);
+  const index = seenId ? log.findIndex(m => m.id === seenId) : -1;
+  return log.filter((m, i) => predicate(m) && (index >= 0 ? i > index : !seenAt || m.ts > seenAt));
+};
+const freshHero = (root, ch) => unseenHero(root, ch, wakesOwner);
 export function appendChat(root, ch, from, text, files, re, extra) {
   const meta = readChatMeta(root, ch); if (!meta) throw new Error(`채널 ${ch} 없음`);
   const msg = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: new Date().toISOString(), from, text: String(text), ...(extra || {}) };
@@ -1053,7 +1069,9 @@ export function appendChat(root, ch, from, text, files, re, extra) {
   const log = readChatLog(root, ch);
   if (re) { if (!MSG_ID_RE.test(String(re)) || !log.some(m => m.id === re)) throw new Error(`답장 원문 ${re} 없음 — chat read ${ch} --all 의 #id`); msg.re = String(re); }
   const last = log.at(-1);   // same sender + same text + same files within 3s = a double send, keep the first
-  if (last && last.from === from && last.text === msg.text && (last.re || null) === (msg.re || null) && (last.kind || null) === (msg.kind || null) && JSON.stringify(last.files || []) === JSON.stringify(msg.files || []) && Date.now() - Date.parse(last.ts) < 3000) return last;
+  if (last && last.from === from && last.text === msg.text && (last.re || null) === (msg.re || null) && (last.kind || null) === (msg.kind || null) &&
+    JSON.stringify(last.files || []) === JSON.stringify(msg.files || []) && JSON.stringify(last.askRef || null) === JSON.stringify(msg.askRef || null) &&
+    (last.wake === true) === (msg.wake === true) && (last.auto === true) === (msg.auto === true) && Date.now() - Date.parse(last.ts) < 3000) return last;
   fs.appendFileSync(chatLogFile(root, ch), JSON.stringify(msg) + '\n');
   return msg;
 }
@@ -1078,13 +1096,88 @@ export function listChats(root) {
     const meta = readChatMeta(root, n); if (!meta) return null;
     const log = readChatLog(root, n); const last = log[log.length - 1] || null;
     const unreadHero = log.filter(m => m.from !== 'hero' && (!meta.heroSeenAt || m.ts > meta.heroSeenAt)).length;   // for hero: session replies not yet seen
-    const unreadOwner = log.filter(m => m.from === 'hero' && (!meta.seenAt || m.ts > meta.seenAt)).length;         // for the session: hero messages not yet read
+    const seenIndex = meta.seenId ? log.findIndex(m => m.id === meta.seenId) : -1;
+    const unreadOwner = log.filter((m, i) => m.from === 'hero' && (seenIndex >= 0 ? i > seenIndex : !meta.seenAt || m.ts > meta.seenAt)).length;
     return { ...meta, hub: !!meta.hub, count: log.length, last, unreadHero, unreadOwner };
   }).filter(Boolean).sort((a, b) => (b.hub - a.hub) || (!!b.manager - !!a.manager));   // 허브 → 매니저(meta.manager, 일 분배 세션) → 일반
 }
-function markSeen(root, ch, who) {
+export function markSeen(root, ch, who, messages = []) {
   const meta = readChatMeta(root, ch); if (!meta) return null;
-  meta[who === 'hero' ? 'heroSeenAt' : 'seenAt'] = new Date().toISOString(); writeChatMeta(root, meta); return meta;
+  if (who === 'hero') meta.heroSeenAt = new Date().toISOString();
+  else {
+    const last = messages.filter(m => m.from === 'hero').at(-1);
+    if (!last) return meta;
+    meta.seenAt = last.ts;
+    meta.seenId = last.id;
+  }
+  writeChatMeta(root, meta); return meta;
+}
+
+/* Per channel + prefix set, remember answer content rather than file mtime/savedAt.
+   A save with the same answers or a draft is not a new submission; _ask changes are questions. */
+const waitAnyDir = root => path.join(root, 'wait-any');
+const waitAnyFile = (root, ch, prefixes) => path.join(waitAnyDir(root), `${ch}-${crypto.createHash('sha256').update(JSON.stringify(prefixes)).digest('hex').slice(0, 16)}.json`);
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.keys(value).sort().map(k => [k, canonical(value[k])])) : value;
+const answerHash = saved => crypto.createHash('sha256').update(JSON.stringify(canonical(saved.answers || {}))).digest('hex');
+function matchingSubmissions(root, prefixes) {
+  if (!prefixes.length) return [];
+  return listSheets(root).filter(s => !s.error && s.submitted && prefixes.some(p => s.name.startsWith(p)))
+    .map(s => { const saved = readAnswers(root, s.id); return saved?.savedAt ? { ...s, saved, hash: answerHash(saved) } : null; }).filter(Boolean);
+}
+function saveWaitAnyState(file, state) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n'); fs.renameSync(tmp, file);
+}
+const writeOutput = output => new Promise((resolve, reject) => process.stdout.write(output, error => error ? reject(error) : resolve()));
+async function waitAny(root, ch, flags) {
+  if (!readChatMeta(root, ch)) { console.error(`채널 ${ch} 없음 — chat new <ch>`); process.exit(1); }
+  const timeout = flags.timeout === undefined ? 3600 : flags.timeout;
+  const settle = flags.settle === undefined ? 20 : flags.settle;
+  if (![timeout, settle].every(n => Number.isFinite(n) && n >= 0)) usage();
+  const prefixes = flags.sheets === undefined ? [] : [...new Set(flags.sheets.split(',').map(p => p.trim()))].sort();
+  if (prefixes.includes('')) usage();
+  const file = waitAnyFile(root, ch, prefixes);
+  let state = { version: 1, ch, prefixes, submissions: {} };
+  if (fs.existsSync(file)) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (saved.version !== 1 || saved.ch !== ch || JSON.stringify(saved.prefixes) !== JSON.stringify(prefixes) ||
+        !saved.submissions || Array.isArray(saved.submissions) || typeof saved.submissions !== 'object' ||
+        !Object.values(saved.submissions).every(v => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v))) throw new Error('invalid shape');
+      state = saved;
+    } catch {
+      const quarantine = `${file}.corrupt.${Date.now()}.${process.pid}`;
+      fs.renameSync(file, quarantine);
+      console.error(`wait-any 상태 파일 손상 — ${quarantine} 격리; 제출 재통지`);
+    }
+  }
+  const sheets = new Map();
+  const deadline = Date.now() + timeout * 1000;
+  let settleUntil = null;
+  const messages = new Map();
+  console.error(`waiting for hero on #${ch}${prefixes.length ? ` and sheets ${prefixes.join(',')}` : ''} (timeout ${timeout}s, settle ${settle}s)…`);
+  while (true) {
+    for (const m of freshHero(root, ch)) messages.set(m.id, m);
+    for (const s of matchingSubmissions(root, prefixes)) {
+      if (state.submissions[s.name] !== s.hash) {
+        state.submissions[s.name] = s.hash;
+        sheets.set(s.name, { savedAt: s.saved.savedAt, text: renderMarkdown(loadSheet(root, s.name), s.saved, root) });
+      }
+    }
+    if (settleUntil === null && (messages.size || sheets.size)) settleUntil = Date.now() + settle * 1000;
+    if (settleUntil !== null && Date.now() >= settleUntil) break;
+    if (settleUntil === null && Date.now() >= deadline) { console.error('timeout'); process.exit(3); }
+    await new Promise(r => setTimeout(r, Math.min(1000, Math.max(1, (settleUntil ?? deadline) - Date.now()))));
+  }
+  const output = [
+    ...[...messages.values()].map(m => formatChat(root, ch, m)),
+    ...[...sheets].map(([name, s]) => `SUBMITTED: ${name} ${s.savedAt}\n${s.text}`),
+  ];
+  await writeOutput(output.join('\n') + '\n');
+  saveWaitAnyState(file, state);
+  if (messages.size) markSeen(root, ch, 'owner', [...messages.values()]);
 }
 
 /* ── 메모 (memo) — hero 가 자기한테 보내는 답장 없는 메시지, 세션은 읽지 않는다 (hero 2026-10-06) ──
@@ -1653,7 +1746,8 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
           const text = typeof j.text === 'string' ? j.text.trim() : '';
           const re = typeof j.re === 'string' && MSG_ID_RE.test(j.re) && readChatLog(root, ch).some(m => m.id === j.re) ? j.re : undefined;   // unknown original → plain message
           const kind = typeof j.kind === 'string' && Object.hasOwn(CHAT_KINDS, j.kind) ? j.kind : undefined;   // 모르는 값 → 평문
-          if (text || files.length) msg = appendChat(root, ch, 'hero', text, files, re, kind ? { kind } : undefined);   // the page is always hero
+          if (text || files.length) msg = appendChat(root, ch, 'hero', text, files, re,
+            kind || j.auto === true ? { ...(kind ? { kind } : {}), ...(j.auto === true ? { auto: true } : {}) } : undefined);   // 자동 게시자는 auto=true; 페이지 글은 hero
           const meta = markSeen(root, ch, 'hero');
           send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, msg, meta }));
         } catch (e) { send(res, 400, 'text/plain; charset=utf-8', 'bad json: ' + (e.message || e)); }
@@ -1714,12 +1808,15 @@ async function main() {
   const isInbox = !dirArg;
   if (isInbox && cmd !== 'serve') fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
 
+  if (cmd === 'wait-any') {
+    if (rest.length !== 2 || !ID_RE.test(rest[1])) usage();
+    await waitAny(INBOX, rest[1], flags); return;
+  }
+
   if (cmd === 'chat') {
     const [, sub, ch, ...words] = rest;
     const root = INBOX; fs.mkdirSync(chatDir(root), { recursive: true });
-    const fmt = m => { const k = Object.hasOwn(CHAT_KINDS, m.kind || '') ? CHAT_KINDS[m.kind] : null;
-      return `#${m.id} ${m.ts.replace('T', ' ').slice(0, 16)}  ${m.from === 'hero' ? 'hero' : m.from}: ${k ? `[${k.tag}] ` : ''}${m.re ? `↩#${m.re} ` : ''}${m.text}` +
-        (m.files || []).map(f => `\n  [이미지] ${chatFilePath(root, ch, f)}`).join('') + (k ? `\n  ${k.todo}` : ''); };
+    const fmt = m => formatChat(root, ch, m);
     if (sub === 'hub') { if (!ch) { const h = hubChat(root); console.log(h ? h.name : '(허브 없음 — chat hub <ch>)'); return; } setHub(root, ch); console.log(`허브 = ${ch}  → http://127.0.0.1:${INBOX_PORT}/hub`); return; }
     if (sub === 'new') { const m = newChat(root, ch, flags.title, flags.owner, flags.hub || !listChats(root).length); console.log(`${chatLogFile(root, m.name)}\n  → http://127.0.0.1:${INBOX_PORT}/chat.html?c=${m.name}`); return; }
     if (sub === 'ls') { for (const c of listChats(root)) console.log(`${c.hub ? '★' : ''}${c.name}\t${c.owner}\t${c.count}건\thero 미읽 ${c.unreadHero}\t세션 미읽 ${c.unreadOwner}\t${c.title}`); return; }
@@ -1741,8 +1838,10 @@ async function main() {
       console.log(fmt(m)); return;
     }
     if (sub === 'read' || sub === 'wait') {
-      const meta = readChatMeta(root, ch);
-      const fresh = () => readChatLog(root, ch).filter(m => m.from === 'hero' && (!meta.seenAt || m.ts > meta.seenAt));
+      const fresh = () => {
+        if (sub === 'wait') return freshHero(root, ch);
+        return unseenHero(root, ch, m => m.from === 'hero');
+      };
       let msgs = flags.all ? readChatLog(root, ch) : fresh();
       if (sub === 'wait' && !msgs.length) {
         const deadline = Date.now() + (flags.timeout || 3600) * 1000;
@@ -1750,8 +1849,9 @@ async function main() {
         while (Date.now() < deadline) { await new Promise(r => setTimeout(r, 2000)); msgs = fresh(); if (msgs.length) break; }
         if (!msgs.length) { console.error('timeout'); process.exit(3); }
       }
-      if (flags.json) console.log(JSON.stringify(msgs, null, 2)); else for (const m of msgs) console.log(fmt(m));
-      if (!flags.all) markSeen(root, ch, 'owner');
+      if (flags.json) await writeOutput(JSON.stringify(msgs, null, 2) + '\n');
+      else if (msgs.length) await writeOutput(msgs.map(fmt).join('\n') + '\n');
+      if (!flags.all) markSeen(root, ch, 'owner', msgs);
       if (sub === 'read' && !msgs.length) { console.error('(새 메시지 없음)'); process.exitCode = 4; }
       return;
     }
