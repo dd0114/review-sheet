@@ -909,13 +909,13 @@ function listSheetsRaw(dir) {
   loadDiskCache(dir);
   let dirty = false;
   const urgent = readUrgent(dir), checked = readChecked(dir);
-  const live = (name, sum) => ({ ...sum, urgent: !!urgent[name], urgentAt: urgent[name] || null, checkedAt: sum.report && checked[name] || null });
+  const live = (name, sum, dataM) => ({ ...sum, dataAt: dataM ? new Date(dataM).toISOString() : null, urgent: !!urgent[name], urgentAt: urgent[name] || null, checkedAt: sum.report && checked[name] || null });
   const files = fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).sort();
   const out = files.map(f => {
     const name = f.slice(0, -'-data.js'.length);
     const ck = path.join(path.resolve(dir), name), hit = summaryCache.get(ck), dataM = mtimeOf(path.join(dir, f));
     if (hit && hit.dataM === dataM && (hit.sum.error || (hit.ansM === mtimeOf(answersFile(dir, hit.sum.id)) && hit.ckd === !!checked[name])))
-      return hit.sum.error ? hit.sum : live(name, hit.sum);
+      return hit.sum.error ? hit.sum : live(name, hit.sum, dataM);
     dirty = true;
     try {
       const sheet = loadSheet(dir, name);
@@ -933,23 +933,28 @@ function listSheetsRaw(dir) {
       // 남은 문항은 세션 몫), read/wait 출력과 unassigned 가 세션에게 '남은 문항만 새 시트로' 를 알린다
       if (savedAt && !rep && unpicked) sum.partial = unpicked;
       summaryCache.set(ck, { dataM, ansM: mtimeOf(answersFile(dir, sheet.id)), ckd: !!checked[name], sum });
-      return live(name, sum);
+      return live(name, sum, dataM);
     } catch (e) { const sum = { name, error: String(e.message || e) }; summaryCache.set(ck, { dataM, sum }); return sum; }
   });
   if (dirty) saveDiskCache(dir, files.map(f => f.slice(0, -'-data.js'.length)));
-  return out.sort((a, b) => {
-    // queue order: errors first (they need fixing), then pending (newest first), then submitted (latest first)
-    const g = x => x.error ? 0 : x.submitted ? 2 : 1;
-    if (g(a) !== g(b)) return g(a) - g(b);
-    if (!!a.urgent !== !!b.urgent) return a.urgent ? -1 : 1;   // 🔥 긴급은 자기 묶음 맨 위
-    return String(g(a) === 2 ? b.savedAt : b.createdAt || '').localeCompare(String(g(a) === 2 ? a.savedAt : a.createdAt || ''));
-  });
+  return sortQueue(out);
+}
+
+/* 최근순 (hero 2026-10-23 "리뷰시트 정렬좀 최근순으로") — 마지막 움직임 = createdAt · data.js 수정 · 답 제출(savedAt) · ✓ 확인(checkedAt) · 단계 갱신(assign.stageAt)
+   중 가장 늦은 것. 문자열 비교는 '+09:00' 과 'Z' 가 섞이면 순서가 틀려서(18:30+09:00 = 09:30Z 가 09:57Z 위로) Date.parse 로 ms 비교한다. */
+const tsMs = v => { const t = Date.parse(v || ''); return Number.isFinite(t) ? t : 0; };
+export const activityMs = s => Math.max(tsMs(s.createdAt), tsMs(s.dataAt), tsMs(s.savedAt), tsMs(s.checkedAt), tsMs(s.assign && s.assign.stageAt));
+function sortQueue(list) {
+  // queue order: errors first (they need fixing), then pending, then submitted — 각 묶음 안에서 🔥 긴급 먼저, 그다음 마지막 움직임 최신순
+  const g = x => x.error ? 0 : x.submitted ? 2 : 1;
+  return list.map(s => s.error ? s : { ...s, activeAt: new Date(activityMs(s) || 0).toISOString() })
+    .sort((a, b) => (g(a) - g(b)) || (!!b.urgent - !!a.urgent) || (activityMs(b) - activityMs(a)) || String(a.name).localeCompare(String(b.name)));
 }
 
 function listSheets(dir) {   // 배정·단계는 자주 바뀌고 파일이 몇 개 안 되니 캐시 밖에서 붙인다
   let names = []; try { names = fs.readdirSync(assignDir(dir)).filter(f => f.endsWith('.json')); } catch { /* 게이트 안 씀 */ }
   const by = new Map(names.map(f => [f.slice(0, -5), f]));
-  return listSheetsRaw(dir).map(s => s.error || !by.has(s.id) ? s : { ...s, assign: assignInfo(readAssign(dir, s.id)) });
+  return sortQueue(listSheetsRaw(dir).map(s => s.error || !by.has(s.id) ? s : { ...s, assign: assignInfo(readAssign(dir, s.id)) }));
 }
 
 /* 받은편지함 첫 화면: 답 기다리는 시트는 전부, 제출된 시트는 최근 RECENT_DONE 개만. 나머지는 '지난 시트 더 보기'(all=1) 때. */
@@ -957,9 +962,8 @@ const RECENT_DONE = 20;
 function inboxSheets(dir, all) {
   const handled = s => !s.error && (s.submitted || !!s.checkedAt);   // 보고 시트는 ✓ 확인 체크도 끝남
   const sheets = listSheets(dir), done = sheets.filter(handled);
-  // 제출된 시트는 마지막 움직임(제출·확인 또는 단계 보고) 최신순 — 상태가 바뀐 시트가 위로 (hero 2026-10-14)
-  const act = s => { const t = String(s.checkedAt && !(s.savedAt > s.checkedAt) ? s.checkedAt : s.savedAt); return String(s.assign && s.assign.stageAt > t ? s.assign.stageAt : t); };
-  done.sort((a, b) => (!!b.urgent - !!a.urgent) || act(b).localeCompare(act(a)));
+  // 제출된 시트도 마지막 움직임(제출·확인·단계 보고 포함) 최신순 — 상태가 바뀐 시트가 위로 (hero 2026-10-14, 10-23)
+  done.sort((a, b) => (!!b.urgent - !!a.urgent) || (activityMs(b) - activityMs(a)));
   const open = sheets.filter(s => !handled(s));
   return { sheets: open.concat(all ? done : done.slice(0, RECENT_DONE)), doneTotal: done.length, all: !!all || done.length <= RECENT_DONE };
 }
