@@ -116,6 +116,26 @@ test('wait-any reports only new answer content and survives a restart', async ()
   } finally { p.child.kill(); }
 });
 
+test('wait-any first run treats old submissions as baseline but reports recent ones', async () => {
+  const dir = tmpDir();
+  const { newChat } = await import('../bin/review-sheet.mjs');
+  newChat(dir, 'root', 'root', 'root');
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const file = path.join(dir, 'answers', 'example.json');
+  const save = (pick, at) => fs.writeFileSync(file, JSON.stringify({ sheet: 'example', savedAt: at.toISOString(), answers: { 'A-1': { pick } } }));
+  save('① 옛 선택', new Date(Date.now() - 60 * 60 * 1000));
+  const old = await waitProcess(dir, ['wait-any', 'root', '--sheets', 'ex', '--timeout', '0.6', '--settle', '0']).done;
+  assert.equal(old.code, 3, old.out + old.err);
+  assert.equal(old.out, '');
+  const fresh = tmpDir();
+  newChat(fresh, 'root', 'root', 'root');
+  fs.mkdirSync(path.join(fresh, 'answers'));
+  fs.writeFileSync(path.join(fresh, 'answers', 'example.json'), JSON.stringify({ sheet: 'example', savedAt: new Date(Date.now() - 60 * 1000).toISOString(), answers: { 'A-1': { pick: '② 방금 선택' } } }));
+  const recent = await waitProcess(fresh, ['wait-any', 'root', '--sheets', 'ex', '--timeout', '2', '--settle', '0']).done;
+  assert.equal(recent.code, 0, recent.err);
+  assert.match(recent.out, /② 방금 선택/);
+});
+
 test('chat wait --all preserves the full log, exit 0, and unread cursor', async () => {
   const dir = tmpDir();
   const { newChat, appendChat, readChatMeta } = await import('../bin/review-sheet.mjs');

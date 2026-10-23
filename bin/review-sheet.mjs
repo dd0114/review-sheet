@@ -1153,6 +1153,12 @@ async function waitAny(root, ch, flags) {
       console.error(`wait-any 상태 파일 손상 — ${quarantine} 격리; 제출 재통지`);
     }
   }
+  if (!fs.existsSync(file) && !Object.keys(state.submissions).length) {
+    // First run (no state yet): earlier submissions are the baseline, not news — only the last 10 minutes are reported,
+    // so switching from chat wait + a sheet watcher does not replay the whole backlog.
+    const recent = Date.now() - 10 * 60 * 1000;
+    for (const s of matchingSubmissions(root, prefixes)) if (Date.parse(s.saved.savedAt) < recent) state.submissions[s.name] = s.hash;
+  }
   const sheets = new Map();
   const deadline = Date.now() + timeout * 1000;
   let settleUntil = null;
