@@ -1211,3 +1211,31 @@ test('chat pin/unpin: 방 맨 위 고정 글 하나 — 링크도 그대로, 새
   } finally { await close(); }
   assert.throws(() => execFileSync('node', [BIN, 'chat', 'pin', 'nope', 'x'], { encoding: 'utf8', env, stdio: 'pipe' }));
 });
+
+test('inbox: 각 칸 안에서 최근순 — +09:00 과 Z 섞여도 실제 시각으로, 제출 시각·파일 수정도 움직임 (hero 2026-10-23)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-sheet-'));
+  fs.mkdirSync(path.join(dir, 'answers'));
+  const tpl = fs.readFileSync(TEMPLATE, 'utf8'), old = new Date('2026-01-01T00:00:00Z');
+  const mk = (id, createdAt, savedAt) => {
+    const f = path.join(dir, id + '-data.js');
+    fs.writeFileSync(f, tpl.replace("id: 'example'", `id: '${id}'`).replace("createdAt: ''", `createdAt: '${createdAt}'`));
+    fs.utimesSync(f, old, old);   // 파일 수정 시각은 옛날로 — createdAt/savedAt 만 보게
+    if (savedAt) fs.writeFileSync(path.join(dir, 'answers', id + '.json'), JSON.stringify({ id, savedAt, answers: {} }));
+  };
+  mk('kst-early', '2026-10-22T18:30:00+09:00');   // = 09:30Z — 문자열로는 'Z' 보다 커 보이지만 더 이르다
+  mk('utc-late', '2026-10-22T09:57:00.000Z');
+  mk('old-created', '2026-10-01T00:00:00.000Z');
+  mk('done-old-save', '2026-10-23T14:00:00+09:00', '2026-10-23T05:10:00.000Z');
+  mk('done-new-save', '2026-10-20T00:00:00.000Z', '2026-10-23T05:20:00.000Z');
+  // 옛 시트라도 data.js 를 방금 고쳐 쓰면 그게 마지막 움직임 → 맨 위
+  const touched = path.join(dir, 'old-created-data.js'), now = new Date();
+  const { base, close } = await startServer(dir, 0);
+  try {
+    let inbox = await (await fetch(base + '/api/inbox')).json();
+    assert.deepEqual(inbox.sheets.map(s => s.name), ['utc-late', 'kst-early', 'old-created', 'done-new-save', 'done-old-save']);
+    fs.utimesSync(touched, now, now);
+    inbox = await (await fetch(base + '/api/inbox')).json();
+    assert.deepEqual(inbox.sheets.map(s => s.name).slice(0, 3), ['old-created', 'utc-late', 'kst-early']);
+    assert.ok(inbox.sheets.every(s => s.activeAt));
+  } finally { close(); }
+});
