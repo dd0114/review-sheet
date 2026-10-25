@@ -81,7 +81,7 @@ function usage(code = 2) {
   review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
   review-sheet batch [dir] [<file|->] [--domain D]   # 배치판(보기 전용, /batch) — pkch-batch-view/1 {rules:[{job,…,runs:[{id,status,verdict,line,startedAt,…,log,taken}]}]} 를 도메인별로 더함(실행 id 로 합침, 규칙마다 최근 ${BATCH_KEEP}개), 인자 없으면 요약
   review-sheet links [dir] [<file|->]   # 받은편지함 위 줄 외부 링크 — {links:[{label,url}]} url=http(s) 또는 /경로, 같은 label 덮어씀, url 비우면 지움, 8개까지 (#47)
-  review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|done,priority,owner,mode:claude|system|idle,modeNote,url}],links?:[{label,url}]} 쓰기, 인자 없으면 요약
+  review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|wait|ship|done,priority,owner,mode:claude|system|idle,modeNote,url}],links?:[{label,url}]} 쓰기, 인자 없으면 요약
   review-sheet tab [dir] [--prefix X] [--icon Y] [--clear]   # 탭 이름표 — <inbox>/tab.json {prefix,icon}: 모든 탭 제목 앞 'X · ' + 이모지 탭 아이콘. 서버 재시작 없이 반영, env REVIEW_SHEET_TAB_PREFIX/ICON 이 이김. 빈 값 = 그 칸 지움
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
@@ -524,7 +524,8 @@ export const sheetFilePath = (dir, id, name) => path.join(dir, 'answers', id + '
 const SHEET_FILE_RE = /^[a-z0-9]{6,32}\.[a-z0-9]{1,8}$/;
 const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/heic': 'heic', 'application/pdf': 'pdf', 'text/plain': 'txt' };
 // 진행판 — 바깥 생산자(예: fleet)가 만든 board.json 을 그대로 보여 주는 보기 전용 층. 판은 일을 고치지 않는다.
-export const BOARD_STATUS = ['todo', 'doing', 'done'], BOARD_MODES = ['claude', 'system', 'idle'];
+// wait = 기다림(조건이 안 풀림), ship = 머지됨·배포 대기 (fleet #215, hero root-boardsync-1)
+export const BOARD_STATUS = ['todo', 'doing', 'wait', 'ship', 'done'], BOARD_MODES = ['claude', 'system', 'idle'];
 export const boardFile = dir => path.join(dir, 'board.json');
 export function cleanBoard(j) {
   if (!j || !Array.isArray(j.cards)) throw new Error('board: {cards:[…]} 필요');

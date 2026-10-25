@@ -1095,11 +1095,12 @@ test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it
     { id: 'x#1', title: '빠른 일', status: 'doing', priority: 'P1', owner: 'a:main', mode: 'claude' },
     { id: 'x#2', title: 'CI 기다림', status: 'doing', owner: ['a:w1'], mode: 'system', modeNote: 'CI', url: 'javascript:alert(1)' },
     { title: '할 일', status: 'weird', mode: 'nope' }, { status: 'done' },
+    { id: 'x#3', title: '시트 답 기다림', status: 'wait', note: '기다림: 시트 x-1' }, { id: 'x#4', title: '머지됨', status: 'ship', modeNote: 'PR #9 머지 · 오베 배포 대기' },
   ], links: [{ label: '칸반', url: 'https://example.com/k' }, { label: 'bad', url: 'javascript:alert(1)' }] }));
   const out = execFileSync('node', [BIN, 'board', dir, src], { encoding: 'utf8' });
-  assert.match(out, /카드 3/);   // title 없는 카드는 버림
+  assert.match(out, /카드 5/);   // title 없는 카드는 버림
   const b = JSON.parse(fs.readFileSync(path.join(dir, 'board.json'), 'utf8'));
-  assert.deepEqual(b.cards.map(c => c.status), ['doing', 'doing', 'todo']);
+  assert.deepEqual(b.cards.map(c => c.status), ['doing', 'doing', 'todo', 'wait', 'ship']);   // 기다림·배포 대기 칸 (fleet #215)
   assert.deepEqual(b.cards[0].owner, ['a:main']);
   assert.equal(b.cards[1].url, undefined);   // http(s) 만
   assert.equal(b.cards[2].mode, undefined);
@@ -1108,7 +1109,7 @@ test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it
   const srv = await startServer(dir, 0);
   try {
     const j = await (await fetch(srv.base + '/api/board')).json();
-    assert.equal(j.board.cards.length, 3);
+    assert.equal(j.board.cards.length, 5);
     assert.match(await (await fetch(srv.base + '/board')).text(), /<title>진행판<\/title>/);
     assert.match(await (await fetch(srv.base + '/')).text(), /href="\/board"/);
   } finally { await srv.close(); }
