@@ -5,7 +5,7 @@
 .bd-chip{padding:6px 12px;min-height:34px;border-radius:16px;border:1px solid #CFCBC2;background:#fff;font:700 13px system-ui,sans-serif;color:#222;cursor:pointer}
 .bd-chip.on{background:#2B2A27;color:#F3E6C4;border-color:#2B2A27}
 .bd-stale{padding:8px 12px;border-radius:8px;background:#F6DED6;color:#8E3320;font-size:13.5px;margin:0 0 12px}
-.bd-cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:start}
+.bd-cols{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;align-items:start}
 .bd-col{background:#F4F2EE;border-radius:12px;padding:10px}
 .bd-col h2{display:flex;justify-content:space-between;font-size:15px;margin:2px 4px 8px}
 .bd-col h2 small{color:#777;font-weight:700}
@@ -23,6 +23,7 @@
 .bd-note{font-size:12.5px;color:#666;margin-top:4px;overflow-wrap:anywhere}
 .bd-empty{color:#888;font-size:13px;padding:6px 4px}
 .bd-more{width:100%;min-height:36px;border:1px dashed #CFCBC2;border-radius:8px;background:transparent;font:700 13px system-ui,sans-serif;color:#555;cursor:pointer}
+@media (max-width:1100px){.bd-cols{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:760px){.bd-cols{grid-template-columns:1fr}.bd-col.doing{order:-1}}
 </style>
 <body class="rs-page"><main>
@@ -36,7 +37,7 @@
 <script>
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const when = iso => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}); };
-const COLS = [['todo', '할 일'], ['doing', '하는 중'], ['done', '끝']];
+const COLS = [['todo', '할 일'], ['doing', '하는 중'], ['wait', '기다림'], ['ship', '배포 대기'], ['done', '끝']];
 const MODE = { claude: '클로드 직접 작업', system: '시스템 대기', idle: '맡은 일 · 대기' };
 const RANK = { p0: 0, p1: 1, p2: 2, p3: 3, '긴급': 0, '높음': 1, '중간': 2, '낮음': 3 };
 const rank = p => { const k = String(p || '').toLowerCase(); return k in RANK ? RANK[k] : 9; };
