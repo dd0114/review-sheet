@@ -27,7 +27,7 @@
 </style>
 <body class="rs-page"><main>
 <div class="eyebrow"><a href="/">REVIEW-SHEET</a> · 진행판</div><h1 id="bd-title">진행판</h1>
-<p class="lede">보기 전용 — 일은 이슈에서 바뀐다. <span id="bd-upd"></span></p>
+<p class="lede">보기 전용 — 일은 이슈에서 바뀐다. <span id="bd-upd"></span> <span id="bd-links"></span></p>
 <div id="bd-stale" class="bd-stale" hidden></div>
 <div class="bd-top" id="bd-groups"></div>
 <div class="bd-top" id="bd-modes"></div>
@@ -63,6 +63,7 @@ function render(b) {
   const cols = document.getElementById('bd-cols'), stale = document.getElementById('bd-stale');
   if (!b) { cols.innerHTML = '<p class="bd-empty">아직 진행판이 없다 — 생산자가 <code>review-sheet board</code> 로 board.json 을 써야 한다.</p>'; return; }
   document.getElementById('bd-title').textContent = b.title || '진행판';
+  document.getElementById('bd-links').innerHTML = (b.links || []).map(l => `<a class="rs-boardlink" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label)} →</a>`).join(' ');
   document.getElementById('bd-upd').textContent = '갱신 ' + when(b.updatedAt) + (b.source ? ' · ' + b.source : '');
   const age = (Date.now() - new Date(b.updatedAt)) / 60000;
   stale.hidden = !(age > 10);
