@@ -1052,7 +1052,8 @@ export const CHAT_KINDS = {
   bug: { tag: '버그제보', todo: '— 버그 제보: bug 라벨 이슈 만들고 바로 고친다. 답장에 링크.' },
   followup: { tag: '지난이슈확인', todo: '— 지난 이슈 확인: 관련 이슈를 찾아 현재 상태(진행·막힘·끝남)부터 답한다. 이슈가 없으면 지금 만든다.' },
 };
-const wakesOwner = m => m.from === 'hero' && (m.wake === true || !!m.ask || !!m.askRef || !!m.askStale ||
+// kind 가 붙은 글(게임 안 버그 신고 등 hero 가 쓴 걸 자동 게시자가 옮긴 것)은 auto 여도 깨운다 — 10-25 pkch:main 이 신고 3건을 못 봄(spider #217).
+const wakesOwner = m => m.from === 'hero' && (m.wake === true || Object.hasOwn(CHAT_KINDS, m.kind || '') || !!m.ask || !!m.askRef || !!m.askStale ||
   /^🔥 긴급 지정:|^긴급 해제:|^추가 질문 \(시트 /.test(m.text || '') || !m.auto);
 function formatChat(root, ch, m) {
   const k = Object.hasOwn(CHAT_KINDS, m.kind || '') ? CHAT_KINDS[m.kind] : null;
