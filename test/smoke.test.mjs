@@ -68,12 +68,14 @@ test('wait-any wakes for hero posts, preserves kind output, and settles adjacent
     appendChat(dir, 'root', 'root', '내 글');
     appendChat(dir, 'root', 'other', '다른 세션 글');
     appendChat(dir, 'root', 'hero', '자동 알림', null, null, { auto: true });
+    appendChat(dir, 'root', 'hero', '게임 안 신고', null, null, { auto: true, kind: 'bug' });
     appendChat(dir, 'root', 'hero', '첫 글', null, null, { kind: 'bug' });
     await new Promise(r => setTimeout(r, 200));
     appendChat(dir, 'root', 'hero', '둘째 글');
     const r = await p.done;
     assert.equal(r.code, 0, r.err);
     assert.match(r.out, /hero: \[버그제보\] 첫 글/);
+    assert.match(r.out, /hero: \[버그제보\] 게임 안 신고/);
     assert.match(r.out, /hero: 둘째 글/);
     assert.doesNotMatch(r.out, /내 글|다른 세션 글|자동 알림/);
     assert.ok(readChatMeta(dir, 'root').seenAt);
