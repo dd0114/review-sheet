@@ -1095,7 +1095,7 @@ test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it
     { id: 'x#1', title: '빠른 일', status: 'doing', priority: 'P1', owner: 'a:main', mode: 'claude' },
     { id: 'x#2', title: 'CI 기다림', status: 'doing', owner: ['a:w1'], mode: 'system', modeNote: 'CI', url: 'javascript:alert(1)' },
     { title: '할 일', status: 'weird', mode: 'nope' }, { status: 'done' },
-  ] }));
+  ], links: [{ label: '칸반', url: 'https://example.com/k' }, { label: 'bad', url: 'javascript:alert(1)' }] }));
   const out = execFileSync('node', [BIN, 'board', dir, src], { encoding: 'utf8' });
   assert.match(out, /카드 3/);   // title 없는 카드는 버림
   const b = JSON.parse(fs.readFileSync(path.join(dir, 'board.json'), 'utf8'));
@@ -1103,6 +1103,7 @@ test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it
   assert.deepEqual(b.cards[0].owner, ['a:main']);
   assert.equal(b.cards[1].url, undefined);   // http(s) 만
   assert.equal(b.cards[2].mode, undefined);
+  assert.deepEqual(b.links, [{ label: '칸반', url: 'https://example.com/k' }]);   // 판 위 링크도 http(s) 만
   assert.match(execFileSync('node', [BIN, 'board', dir], { encoding: 'utf8' }), /doing\t2/);
   const srv = await startServer(dir, 0);
   try {
