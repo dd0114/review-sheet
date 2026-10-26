@@ -81,7 +81,7 @@ function usage(code = 2) {
   review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
   review-sheet batch [dir] [<file|->] [--domain D]   # 배치판(보기 전용, /batch) — pkch-batch-view/1 {rules:[{job,…,runs:[{id,status,verdict,line,startedAt,…,log,taken}]}]} 를 도메인별로 더함(실행 id 로 합침, 규칙마다 최근 ${BATCH_KEEP}개), 인자 없으면 요약
   review-sheet links [dir] [<file|->]   # 받은편지함 위 줄 외부 링크 — {links:[{label,url}]} url=http(s) 또는 /경로, 같은 label 덮어씀, url 비우면 지움, 8개까지 (#47)
-  review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|wait|ship|done,priority,owner,mode:claude|system|idle,modeNote,url}],links?:[{label,url}]} 쓰기, 인자 없으면 요약
+  review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|wait|ship|done,priority,owner,mode:claude|system|idle,modeNote,flag,url}],links?:[{label,url}]} 쓰기, 인자 없으면 요약
   review-sheet tab [dir] [--prefix X] [--icon Y] [--clear]   # 탭 이름표 — <inbox>/tab.json {prefix,icon}: 모든 탭 제목 앞 'X · ' + 이모지 탭 아이콘. 서버 재시작 없이 반영, env REVIEW_SHEET_TAB_PREFIX/ICON 이 이김. 빈 값 = 그 칸 지움
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
@@ -534,7 +534,7 @@ export function cleanBoard(j) {
     id: str(c.id, 80), title: c.title.trim().slice(0, 300), url: /^https?:\/\//.test(c.url || '') ? str(c.url, 500) : undefined,
     status: BOARD_STATUS.includes(c.status) ? c.status : 'todo', priority: str(c.priority, 20), group: str(c.group, 40),
     owner: (Array.isArray(c.owner) ? c.owner : c.owner ? [c.owner] : []).filter(o => typeof o === 'string').map(o => o.slice(0, 60)).slice(0, 8),
-    mode: BOARD_MODES.includes(c.mode) ? c.mode : undefined, modeNote: str(c.modeNote, 120), note: str(c.note, 300), at: str(c.at, 40),
+    mode: BOARD_MODES.includes(c.mode) ? c.mode : undefined, modeNote: str(c.modeNote, 120), note: str(c.note, 300), flag: str(c.flag, 30), at: str(c.at, 40),
   }));
   // 판 위 줄 바깥 링크(예: 도메인 칸반) — http(s) 만, 8개까지
   const links = (Array.isArray(j.links) ? j.links : []).filter(l => l && typeof l.label === 'string' && l.label.trim() && /^https?:\/\//.test(l.url || ''))

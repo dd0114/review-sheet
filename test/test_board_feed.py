@@ -665,5 +665,31 @@ class Review2(Base):
         self.assertIn(('gh', 'api', 'graphql'), calls)
 
 
+class WaitKind(unittest.TestCase):   # 기다림은 사람(시트)·시스템 둘 — 시트 없는 사람 기다림, 하루 넘은 시스템 기다림은 빨간 표시
+    T = bf.parse_ts('2026-10-26T12:00:00Z')
+
+    def kind(self, text, at='2026-10-26T11:00:00Z'):
+        return bf.wait_kind((text, '', at, ''), self.T)
+
+    def test_sheet_is_person_no_flag(self):
+        self.assertEqual(self.kind('시트 app-mail-1', '2026-10-20T00:00:00Z'), ('사람', None))
+
+    def test_hero_without_sheet_flagged(self):
+        self.assertEqual(self.kind('hero 결정 — 토큰 넣을지'), ('사람', '시트 없음'))
+
+    def test_system_fresh_and_old(self):
+        self.assertEqual(self.kind('PR #12 머지'), ('시스템', None))
+        self.assertEqual(self.kind('이슈 #8 닫힘', '2026-10-24T00:00:00Z'), ('시스템', '1일 넘음'))
+
+    def test_keep_and_date_never_flagged(self):
+        self.assertEqual(self.kind('상시', '2026-10-01T00:00:00Z'), ('시스템', None))
+        self.assertEqual(self.kind('2026-10-28', '2026-10-20T00:00:00Z'), ('시스템', None))
+
+    def test_note_and_card_flag(self):
+        self.assertTrue(bf.wait_note(('PR #12 머지', '', '2026-10-26T11:00:00Z', ''), '').startswith('시스템 · 기다림: '))
+        self.assertEqual(bf.wait_flag(('hero 확인해 주실 것', '', '2026-10-26T11:00:00Z', '')), {'flag': '시트 없음'})
+        self.assertEqual(bf.wait_flag(('시트 x-1', '', '2026-10-26T11:00:00Z', '')), {})
+
+
 if __name__ == '__main__':
     unittest.main()
