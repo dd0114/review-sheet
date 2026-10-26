@@ -117,7 +117,7 @@ hero 는 탭 하나만 둔다(5초마다 자동 갱신). 세션마다 서버·�
 5e. 매시 점검 … unassigned [--prefix <도메인>-]  → `배정없음`·`문항안붙음`(남은 문항 키) 은 담당을 정해 assign·items, `답바뀜` 은 바뀐 답을 다시 처리, `되돌림` 은 담당 창이 다시 머지, `이슈닫힘`(이슈는 닫혔는데 라이브·끝 전) 은 단계를 마저 찍거나 이슈를 다시 연다. 하나라도 있으면 exit 5.
           시간으로 멈춤을 재지 않는다(예전 24시간 `멈춤` 은 소음이라 뺐다). 게이트 시작 전 답한 시트는 대상 아님(assign/.since), 문항 장부는 assign/.items-since 뒤 (다시) 저장된 답부터 — 그 전 답은 배정되면 닫힘(배정 뒤 답이 바뀌면 `답바뀜`).
           **부분 제출**(hero 2026-10-15): 안 고른 문항(메모만 포함)이 남은 채 제출되면 받은편지함 배지 `◐ 부분 제출 · 미선택 N`, read/wait 맨 위에 안 고른 문항 키, unassigned 제목 끝 `· 부분제출(미선택 N)`. 처리는 §답을 받은 뒤 19. 메모로 답이 충분하면 그대로 진행.
-6. 진행판 … board - < board.json  — 바깥 생산자(이슈 트래커·작업 창 상태를 읽는 스크립트)가 주기적으로 넘기면 /board 가 할 일·하는 중·끝으로 보여 준다. 보기 전용(아래 CLI 표의 형식).
+6. 진행판 … board - < board.json  — 바깥 생산자(이슈 트래커·작업 창 상태를 읽는 스크립트)가 주기적으로 넘기면 /board 가 할 일·하는 중·기다림·배포 대기·끝으로 보여 준다. 보기 전용(아래 CLI 표의 형식). GitHub 이슈용 생산자는 `bin/board-feed.py`(아래 §진행판 생산자).
 7. 자원판 … dash - < dash.json  — 바깥 생산자(머신 자원·토큰 사용을 재는 스크립트)가 주기적으로 넘기면 /dash 가 숫자 카드 + 줄 목록 + 눌러서 시계열로 보여 준다. 보기 전용(아래 CLI 표의 형식).
 8. 진행   답에 따라 구현. 시트 파일은 inbox 에 남긴다 — "제출됨" 묶음이 곧 결정 기록이다.
 ```
@@ -211,6 +211,53 @@ review-sheet chat hub <ch>       # 허브 바꾸기(하나만)
 
 **세션 규칙** (hero 2026-10-06): 이건 hero 가 **자기와 대화하는 칸**이다. 세션은 `inbox/memo/` 를 읽지도 쓰지도 않고, CLI 도 없다(`/api/inbox` 에도 건수·시각만 나가고 본문은 안 나간다). hero 가 메모 내용을 세션에 전하고 싶으면 채널(chat)이나 시트 메모칸에 옮겨 적는다 — 그때까지는 세션 입장에서 존재하지 않는 파일이다. `?m=<이름>` 으로 메모를 더 만들 수 있지만 그것도 전부 hero 것이다.
 
+## 진행판 생산자 — `bin/board-feed.py`
+
+GitHub 이슈·PR 을 읽어 `review-sheet board -` 로 넘기는 생산자. Python 3 표준 라이브러리 + `gh` CLI 만 쓴다(`gh auth login` 필요). 판정은 이슈·PR·인계 노트(댓글)만 본다.
+
+| 칸 | 뜻 |
+|---|---|
+| doing 하는 중 | 열린 이슈 중 ① 이 이슈를 가리키는 열린 PR(제목 `(#N)`·본문 `Closes/Fixes/Refs #N`)이 있거나 ② `doingLabels` 라벨(기본 `doing`·`진행 중`)이 붙었거나 ③ `doingIfAssigned: true` 일 때 담당자가 있음. 단 안 풀린 기다림 노트가 있으면 wait |
+| wait 기다림 | 마지막 인계 노트의 `무엇을 기다림: …` 이 안 풀림 — `PR #N`(머지되면) · `이슈 #N 닫힘` · `#N` 이 든 글(적힌 번호가 다 닫힘·머지면) · `시트 <이름>`(제출되면) · `파일 <경로>` · `YYYY-MM-DD [HH:MM]` · `hero <사유>`·`상시`(사람만 풂). `없음`/`-`/`(이제) 안 막힘` = 기다리는 것 없음 |
+| ship 배포 대기 | main 계열(`mainBranches`, 기본 main·master) 로 머지된 PR 이 있는 열린 이슈(머지 **전에** 적은 기다림 노트는 머지로 덮인다 — 머지 뒤에 적은 노트만 칸·닫기를 막는다). 곁가지(에픽 base 등) 머지는 보기용 메모만. `liveUrl`(배포본 `version.json`, `{"sha": "<커밋>"}`) 이 있으면 머지 커밋이 그 sha 에 들어갔나(`gh api compare` ahead/identical)로 '실림'을 보고, 닫힌 이슈도 안 실렸으면 여기 |
+| done 끝 | 최근 `doneHours`(기본 48) 안에 닫힌 이슈 |
+| todo 할 일 | 그 밖의 열린 이슈. 우선도 = 라벨 P0~P3. 머지됐어도 `계속` 라벨이면 할 일. 판에서 빼는 것: `skipLabels`(기본 `epic`) 라벨, 제목 머리 `[Epic]`·`Epic:`·`에픽 —`, 단계 번호 없는 `로드맵` |
+
+닫기 근거가 되는 머지 PR 은 제목 `(#N)`·`(Refs #N)`·단계 표시 `(#N 1/3)` 또는 GitHub 의 Closes 연결뿐 — `(#N 후속)` 같은 건 '관련 PR' 메모만.
+
+**자동 닫기는 켤 때만**(`autoclose: true` — JSON 불리언 true 일 때만, `"true"`·`1` 은 설정 오류로 거부. 기본 꺼짐 — 꺼져 있으면 `<stateDir>/autoclose-dry.json` 에 닫을 목록 `would_close` 와 못 닫는 후보 `blocked`(사유)만 적는다). 닫는 조건: liveUrl 에 실림 · 열린 PR 없음 · `계속` 라벨(`continueLabel`) 없음 · 머지 뒤 노트가 막지 않음(딱 `없음`, 또는 묻지 않는 `남은 일 없음`/`닫히게 둠` + `다음:`·`N단계`·`남은 작업:` 같은 남은 일 표시 없음, 또는 `확인`만 기다리는 노트). 한 번에 `autocloseMax`(기본 5)개, 닫을 때 댓글을 남긴다. 사람이 다시 연 이슈는 다시 안 닫는다(다시 연 뒤 '끝' 노트를 적었으면 닫음). 머지 전에 적은 기다림 노트는 머지 + 실림이면 무시된다 — 머지 뒤에도 남은 일이면 머지 뒤에 노트를 다시 적거나 `계속` 라벨.
+안 닫는 경우(모두 `blocked` 에 사유): 열린 PR 이 제목·본문·브랜치 이름(`fix/x-12` 처럼 숫자 토큰)·Closes 연결 어디서든 그 번호를 가리킴 · 열린 PR 이 200개 이상(다 못 읽음 — 그 레포 전부) · 댓글을 못 읽음(gh issue list 는 앞 100개만 줘서, 100개 이상인 이슈는 `gh api` 페이지 넘김으로 전부 다시 읽는다 — 그게 실패하거나 수가 모자라면 그 이슈만 막음) · 닫기 직전 다시 센 댓글 수가 읽은 수와 다름 · 그 주기에 댓글·이슈 목록을 못 읽은 레포(지난 댓글로 판정만). 실림은 캐시에 그때 배포본 커밋과 같이 적어, 배포본 커밋이 바뀌면(되돌림 포함) 다시 비교하고, compare 가 실패하면 안 실림으로 본다(캐시 안 함). liveUrl 없는 레포는 자동 닫기 없음 — Closes 로 GitHub 이 닫는다.
+
+```json
+{
+  "title": "진행판",
+  "repos": [
+    {"group": "app", "repo": "owner/app", "liveUrl": "https://beta.example.com/version.json", "kanban": false},
+    {"group": "docs", "repo": "owner/docs"}
+  ],
+  "mainBranches": ["main", "master"],
+  "continueLabel": "계속",
+  "doingLabels": ["doing", "진행 중"],
+  "doingIfAssigned": false,
+  "doneHours": 48,
+  "autoclose": false,
+  "autocloseMax": 5,
+  "interval": 180,
+  "stateDir": "~/.review-sheet/board-feed"
+}
+```
+
+```
+python3 <SKILL_DIR>/bin/board-feed.py --config board-feed.json --dry     # 판 JSON 만 출력(쓰기·닫기·칸반·상태 파일 없음)
+python3 <SKILL_DIR>/bin/board-feed.py --config board-feed.json --once    # 한 번 쓰기 → /board
+python3 <SKILL_DIR>/bin/board-feed.py --config board-feed.json           # interval 초마다 (launchd·systemd 로 상주)
+```
+
+`title` = 판 제목(기본 `진행판`). 형식이 틀린 설정(목록 자리에 문자열, 정수 자리에 `"5"` 등)은 stderr 에 이유를 쓰고 exit 2. 상주 루프는 한 주기가 실패해도 로그만 남기고 다음 주기로 간다.
+`파일 <경로>` 노트는 board-feed 가 도는 기기의 경로로 본다(`~` 는 그 기기 홈) — 다른 기기의 결과 파일은 못 본다.
+
+환경변수가 설정 파일보다 우선: `BOARD_FEED_CONFIG`, `BOARD_REPOS="app=owner/app@https://…/version.json docs=owner/docs"`(빈칸으로 레포를 나누고 첫 `@` 뒤를 liveUrl 로 — url 에 빈칸은 못 넣음), `BOARD_AUTOCLOSE=on`, `BOARD_MAIN_BRANCHES`, `BOARD_CONTINUE_LABEL`, `BOARD_DONE_HOURS`, `BOARD_CLOSE_MAX`, `BOARD_INTERVAL`, `BOARD_STATE_DIR`. review-sheet 실행은 `REVIEW_SHEET_BIN` → PATH 의 `review-sheet` → 옆의 `review-sheet.mjs`. `kanban: true` 면 GitHub 프로젝트 `<group> 칸반` 의 Status 열(할 일/진행 중/기다림/배포 대기/끝)에도 같은 판정을 쓰고(프로젝트가 없으면 만든다. 열 이름을 바꾸는 건 이 스크립트가 만든 프로젝트뿐 — 같은 이름의 남의 프로젝트에 그 열이 없으면 로그만 남기고 그 그룹 칸반을 건너뜀) 판 머리줄에 링크(gh 토큰에 `project` 권한 필요). 시험: `python3 -m unittest discover -s test -p 'test_*.py'`.
+
 ## 데이터 형식 (`<name>-data.js`)
 
 ```js
@@ -303,7 +350,7 @@ hero 체크리스트 (1회): Tailscale admin 콘솔 → **DNS → HTTPS Certific
 | `items [dir] <name|id> [<문항> done --pr N \| done --rule "<근거>" \| defer --issue N \| reject [이유] \| moved <시트>]` | 문항 장부 — 답한 문항마다 하나씩 붙어야 시트가 닫힘. 문항 없이 = 현황(`안 붙음`·`답 바뀜`·`되돌려짐`, 남으면 exit 5) |
 | `record [dir] <name|id> [--issue N] [--repo o/r]` | read 출력 전체(메모·`_ask`·문항 질문)를 이슈 댓글로. 다시 부르면 아직 안 붙인 줄만(붙인 줄 해시 = `record/<id>.json`). 바뀐 게 없으면 안 붙임 |
 | `migrate-assign [dir] [--dry-run]` | 옛 뒤바뀐 배정(이슈 칸에 창, 담당 칸에 번호) 맞바꾸기 — 고치기 전 `assign/.backup-<시각>/` 에 복사. `--dry-run` = 건수만 |
-| `board [dir] [<file\|->]` | 진행판(보기 전용, `/board`) — 바깥 생산자가 `{cards:[{title, status: todo\|doing\|done, priority, owner, mode: claude\|system\|idle, modeNote, group, url, note, at}]}` 를 넘기면 검증해 `board.json` 으로 원자 교체. 인자 없으면 칸별 개수. 판은 일을 바꾸지 않는다 |
+| `board [dir] [<file\|->]` | 진행판(보기 전용, `/board`) — 바깥 생산자(예: `bin/board-feed.py`)가 `{cards:[{title, status: todo\|doing\|wait\|ship\|done, priority, owner, mode: claude\|system\|idle, modeNote, group, url, note, at}]}` 를 넘기면 검증해 `board.json` 으로 원자 교체. 인자 없으면 칸별 개수. 판은 일을 바꾸지 않는다 |
 | `batch [dir] [<file\|->] [--domain D]` | 배치판(보기 전용, `/batch`, #41) — 생산자(도메인)마다 `batch/<도메인>.json`. 형식 `pkch-batch-view/1`: 위 `{format, at, domain?, source?, state, tick:{at, ran[]}, rules[], others?[{label, pid, status}]}` · 규칙 `{job, what, verdicts:{판정:뜻}, owner, draft, when, who_runs, on:{판정:받는 곳}, every_min, next, last, total, health: ok\|late\|broke\|none, runs[]}` · 실행 `{id, status: done\|error, verdict, line, startedAt, endedAt, ms, log:[{level, code, text}], file, want, taken:{by, at, did}\|null, waitingMin}`. 넣을 때마다 규칙 정보는 새것, 실행은 `id` 로 합쳐 더함(같은 id 는 새것) · 규칙마다 새것부터 50개. 도메인 = `--domain` > `domain` > 규칙 `owner` 의 세션. 화면 맨 아래 = owner 가 `<도메인>:main` 인 채널(chat.html 그대로). 예시에 호스트·IP·토큰 넣지 말 것. 인자 없으면 도메인별 요약 |
 | `links [dir] [<file\|->]` | 받은편지함 위 줄(진행판 → 자원 → 배치 →) 뒤 외부 링크(#47) — `links.json` `{links:[{label, url}]}`. url = `http(s)://…` 또는 받은편지함 안 경로 `/…`(예: inbox 아래 파일 `/q/board.html`). 같은 label 은 덮어씀, url 비우면 지움, 8개까지. 인자 없으면 목록 |
 | `dash [dir] [<file\|->]` | 자원판(보기 전용, `/dash`) — `{cards:[{label, value, unit, sub, n, level: ok\|warn\|bad, series:[키]}], groups:[{title, rows:[{key, label, sub, cols:[{label, value, n}], series:[키]}]}], series:{키:{label, unit, start, step, values:[…]}}, scale:{week}}` 를 넘기면 검증해 `dash.json` 으로 원자 교체. unit `tok` 은 막대(칸 합), 그 밖은 선. `scale.week`(주간 토큰 총량)를 주면 제목 옆 ⓘ 가 토큰 숫자(`n`)와 tok 그래프를 주간 % 로 바꿔 보여 준다. 인자 없으면 개수 요약 |
