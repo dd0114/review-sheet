@@ -401,8 +401,40 @@ def prefetch(issues_, group, repo, sheet_state):
             note_open(i, w, group, repo, sheet_state, online=True)
 
 
+HUMAN_KINDS = ('sheet', 'human')   # 사람 기다림 = 리뷰 시트로만
+WAIT_OLD = 86400   # 시스템 기다림이 하루 넘게 안 풀리면 「1일 넘음」
+
+
+def parse_ts(v):
+    """'2026-10-26T01:46:00Z' → epoch 초, 못 읽으면 None."""
+    try:
+        return datetime.fromisoformat(str(v).replace('Z', '+00:00')).timestamp()
+    except ValueError:
+        return None
+
+
+def wait_kind(w, t=None):
+    """기다림 노트 → (꼬리표 '사람'·'시스템', 빨간 표시 또는 None).
+    사람을 기다리면 시트가 있어야 한다 — 시트 번호 없이 「hero …」만 적힌 노트는 「시트 없음」.
+    시스템(PR·이슈·파일·그 밖)을 하루 넘게 기다리면 「1일 넘음」 — 아직 맞게 기다리는지 사람이 볼 줄.
+    상시·날짜는 때가 되면 풀리거나 일이 아니라 표시 없음."""
+    kind = parse(w[0])[0]
+    if kind in HUMAN_KINDS:
+        return '사람', (None if kind == 'sheet' else '시트 없음')
+    if kind in ('keep', 'date'):
+        return '시스템', None
+    ts = parse_ts(w[2]) if w[2] else None
+    old = ts is not None and (t if t is not None else time.time()) - ts > WAIT_OLD
+    return '시스템', ('1일 넘음' if old else None)
+
+
 def wait_note(w, why):
-    return f"기다림: {w[0][:120]}" + (f" — {why}" if why and why not in w[0] else '')
+    tag, _ = wait_kind(w)
+    return f"{tag} · 기다림: {w[0][:120]}" + (f" — {why}" if why and why not in w[0] else '')
+
+
+def wait_flag(w):
+    return {'flag': f} if (f := wait_kind(w)[1]) else {}
 
 
 def sheet_states():
@@ -725,7 +757,7 @@ def build(repos, cache):
             if dr:   # 하는 중 — 단 안 풀린 기다림 노트가 있으면 기다림
                 card = dict(base, status='doing', note=dr[0] + (f" · PR #{pr['number']} 머지" if pr else '') + hold, at=i['updatedAt'])
                 if op:
-                    card.update(status='wait', note=wait_note(w, why) + f' · {dr[0]}' + hold, at=w[2] or i['updatedAt'])
+                    card.update(status='wait', note=wait_note(w, why) + f' · {dr[0]}' + hold, at=w[2] or i['updatedAt'], **wait_flag(w))
                 if no in ship and pr:
                     card['_block'] = (repo, no, dr[1])
                 cards.append(card)
@@ -755,7 +787,7 @@ def build(repos, cache):
             if w:
                 at = w[2] or i['updatedAt']
                 if op:
-                    cards.append(dict(base, status='wait', note=wait_note(w, why) + hold, at=at,
+                    cards.append(dict(base, status='wait', note=wait_note(w, why) + hold, at=at, **wait_flag(w),
                                       **({'_block': (repo, no, '머지 뒤 기다림 노트 안 풀림')} if hold and pr else {})))
                 elif parse(w[0])[0] != 'none':
                     cards.append(dict(base, status='todo', note=f"풀림 · {w[0][:80]}" + hold, at=at,

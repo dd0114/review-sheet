@@ -20,6 +20,7 @@
 .bd-mode.system{background:#DCE7F5;color:#244E86}
 .bd-mode.idle{background:#ECEAE5;color:#666}
 .bd-own{font-weight:700;color:#333}
+.bd-flag{font:800 12px/1.6 system-ui,sans-serif;padding:0 8px;border-radius:10px;background:#B2472F;color:#fff}
 .bd-note{font-size:12.5px;color:#666;margin-top:4px;overflow-wrap:anywhere}
 .bd-empty{color:#888;font-size:13px;padding:6px 4px}
 .bd-more{width:100%;min-height:36px;border:1px dashed #CFCBC2;border-radius:8px;background:transparent;font:700 13px system-ui,sans-serif;color:#555;cursor:pointer}
@@ -50,6 +51,7 @@ let last = null;
 const card = c => '<a class="bd-card' + pcls(c.priority) + '"' + (c.url ? ' href="' + esc(c.url) + '" target="_blank" rel="noopener"' : '') + '>' +
   '<b>' + esc(c.title) + '</b><div class="bd-meta">' +
   (c.priority ? '<span class="bd-pri">' + esc(c.priority) + '</span>' : '') +
+  (c.flag ? '<span class="bd-flag">' + esc(c.flag) + '</span>' : '') +
   (c.mode ? '<span class="bd-mode ' + c.mode + '">' + MODE[c.mode] + (c.modeNote ? ' · ' + esc(c.modeNote) : '') + '</span>' : '') +
   (c.owner && c.owner.length ? '<span class="bd-own">' + c.owner.map(esc).join(', ') + '</span>' : (c.status === 'todo' ? '' : '<span>담당 없음</span>')) +
   (c.id ? '<span>' + esc(c.id) + '</span>' : '') + (c.at ? '<span>' + when(c.at) + '</span>' : '') +
