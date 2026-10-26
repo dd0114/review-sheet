@@ -294,3 +294,8 @@ body.rs-page.rs-checked{background:#DCE8DF}
 .rs-page .v-askq-log.flash{animation:askflash 2.4s ease-out}
 @keyframes askflash{0%,30%{background:#FBE3D6}100%{background:transparent}}
 .rs-page .v-askq-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:76px;z-index:30;max-width:calc(100% - 32px);padding:10px 16px;border:0;border-radius:999px;background:#C96442;color:#fff;font:inherit;font-size:14px;box-shadow:0 4px 14px rgba(0,0,0,.18);cursor:pointer}
+/* 🔒 비밀 칸 (2026-10-14) */
+.v-sec{border:1px solid #c9c4b8;border-radius:10px;padding:12px;margin:12px 0}
+.v-sec .v-sec-v{display:block;width:100%;box-sizing:border-box;font-family:ui-monospace,monospace;font-size:13px;margin:8px 0}
+.v-sec-st.ok{background:#dff3e4;color:#0a7d2c}
+.v-sec-msg{font-size:13px}

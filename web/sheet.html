@@ -39,7 +39,9 @@ const e = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;
 /* Text fields (ask/now/sit/decide/effect/why/question/table) are escaped, then a small markup set comes back:
    <b> <i> <u> <s> <code> <strong> <em> <br> and "\n". Sessions kept writing "<b>문제</b>…<br>" into `now` and hero
    saw the raw tags (2026-10-05) — tolerate that set instead of tag soup; anything else stays visible text. */
-const m = s => e(s).replace(/&lt;(\/?)(b|i|u|s|code|strong|em)&gt;/g, '<$1$2>').replace(/&lt;br\s*\/?&gt;/g, '<br>').replace(/\n/g, '<br>');
+/* <a href="https://…">text</a> also comes back (http/https only, opens in a new tab) — evidence links in `now` were dead text (2026-10-12). */
+const m = s => e(s).replace(/&lt;(\/?)(b|i|u|s|code|strong|em)&gt;/g, '<$1$2>').replace(/&lt;br\s*\/?&gt;/g, '<br>')
+  .replace(/&lt;a href=&quot;(https?:\/\/[^\s"<>]+?)&quot;&gt;([\s\S]*?)&lt;\/a&gt;/g, '<a href="$1" target="_blank" rel="noopener">$2</a>').replace(/\n/g, '<br>');
 const issueHref = v => /^https?:/.test(String(v)) ? String(v) : (D.issueUrl || '') + v;
 const issueText = v => /^https?:/.test(String(v)) ? '이슈' : '#' + v;
 const tbl = t => '<div class="g-wrap"><table class="g-t"><tr>' + t.head.map(x => '<th>' + e(x) + '</th>').join('') + '</tr>' +
@@ -102,6 +104,13 @@ for(const s of D.sections){
   if(s.html) h += '<div class="rs-html">' + s.html + '</div>';
   if(s.flow) h += '<div class="v-flow">' + s.flow.map((f, i) => '<span class="s' + (i === 1 ? ' x' : '') + '">' + e(f) + '</span>').join('<span class="v-arrow">→</span>') + '</div>';
   if(s.table) h += tbl(s.table);
+  /* 🔒 비밀 칸 (2026-10-14) — 붙여넣은 값은 "AWS 에 저장" 을 누르는 순간 서버가 검사 후 SSM 으로 넘기고 버린다.
+     .v-q 가 아니라서 제출(답 파일)에는 들어가지 않는다. 화면엔 결과(vN)만. */
+  h += (s.secrets || []).map(x => '<div class="v-sec" data-sec="' + e(x.k) + '"><div class="v-qh"><span class="n">🔒</span><span>' + m(x.label || x.ssm) + '</span><span class="v-rec v-sec-st">미저장</span></div>' +
+    (x.hint ? '<div class="v-ctx"><div>' + m(x.hint) + '</div></div>' : '') +
+    (x.check === 'pem' ? '<div class="v-att"><label class="v-clip">📄 파일 고르기<input type="file" class="v-sec-file" hidden></label></div><textarea class="v-memo v-sec-v" rows="4" autocomplete="off" spellcheck="false" placeholder="-----BEGIN … PRIVATE KEY----- 전체 붙여넣기 (또는 위에서 파일 고르기)"></textarea>'
+      : '<input type="password" class="v-memo v-sec-v" autocomplete="off" placeholder="붙여넣기">') +
+    '<div class="v-att"><button type="button" class="save v-sec-go">AWS 에 저장</button> <span class="v-sec-msg"></span></div></div>').join('');
   h += (s.questions || []).map(norm).map(o => {
     const { k, q: t, opts, rec, why } = o;
     const tok = String(rec).split(' ')[0];
@@ -337,6 +346,25 @@ document.getElementById('app').addEventListener('click', async ev => {
   finally { go.disabled = false; }
 });
 askLoad();
+/* 🔒 비밀 칸 — 값은 이 버튼으로만 서버에 가고(SSM 저장), localStorage·답 파일엔 안 들어간다. */
+const secMark = (box, v) => { const t = box.querySelector('.v-sec-st'); t.textContent = '저장됨 v' + v.version; t.classList.add('ok'); };
+document.querySelectorAll('.v-sec').forEach(box => {
+  const fi = box.querySelector('.v-sec-file'), ta = box.querySelector('.v-sec-v'), msg = box.querySelector('.v-sec-msg'), go = box.querySelector('.v-sec-go');
+  if(fi) fi.addEventListener('change', () => { const f = fi.files[0]; if(!f) return; const r = new FileReader(); r.onload = () => { ta.value = r.result; msg.textContent = f.name + ' 읽음 — AWS 에 저장을 누르세요'; }; r.readAsText(f); fi.value = ''; });
+  go.addEventListener('click', async () => {
+    if(!ta.value.trim()){ msg.textContent = '값이 비었습니다'; return; }
+    go.disabled = true; msg.textContent = '검사·저장 중…';
+    try {
+      const r = await fetch('/__secret?sheet=' + encodeURIComponent(D.id) + '&k=' + encodeURIComponent(box.dataset.sec), { method: 'POST', headers: { 'content-type': 'text/plain' }, body: ta.value });
+      const t = await r.text();
+      if(!r.ok) throw new Error(t);
+      const j = JSON.parse(t); ta.value = '';
+      secMark(box, j); msg.textContent = '✓ 저장됨 v' + j.version + ' · ' + j.done + '/' + j.total + (j.done === j.total ? ' — 다 됐습니다. 세션이 이어서 진행합니다' : '');
+    } catch(err){ msg.textContent = '✗ ' + err.message; }
+    finally { go.disabled = false; }
+  });
+});
+if(document.querySelector('.v-sec')) fetch('/__secret?sheet=' + encodeURIComponent(D.id), { cache: 'no-store' }).then(r => r.json()).then(st => document.querySelectorAll('.v-sec').forEach(b => { if(st[b.dataset.sec]) secMark(b, st[b.dataset.sec]); })).catch(() => {});
 document.getElementById('rs-refresh').addEventListener('click', () => location.reload());
 const go = new URLSearchParams(location.search).get('s') || location.hash.slice(1);
 if(go){ const t = document.getElementById(go); if(t) t.scrollIntoView(); }

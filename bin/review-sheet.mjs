@@ -676,6 +676,7 @@ export function renderMarkdown(sheet, saved, dir) {
       const pick = a.pick ? a.pick : (a.memo ? '(메모만)' : '—');
       out.push(`| ${q.k} | ${cell(q.q)} | ${cell(pick)} | ${cell(a.memo || '')}${a.files && a.files.length ? ` 📎${a.files.length}` : ''} |`);
     }
+    for (const x of s.secrets || []) out.push(`| 🔒${x.k} | ${cell(x.label || x.ssm)} | — | ${cell((A[`${s.code}-${x.k}`] || {}).memo || '미저장')} |`);
     const m = A[`${s.code}-memo`];
     if (m && m.memo) out.push('', `> 전체 메모: ${m.memo.replace(/\n/g, ' ')}`);
     const att = Object.keys(A).filter(k => k.startsWith(`${s.code}-`) && A[k].files && A[k].files.length);
@@ -1297,6 +1298,80 @@ export function pushWatch(root, ms = Number(process.env.REVIEW_SHEET_PUSH_MS) ||
   return () => clearInterval(t);
 }
 
+/* 비밀 칸 (hero 2026-10-14) — 섹션 `secrets: [{ k, label, ssm, check: 'pem'|'slack-bot'|'' , hint }]`.
+   hero 가 붙여넣은 값은 받는 즉시 검사 → AWS SSM SecureString 으로 넘기고 버린다. answers/*.json·로그·채팅엔
+   "저장됨 vN" 결과만 남는다. 서버를 띄울 때 REVIEW_SHEET_SECRET_SSM_PREFIX(쉼표로 여러 개)를 줘야 켜지고,
+   그 접두로 시작하는 ssm 경로만 받는다. AWS 프로필·리전 = REVIEW_SHEET_SECRET_AWS_PROFILE / _REGION (또는 칸의 profile/region). */
+function runWithStdin(cmd, args, input) {
+  return new Promise(resolve => {
+    const p = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    p.stdout.on('data', c => { out += c; });
+    p.on('error', () => resolve({ code: -1, out: '' }));
+    p.on('close', code => resolve({ code, out }));
+    p.stdin.end(input || '');
+  });
+}
+async function checkSecret(kind, v) {
+  if (kind === 'pem') {
+    if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(v)) return 'PEM 머리글(-----BEGIN … PRIVATE KEY-----)이 없습니다';
+    const r = await runWithStdin('openssl', ['pkey', '-noout'], v);
+    return r.code === 0 ? null : 'openssl 이 키로 읽지 못했습니다';
+  }
+  if (kind === 'slack-bot') {
+    if (!v.startsWith('xoxb-')) return 'xoxb- 로 시작하지 않습니다';
+    try {
+      const d = await (await fetch('https://slack.com/api/auth.test', { method: 'POST', headers: { authorization: 'Bearer ' + v } })).json();
+      return d.ok ? null : 'Slack auth.test 거부: ' + d.error;
+    } catch { return 'Slack auth.test 호출 실패'; }
+  }
+  return null;
+}
+async function storeSecret(root, id, k, raw) {
+  const prefixes = (process.env.REVIEW_SHEET_SECRET_SSM_PREFIX || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!prefixes.length) throw new Error('이 서버는 비밀 칸이 꺼져 있습니다 (REVIEW_SHEET_SECRET_SSM_PREFIX)');
+  if (!ID_RE.test(id)) throw new Error('bad sheet id');
+  const sheet = loadSheet(root, id);
+  let spec = null, code = '';
+  for (const s of sheet.sections) for (const x of s.secrets || []) if (String(x.k) === k) { spec = x; code = s.code; }
+  if (!spec || typeof spec.ssm !== 'string') throw new Error('그런 비밀 칸이 없습니다');
+  if (!prefixes.some(p => spec.ssm.startsWith(p))) throw new Error('허용되지 않은 저장 위치입니다');
+  let v = String(raw).replace(/\r\n/g, '\n').trim();
+  if (!v) throw new Error('값이 비었습니다');
+  const bad = await checkSecret(spec.check || '', v);
+  if (bad) { v = ''; throw new Error(bad); }
+  if (spec.check === 'pem') v += '\n';
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-sec-'));
+  const f = path.join(tmp, 'v');
+  let r;
+  try {
+    fs.writeFileSync(f, v, { mode: 0o600 }); v = '';
+    const profile = spec.profile || process.env.REVIEW_SHEET_SECRET_AWS_PROFILE, region = spec.region || process.env.REVIEW_SHEET_SECRET_AWS_REGION;
+    const args = ['ssm', 'put-parameter', '--name', spec.ssm, '--type', 'SecureString', '--value', 'file://' + f, '--overwrite', '--query', 'Version', '--output', 'text'];
+    if (profile) args.push('--profile', profile);
+    if (region) args.push('--region', region);
+    r = await runWithStdin('aws', args, '');
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  if (r.code !== 0) throw new Error('AWS 저장 실패 (aws 오류)');
+  const version = r.out.trim(), at = new Date().toISOString();
+  // 결과만 기록: secrets/<id>.json 에 칸별 상태, 모든 칸이 저장되면 answers/<id>.json 을 써서 wait 를 깨운다.
+  const sdir = path.join(root, 'secrets'); fs.mkdirSync(sdir, { recursive: true });
+  const sfile = path.join(sdir, id + '.json');
+  let st = {}; try { st = JSON.parse(fs.readFileSync(sfile, 'utf8')); } catch { /* first */ }
+  st[k] = { ssm: spec.ssm, version, at };
+  fs.writeFileSync(sfile, JSON.stringify(st, null, 2) + '\n');
+  const all = sheet.sections.flatMap(s => (s.secrets || []).map(x => String(x.k)));
+  if (all.every(x => st[x])) {
+    const prev = readAnswers(root, id) || {};
+    const answers = { ...(prev.answers || {}) };
+    for (const s of sheet.sections) for (const x of s.secrets || []) answers[`${s.code}-${x.k}`] = { memo: `저장됨 ${x.ssm} v${st[x.k].version} (${st[x.k].at})` };
+    const json = { ...prev, sheet: id, answers, savedAt: at };
+    const af = answersFile(root, id);
+    fs.writeFileSync(af + '.tmp', JSON.stringify(json, null, 2) + '\n'); fs.renameSync(af + '.tmp', af);
+  }
+  return { ok: true, k, ssm: spec.ssm, version, at, done: all.filter(x => st[x]).length, total: all.length };
+}
+
 export function startServer(dir, port = 0, host = '127.0.0.1') {
   const root = path.resolve(dir);
   fs.mkdirSync(path.join(root, 'answers'), { recursive: true });
@@ -1325,6 +1400,23 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
           send(res, 200, inline ? (ext === '.pdf' ? 'application/pdf' : TYPES[ext]) : 'application/octet-stream', buf, inline ? {} : { 'content-disposition': 'attachment' });
         });
       }
+    }
+    if (url.pathname === '/__secret' && req.method === 'GET') {   // 칸별 저장 결과(값 없음)
+      const id = url.searchParams.get('sheet') || '';
+      if (!ID_RE.test(id)) return send(res, 400, 'text/plain', 'sheet=<id> required');
+      return fs.readFile(path.join(root, 'secrets', id + '.json'), (err, buf) => send(res, 200, TYPES['.json'], err ? '{}' : buf));
+    }
+    if (url.pathname === '/__secret' && req.method === 'POST') {   // ?sheet=<id>&k=<secret k> raw body → AWS SSM SecureString (값은 디스크·답 파일에 안 남음)
+      const id = url.searchParams.get('sheet') || '', k = url.searchParams.get('k') || '';
+      let body = '', big = false;
+      req.on('data', c => { body += c; if (body.length > 64e3) { big = true; send(res, 413, 'text/plain; charset=utf-8', '64KB 넘음'); req.destroy(); } });
+      req.on('end', async () => {
+        if (big) return;
+        try { send(res, 200, TYPES['.json'], JSON.stringify(await storeSecret(root, id, k, body))); }
+        catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
+        body = '';
+      });
+      return;
     }
     if (url.pathname === '/__answers') {
       const qid = url.searchParams.get('sheet') || '';
