@@ -23,6 +23,10 @@
 .bd-flag{font:800 12px/1.6 system-ui,sans-serif;padding:0 8px;border-radius:10px;background:#B2472F;color:#fff}
 .bd-note{font-size:12.5px;color:#666;margin-top:4px;overflow-wrap:anywhere}
 .bd-empty{color:#888;font-size:13px;padding:6px 4px}
+.bd-std{font:800 11.5px/1.6 system-ui,sans-serif;padding:0 7px;border-radius:4px;background:#E4DCF2;color:#4A3878}
+.bd-standing{grid-column:1/-1;margin-top:4px}
+.bd-standing .bd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
+.bd-standing .bd-card{margin:0}
 .bd-more{width:100%;min-height:36px;border:1px dashed #CFCBC2;border-radius:8px;background:transparent;font:700 13px system-ui,sans-serif;color:#555;cursor:pointer}
 @media (max-width:1100px){.bd-cols{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:760px){.bd-cols{grid-template-columns:1fr}.bd-col.doing{order:-1}}
@@ -48,14 +52,19 @@ try { Object.assign(ui, JSON.parse(localStorage.getItem('bd-ui') || '{}'), { mor
 const save = () => { try { localStorage.setItem('bd-ui', JSON.stringify({ group: ui.group, mode: ui.mode })); } catch {} };
 let last = null;
 
+// 상시(늘 도는 것, spider #247) — 진행판이 standing 을 달거나 노트 머리 「상시 · 」. 기다림 칸·셈에서 빼고 맨 아래 묶음으로
+const STD = '상시 · ';
+const standing = c => c.standing === true || String(c.note || '').startsWith(STD);
+const parked = c => standing(c) && c.status === 'wait';
 const card = c => '<a class="bd-card' + pcls(c.priority) + '"' + (c.url ? ' href="' + esc(c.url) + '" target="_blank" rel="noopener"' : '') + '>' +
   '<b>' + esc(c.title) + '</b><div class="bd-meta">' +
+  (standing(c) ? '<span class="bd-std">상시</span>' : '') +
   (c.priority ? '<span class="bd-pri">' + esc(c.priority) + '</span>' : '') +
   (c.flag ? '<span class="bd-flag">' + esc(c.flag) + '</span>' : '') +
   (c.mode ? '<span class="bd-mode ' + c.mode + '">' + MODE[c.mode] + (c.modeNote ? ' · ' + esc(c.modeNote) : '') + '</span>' : '') +
   (c.owner && c.owner.length ? '<span class="bd-own">' + c.owner.map(esc).join(', ') + '</span>' : (c.status === 'todo' ? '' : '<span>담당 없음</span>')) +
   (c.id ? '<span>' + esc(c.id) + '</span>' : '') + (c.at ? '<span>' + when(c.at) + '</span>' : '') +
-  '</div>' + (c.note ? '<div class="bd-note">' + esc(c.note) + '</div>' : '') + '</a>';
+  '</div>' + (c.note ? '<div class="bd-note">' + esc(String(c.note).startsWith(STD) ? c.note.slice(STD.length) : c.note) + '</div>' : '') + '</a>';
 
 const chips = (el, key, items, all) => {
   el.innerHTML = items.length < 2 ? '' : [['', all]].concat(items).map(([v, label]) =>
@@ -73,20 +82,24 @@ function render(b) {
   if (age > 10) stale.textContent = Math.round(age) + '분째 갱신 없음 — 생산자가 멈췄을 수 있다. 아래는 그때 상태다.';
   const groups = [...new Set(b.cards.map(c => c.group).filter(Boolean))].sort();
   if (ui.group && !groups.includes(ui.group)) ui.group = '';
-  chips(document.getElementById('bd-groups'), 'group', groups.map(g => [g, g + ' ' + b.cards.filter(c => c.group === g && c.status !== 'done').length]), '전체');
+  chips(document.getElementById('bd-groups'), 'group', groups.map(g => [g, g + ' ' + b.cards.filter(c => c.group === g && c.status !== 'done' && !parked(c)).length]), '전체');
   const doing = b.cards.filter(c => c.status === 'doing' && (!ui.group || c.group === ui.group));
   const modes = Object.keys(MODE).filter(m => doing.some(c => c.mode === m));
   if (ui.mode && !modes.includes(ui.mode)) ui.mode = '';
   chips(document.getElementById('bd-modes'), 'mode', modes.map(m => [m, MODE[m] + ' ' + doing.filter(c => c.mode === m).length]), '하는 중 전부 ' + doing.length);
-  const pick = st => b.cards.filter(c => c.status === st && (!ui.group || c.group === ui.group) && (st !== 'doing' || !ui.mode || c.mode === ui.mode))
+  const pick = st => b.cards.filter(c => c.status === st && !parked(c) && (!ui.group || c.group === ui.group) && (st !== 'doing' || !ui.mode || c.mode === ui.mode))
     .sort((x, y) => st === 'done' ? String(y.at || '').localeCompare(String(x.at || '')) : rank(x.priority) - rank(y.priority) || String(y.at || '').localeCompare(String(x.at || '')));
   cols.innerHTML = COLS.map(([st, label]) => {
     const list = pick(st), shown = st !== 'doing' && !ui.more[st] ? list.slice(0, 12) : list;
     return '<section class="bd-col ' + st + '"><h2>' + label + '<small>' + list.length + '</small></h2>' +
       (shown.length ? shown.map(card).join('') : '<p class="bd-empty">없음</p>') +
       (shown.length < list.length ? '<button type="button" class="bd-more" data-st="' + st + '">' + label + ' ' + (list.length - shown.length) + '개 더 보기</button>' : '') + '</section>';
-  }).join('');
+  }).join('') + standingGroup(b);
 }
+const standingGroup = b => {
+  const list = b.cards.filter(c => parked(c) && (!ui.group || c.group === ui.group)).sort((x, y) => rank(x.priority) - rank(y.priority));
+  return list.length ? '<section class="bd-col bd-standing"><h2>상시(늘 도는 것)<small>' + list.length + '</small></h2><div class="bd-list">' + list.map(card).join('') + '</div></section>' : '';
+};
 
 document.addEventListener('click', e => {
   const t = e.target.closest('.bd-chip, .bd-more'); if (!t) return;

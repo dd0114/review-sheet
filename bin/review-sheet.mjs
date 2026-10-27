@@ -535,6 +535,7 @@ export function cleanBoard(j) {
     status: BOARD_STATUS.includes(c.status) ? c.status : 'todo', priority: str(c.priority, 20), group: str(c.group, 40),
     owner: (Array.isArray(c.owner) ? c.owner : c.owner ? [c.owner] : []).filter(o => typeof o === 'string').map(o => o.slice(0, 60)).slice(0, 8),
     mode: BOARD_MODES.includes(c.mode) ? c.mode : undefined, modeNote: str(c.modeNote, 120), note: str(c.note, 300), flag: str(c.flag, 30), at: str(c.at, 40),
+    standing: c.standing === true || undefined,   // 상시(늘 도는 것) — 판 맨 아래 묶음, 기다림 셈 밖 (spider #247)
   }));
   // 판 위 줄 바깥 링크(예: 도메인 칸반) — http(s) 만, 8개까지
   const links = (Array.isArray(j.links) ? j.links : []).filter(l => l && typeof l.label === 'string' && l.label.trim() && /^https?:\/\//.test(l.url || ''))
