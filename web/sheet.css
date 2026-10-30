@@ -299,3 +299,8 @@ body.rs-page.rs-checked{background:#DCE8DF}
 .rs-page .c-msg.rs-kb .c-bubble{outline:2px solid #C96442;outline-offset:2px}
 .rs-page .rs-kbhint{font-size:12px;color:#8A6D2E;cursor:help;white-space:nowrap}
 @media (hover:none){.rs-page .rs-kbhint{display:none}}
+
+/* 시트 관문 (gate.json) — 실패 = 붉은 배너, 검사 못 돌림 = 노란 경고. 폰 폭에서 줄바꿈 */
+.rs-gate-banner{background:#B3261E;color:#fff;font-weight:700;padding:12px 16px;line-height:1.45;overflow-wrap:anywhere}
+.rs-gate-banner.warn{background:#F2D98B;color:#4A3A00}
+.rs-page ul.rs-index .rs-gate-tag{display:inline-block;background:#B3261E;color:#fff;font-size:11px;font-weight:700;border-radius:4px;padding:1px 6px;margin-right:6px;vertical-align:middle}

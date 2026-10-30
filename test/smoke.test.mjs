@@ -1653,6 +1653,126 @@ test('진행판 기다림 칸 머리: 「전체」 에서 레포별 수를 따�
   assert.match(html, /st === 'wait' && !ui\.group \? split\(list\)/);   // 기다림 칸·전체 보기에서만
 });
 
+/* ── 시트 관문 (gate.json) ─────────────────────────────────────────────────── */
+// 가짜 관문 스크립트 — 시트 파일에 'FAIL:<이유>' / 'SLEEP' 이 있으면 그대로, 없으면 통과. 부른 횟수를 log 에 남긴다. 실제 외부 도구는 쓰지 않는다.
+function gateFixture(prefixes = ['g-']) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-gate-'));
+  const script = path.join(dir, 'fake-gate.js'), log = path.join(dir, 'gate.log');
+  fs.writeFileSync(script, `#!${process.execPath}
+const fs = require('fs'); const f = process.argv[2];
+fs.appendFileSync(${JSON.stringify(log)}, f + '\\n');
+const t = fs.readFileSync(f, 'utf8'); const m = t.match(/FAIL:([^\\n*]*)/);
+if (/SLEEP/.test(t)) setTimeout(() => {}, 60000);
+else if (m) { process.stderr.write(m[1] + '\\nsecond line\\n'); process.exit(3); }
+else process.exit(0);
+`);
+  fs.chmodSync(script, 0o755);
+  const inbox = path.join(dir, 'inbox'); fs.mkdirSync(inbox);
+  const sheet = (name, note = '') => fs.writeFileSync(path.join(inbox, name + '-data.js'),
+    `window.SHEET = { id: ${JSON.stringify(name)}, title: ${JSON.stringify('T ' + name)}, sections: [{ code: 'A', title: 'x', questions: [['1', '질문', ['가', '나'], '가', '이유']] }] };\n/* ${note} */\n`);
+  const cfg = (o = {}) => fs.writeFileSync(path.join(inbox, 'gate.json'), JSON.stringify({ cmd: [script], prefix: prefixes, ...o }));
+  const calls = () => { try { return fs.readFileSync(log, 'utf8').split('\n').filter(Boolean); } catch { return []; } };
+  return { dir, inbox, script, sheet, cfg, calls };
+}
+const gateRun = (inbox, ...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', env: { ...process.env, REVIEW_SHEET_INBOX: inbox }, stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: String(e.stdout) + String(e.stderr), code: e.status }; } };
+
+test('gate: gate.json 없으면 꺼짐 — 배너·태그·마커 없음, API 에 gate 필드도 없음', async () => {
+  const g = gateFixture(); g.sheet('g-one', 'FAIL:never');
+  const { base, close } = await startServer(g.inbox, 0);
+  try {
+    assert.doesNotMatch(await (await fetch(base + '/sheet.html?d=g-one')).text(), /rs-gate-banner/);
+    const api = await (await fetch(base + '/api/sheets')).json();
+    assert.equal(api.sheets[0].gate, undefined);
+  } finally { await close(); }
+  assert.doesNotMatch(gateRun(g.inbox, 'ls').out, /관문/);
+  assert.deepEqual(g.calls(), []);
+});
+
+test('gate: 통과 = 배너 없음, 실패 = 붉은 배너(HTML 이스케이프, 첫 줄만) + 목록 태그 + ls 마커', async () => {
+  const g = gateFixture(); g.cfg();
+  g.sheet('g-ok'); g.sheet('g-bad', 'FAIL:<b>디자인 기록 없음</b> & 더');
+  const { base, close } = await startServer(g.inbox, 0);
+  try {
+    assert.doesNotMatch(await (await fetch(base + '/sheet.html?d=g-ok')).text(), /rs-gate-banner/);
+    const bad = await (await fetch(base + '/sheet.html?d=g-bad')).text();
+    assert.match(bad, /<div class="rs-gate-banner" role="alert">관문 통과 못 함 — &lt;b&gt;디자인 기록 없음&lt;\/b&gt; &amp; 더<\/div><main id="app">/);
+    assert.doesNotMatch(bad, /second line/);
+    const api = await (await fetch(base + '/api/sheets')).json();
+    assert.equal(api.sheets.find(s => s.name === 'g-bad').gate.state, 'fail');
+    assert.equal(api.sheets.find(s => s.name === 'g-ok').gate.state, 'pass');
+    const index = await (await fetch(base + '/')).text();   // 목록 행 렌더 코드에 '관문' 태그가 있고, 데이터에 실패가 실려 있다
+    assert.match(index, /rs-gate-tag/);
+    assert.match(index, /"name":"g-bad"[^]*?"gate":\{"state":"fail"/);
+  } finally { await close(); }
+  const ls = gateRun(g.inbox, 'ls').out;
+  assert.match(ls, /관문✗ g-bad/); assert.doesNotMatch(ls, /관문✗ g-ok/);
+  const css = fs.readFileSync(path.resolve(path.dirname(BIN), '..', 'web', 'sheet.css'), 'utf8');
+  assert.match(css, /\.rs-gate-banner\{[^}]*overflow-wrap/);   // 375px 에서 긴 이유가 넘치지 않게
+});
+
+test('gate: 접두사 맞는 시트만 검사한다', () => {
+  const g = gateFixture(['g-']); g.cfg();
+  g.sheet('g-a'); g.sheet('other-b', 'FAIL:x');
+  const r = gateRun(g.inbox, 'gate');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /g-a\t통과/); assert.doesNotMatch(r.out, /other-b/);
+  assert.deepEqual(g.calls().map(f => path.basename(f)), ['g-a-data.js']);
+  assert.match(gateRun(g.inbox, 'gate', 'other-b').out, /대상 아님/);
+});
+
+test('gate: 결과는 파일 mtime+size 로 캐시 — 같으면 다시 안 돌리고, 바뀌면 다시 돈다', () => {
+  const g = gateFixture(); g.cfg(); g.sheet('g-c');
+  const cfg = JSON.parse(fs.readFileSync(path.join(g.inbox, 'gate.json'), 'utf8'));
+  return import('../bin/review-sheet.mjs').then(({ gateCheck }) => {
+    assert.equal(gateCheck(g.inbox, 'g-c').state, 'pass');
+    assert.equal(gateCheck(g.inbox, 'g-c').state, 'pass');
+    assert.equal(g.calls().length, 1);
+    g.sheet('g-c', 'FAIL:바뀜');   // 크기가 달라짐
+    const r = gateCheck(g.inbox, 'g-c');
+    assert.equal(r.state, 'fail'); assert.equal(r.reason, '바뀜');
+    assert.equal(g.calls().length, 2);
+    const t = new Date(Date.now() + 5000); fs.utimesSync(path.join(g.inbox, 'g-c-data.js'), t, t);   // mtime 만 바뀜
+    gateCheck(g.inbox, 'g-c'); assert.equal(g.calls().length, 3);
+    assert.deepEqual(cfg.prefix, ['g-']);
+  });
+});
+
+test('gate: 실행 못 함(없는 프로그램·시간 초과)은 경고만 — 표시는 막지 않고 목록 태그도 없음', async () => {
+  const g = gateFixture(); g.sheet('g-miss');
+  g.cfg({ cmd: [path.join(g.dir, 'no-such-prog')] });
+  const { base, close } = await startServer(g.inbox, 0);
+  try {
+    const page = await (await fetch(base + '/sheet.html?d=g-miss')).text();
+    assert.match(page, /<div class="rs-gate-banner warn" role="alert">관문 검사 실패: .*no-such-prog/);
+    assert.match(page, /<main id="app">/);
+    assert.equal((await fetch(base + '/g-miss-data.js')).status, 200);
+    const index = await (await fetch(base + '/')).text();
+    assert.doesNotMatch(index, /"gate":\{"state":"fail"/);
+  } finally { await close(); }
+  const r = gateRun(g.inbox, 'gate');
+  assert.equal(r.code, 0); assert.match(r.out, /관문 검사 실패/);
+  assert.doesNotMatch(gateRun(g.inbox, 'ls').out, /관문✗/);
+});
+
+test('gate: 시간 초과도 error 로 처리된다 (10초 제한)', { timeout: 30000 }, async () => {
+  const g = gateFixture(); g.cfg(); g.sheet('g-slow', 'SLEEP');
+  const { gateCheck } = await import('../bin/review-sheet.mjs');
+  const t0 = Date.now(), r = gateCheck(g.inbox, 'g-slow');
+  assert.equal(r.state, 'error'); assert.match(r.reason, /시간 초과/);
+  assert.ok(Date.now() - t0 < 20000);
+});
+
+test('gate: CLI gate — 실패 있으면 exit 5, 통과만이면 0, 한 시트만도 가능', () => {
+  const g = gateFixture(); g.cfg(); g.sheet('g-ok'); g.sheet('g-bad', 'FAIL:이유 하나');
+  const all = gateRun(g.inbox, 'gate');
+  assert.equal(all.code, 5);
+  assert.match(all.out, /g-ok\t통과/); assert.match(all.out, /g-bad\t관문✗ 이유 하나/);
+  const one = gateRun(g.inbox, 'gate', 'g-ok'); assert.equal(one.code, 0); assert.match(one.out, /g-ok\t통과/); assert.doesNotMatch(one.out, /g-bad/);
+  assert.equal(gateRun(g.inbox, 'gate', g.inbox, 'g-bad').code, 5);   // [dir] <id> 형태
+  assert.equal(gateRun(g.inbox, 'gate', 'g-nope').code, 2);
+  const g2 = gateFixture(); assert.equal(gateRun(g2.inbox, 'gate').code, 2);   // 설정 없음
+});
+
 test('진행판 「더 묻기」 켜기/끄기 — 기본 꺼짐, 끄면 질문 있는 카드만 대화가 남음 (spider-universe#358 hero 10-30)', () => {
   const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'board.html'), 'utf8');
   assert.match(html, /const ui = \{[^}]*askOn: false/);                                   // 기본 꺼짐
