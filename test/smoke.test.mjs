@@ -1602,7 +1602,7 @@ test('진행판 질문: ＋ 더 묻기 → asks/board/<카드>.jsonl, 훅 --boar
     // 진행판 페이지 — 카드마다 ＋ 더 묻기, 버튼은 <a> 밖
     const page = await (await fetch(base + '/board')).text();
     assert.match(page, /＋ 더 묻기/); assert.match(page, /\/__board-ask/); assert.match(page, /\/api\/board-asks/);
-    assert.match(page, /cardA\(c\) \+ '<div class="bd-ask">/);
+    assert.match(page, /cardA\(c\) \+ '<div class="bd-ask' \+/);
     assert.match(cli('nope').out, /board-reply \[dir\] <카드> "답"/);
   } finally { await close(); if (prevHook === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = prevHook; }
 });
@@ -1771,4 +1771,29 @@ test('gate: CLI gate — 실패 있으면 exit 5, 통과만이면 0, 한 시트�
   assert.equal(gateRun(g.inbox, 'gate', g.inbox, 'g-bad').code, 5);   // [dir] <id> 형태
   assert.equal(gateRun(g.inbox, 'gate', 'g-nope').code, 2);
   const g2 = gateFixture(); assert.equal(gateRun(g2.inbox, 'gate').code, 2);   // 설정 없음
+});
+
+test('진행판 「더 묻기」 켜기/끄기 — 기본 꺼짐, 끄면 질문 있는 카드만 대화가 남음 (spider-universe#358 hero 10-30)', () => {
+  const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'board.html'), 'utf8');
+  assert.match(html, /const ui = \{[^}]*askOn: false/);                                   // 기본 꺼짐
+  assert.match(html, /JSON\.stringify\(\{ group: ui\.group, mode: ui\.mode, askOn: ui\.askOn \}\)/);   // 기기에 기억
+  assert.match(html, /\.bd-ask\.off \.bd-ask-b,\.bd-ask\.off \.bd-ask-ed\{display:none\}\.bd-ask\.off:not\(\.has\)\{display:none\}/);
+  assert.match(html, /'<div class="bd-ask' \+ \(ui\.askOn \|\| st\.open \? '' : ' off'\) \+ \(list\.length \? ' has' : ''\)/);
+  assert.match(html, /id="bd-opts"/); assert.match(html, /bd-asktog/);
+  assert.match(html, /if \(t\.classList\.contains\('bd-asktog'\)\) \{ ui\.askOn = !ui\.askOn; save\(\); render\(last\); return; \}/);
+});
+
+test('진행판 기다림 종류 태그 — waitKind 는 정해진 값만 통과, 판에 색 태그·종류별 수 (spider-universe#368)', async () => {
+  const { cleanBoard } = await import('../bin/review-sheet.mjs');
+  const b = cleanBoard({ cards: [{ title: 'a', status: 'wait', waitKind: 'pr', waitRef: 'PR #1' }, { title: 'b', status: 'wait', waitKind: 'nope<x>' }] });
+  assert.deepEqual([b.cards[0].waitKind, b.cards[0].waitRef, b.cards[1].waitKind], ['pr', 'PR #1', undefined]);
+  const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'board.html'), 'utf8');
+  const src = ['WK', 'waitTag', 'noteText', 'kinds'].map(n => html.match(new RegExp('const ' + n + ' = [\\s\\S]*?\\n(?=const |// )'))[0]).join('\n');
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const f = new Function('esc', src + '\nreturn { waitTag, noteText, kinds };')(esc);
+  assert.equal(f.waitTag({ waitKind: 'review', waitfor: '시트 pkch-a-1' }), '<span class="bd-wait k-review">리뷰 · pkch-a-1</span>');
+  assert.equal(f.waitTag({ waitfor: '날짜 10-31' }), '<span class="bd-wait">기다림 · 날짜 10-31</span>');   // 옛 생산자
+  assert.equal(f.noteText({ waitKind: 'pr', note: '시스템 · 기다림: wait: pr=1 owner=x — 관리 판정' }), '관리 판정');
+  assert.equal(f.noteText({ note: '시스템 · 기다림: wait: pr=1 owner=x — 관리 판정' }), '시스템 · 기다림: wait: pr=1 owner=x — 관리 판정');
+  assert.match(f.kinds([{ waitKind: 'date' }, { waitKind: 'date' }, { waitKind: 'pr' }]), /PR 검사 1<\/span><span class="bd-wait k-date">날짜 2/);
 });
