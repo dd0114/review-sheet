@@ -23,6 +23,7 @@
 .bd-flag{font:800 12px/1.6 system-ui,sans-serif;padding:0 8px;border-radius:10px;background:#B2472F;color:#fff}
 .bd-note{font-size:12.5px;color:#666;margin-top:4px;overflow-wrap:anywhere}
 .bd-empty{color:#888;font-size:13px;padding:6px 4px}
+.bd-wait{font:700 12px/1.6 system-ui,sans-serif;padding:0 8px;border-radius:10px;background:#F6E7B8;color:#6B4E00}
 .bd-std{font:800 11.5px/1.6 system-ui,sans-serif;padding:0 7px;border-radius:4px;background:#E4DCF2;color:#4A3878}
 .bd-standing{grid-column:1/-1;margin-top:4px}
 .bd-standing .bd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
@@ -61,6 +62,7 @@ const card = c => '<a class="bd-card' + pcls(c.priority) + '"' + (c.url ? ' href
   (standing(c) ? '<span class="bd-std">상시</span>' : '') +
   (c.priority ? '<span class="bd-pri">' + esc(c.priority) + '</span>' : '') +
   (c.flag ? '<span class="bd-flag">' + esc(c.flag) + '</span>' : '') +
+  (c.waitfor ? '<span class="bd-wait">기다림 · ' + esc(c.waitfor) + '</span>' : '') +
   (c.mode ? '<span class="bd-mode ' + c.mode + '">' + MODE[c.mode] + (c.modeNote ? ' · ' + esc(c.modeNote) : '') + '</span>' : '') +
   (c.owner && c.owner.length ? '<span class="bd-own">' + c.owner.map(esc).join(', ') + '</span>' : (c.status === 'todo' ? '' : '<span>담당 없음</span>')) +
   (c.id ? '<span>' + esc(c.id) + '</span>' : '') + (c.at ? '<span>' + when(c.at) + '</span>' : '') +
