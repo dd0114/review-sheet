@@ -76,6 +76,8 @@ function usage(code = 2) {
   review-sheet migrate-assign [dir] [--dry-run]   # 옛 뒤바뀐 assign(이슈 칸에 창, 담당 칸에 번호) 맞바꾸기 — assign/.backup-<시각>/ 에 백업
   review-sheet asks [dir] [<시트>] [--open] [--prefix P]   # 문항 질문(시트 안 '＋ 이것만 묻기')과 답 수 — --open 답 없는 것만
   review-sheet ask-reply [dir] <시트> <문항> "답" [--notice]   # 그 문항 질문에 ↩ 답장 → 시트 그 문항 밑에 바로 뜬다(asks/<시트>.jsonl)
+  review-sheet board-reply [dir] <카드> "답" [--re <질문 id>] [--notice]   # 진행판 질문('＋ 더 묻기')에 ↩ 답장 → 진행판 그 카드 밑에 뜬다(asks/board/<세션>~<번호>.jsonl), 2000자까지
+  review-sheet board-asks [dir] [<카드>] [--open]   # 진행판 질문과 답 수 — --open 답 없는 것만
   review-sheet checks [dir] [--open] [--since ISO] [--prefix P]   # 보고 시트(report:) — hero 가 ✓ 확인한 것 / --open 아직 안 한 것. 체크는 세션을 깨우지 않는다
   review-sheet unassigned [dir] [--prefix P]  # 문항 안 붙음(배정없음 포함)·되돌림·이슈 닫혔는데 단계 덜 됨 — 있으면 exit 5
   review-sheet dash  [dir] [<file|->]   # 자원판(보기 전용) — dash.json {cards:[{label,value,unit,sub,level,series}],bars:[{label,total,unit,parts:[{label,value,kind}]}],groups:[{title,rows:[{label,sub,cols,series}]}],series:{k:{start,step,values}}} 쓰기
@@ -829,25 +831,30 @@ export function askItem(root, name, q, label, text) {
     try { const ch = askToChat(root, s, a); appendAsks(root, s.name, { deliv: a.id, via: 'chat', ch, ...(code !== undefined ? { code } : {}) }); return ch; }
     catch (e) { console.error('ask:', e.message || e); return null; }
   };
+  return runAskHook(a.id, [s.name, s.from || '', q, a.id], text,
+    { REVIEW_SHEET_ASK_TEXT: text, REVIEW_SHEET_ASK_LABEL: where, REVIEW_SHEET_INBOX: root, REVIEW_SHEET_ASK_FILE: asksFile(root, s.name) },
+    () => appendAsks(root, s.name, { deliv: a.id, via: 'hook' }), fallback);
+}
+/** REVIEW_SHEET_ASK_HOOK 를 떼어 실행 — 0 이면 ok(), 아니면(없음·실패·시간 초과) fallback(code) 가 채널로. 문항 질문·진행판 질문이 같이 쓴다. */
+function runAskHook(id, args, text, env, ok, fallback) {
   const hook = process.env.REVIEW_SHEET_ASK_HOOK;
-  if (!hook) return { id: a.id, via: 'chat', ch: fallback() };
+  if (!hook) return { id, via: 'chat', ch: fallback() };
   let done = false;
   const finish = code => {
     if (done) return; done = true; clearTimeout(timer);
-    if (code === 0) appendAsks(root, s.name, { deliv: a.id, via: 'hook' }); else fallback(code);
+    if (code === 0) ok(); else fallback(code);
   };
   let child;
   try {
-    child = spawn(hook, [s.name, s.from || '', q, a.id], { detached: true, stdio: ['pipe', 'ignore', 'ignore'],
-      env: { ...process.env, REVIEW_SHEET_ASK_TEXT: text, REVIEW_SHEET_ASK_LABEL: where, REVIEW_SHEET_INBOX: root, REVIEW_SHEET_ASK_FILE: asksFile(root, s.name) } });
-  } catch { return { id: a.id, via: 'chat', ch: fallback(-1) }; }
+    child = spawn(hook, args, { detached: true, stdio: ['pipe', 'ignore', 'ignore'], env: { ...process.env, ...env } });
+  } catch { return { id, via: 'chat', ch: fallback(-1) }; }
   const timer = setTimeout(() => { try { process.kill(-child.pid, 'SIGTERM'); } catch { try { child.kill(); } catch { /* gone */ } } finish(-2); }, Number(process.env.REVIEW_SHEET_ASK_HOOK_MS) || 300000);   // 훅의 자식(fleet send 등)까지 그룹째 — 늦게 닿아 채널과 두 번 가지 않게
   timer.unref();
   child.on('error', () => finish(-1));
   child.on('exit', code => finish(code));
   child.stdin.on('error', () => {}); child.stdin.end(text);
   child.unref();
-  return { id: a.id, via: 'hook', ch: null };
+  return { id, via: 'hook', ch: null };
 }
 export function asksFor(root, name, list) {
   root = path.resolve(root);
@@ -903,6 +910,7 @@ export function askWatch(root, ms = Number(process.env.REVIEW_SHEET_ASK_MS) || 6
           appendAsks(root, name, { staleSent: m.id, ch: c.name });
         }
       }
+      boardAskStale(root, now, old);   // 진행판 질문 (spider-universe#358)
       const hub = hubChat(root); if (!hub) return;   // 예전 시트: 채널 로그에 사는 질문
       for (const c of listChats(root)) {
         const log = readChatLog(root, c.name);
@@ -918,6 +926,109 @@ export function askWatch(root, ms = Number(process.env.REVIEW_SHEET_ASK_MS) || 6
   };
   const t = setInterval(tick, ms); t.unref();
   return () => clearInterval(t);
+}
+
+/* 진행판 질문 (spider-universe#358) — 진행판 카드마다 '＋ 더 묻기'. 문항 질문과 같은 길: 그 카드 담당 창에 묻고, 답은 카드 밑에 뜬다.
+   카드 키 = board.json 의 카드 id (`pkch#3474`, `spider#358` — ^[a-z0-9-]+#\d+$ 만). 파일: inbox/asks/board/<세션>~<번호>.jsonl
+   (asks/ 바로 밑이 아니라 board/ 밑 — 문항 질문의 askWatch·asks 목록이 시트로 착각하지 않게)
+     질문 { id, ts, from: 'hero', q: 'board', card, owner, title, text }   답 { id, ts, from, re: <질문 id>, text }   기록 { deliv, via, ch?, code? } { staleSent, ch }
+   전달: REVIEW_SHEET_ASK_HOOK 이 있으면 `hook --board <카드> <담당 s:w> <질문 id>` (글 = stdin·REVIEW_SHEET_ASK_TEXT, LABEL = 카드 제목,
+   FILE = 이 asks 파일). 훅 없음·실패 → 담당 채널(chatFor, 없으면 허브)에 askRef { board, id } 로 한 통 — 그 ↩ 답장도 카드 밑에 뜬다.
+   답: review-sheet board-reply <카드> "…". 답 없이 ASK_STALE_MS → 담당 채널(없으면 허브)에 한 줄, 한 번(askWatch). */
+export const BOARD_CARD_RE = /^[a-z0-9-]{1,60}#\d{1,9}$/;
+const boardAsksDir = root => path.join(asksDir(root), 'board');
+const boardAsksFile = (root, card) => path.join(boardAsksDir(root), card.replace('#', '~') + '.jsonl');
+const boardChans = (root, owner) => [chatFor(root, owner || '', ''), hubChat(root)].filter((c, i, a) => c && a.findIndex(x => x && x.name === c.name) === i);
+function readBoardAsks(root, card) {
+  try { return fs.readFileSync(boardAsksFile(root, card), 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); }
+  catch { return []; }
+}
+function appendBoardAsks(root, card, rec) {
+  fs.mkdirSync(boardAsksDir(root), { recursive: true });
+  const r = { id: newId(), ts: new Date().toISOString(), ...rec };
+  fs.appendFileSync(boardAsksFile(root, card), JSON.stringify(r) + '\n');
+  return r;
+}
+const boardCard = (root, card) => ((readBoard(root) || {}).cards || []).find(c => c.id === card) || null;
+function boardAskToChat(root, a) {
+  const c = boardChans(root, a.owner)[0]; if (!c) return null;
+  appendChat(root, c.name, 'hero', `진행판 질문 (카드 ${a.card} · ${a.title}${a.owner ? ` · 담당 ${a.owner}` : ''}): ${a.text}\n— 이 카드 일에 대해 묻는 것. review-sheet board-reply ${a.card} "…" (또는 chat say ${c.name} --re 이 메시지)로 답하면 진행판 그 카드 밑에 바로 뜬다. 물은 것에 빠짐없이(${CHAT_REPLY_MAX}자까지).`,
+    null, null, { auto: true, wake: true, askRef: { board: a.card, id: a.id } });
+  return c.name;
+}
+/** hero 가 진행판 카드에 묻기 — 카드가 판에 있어야 한다. 담당 = owner[0] */
+export function boardAsk(root, card, text) {
+  root = path.resolve(root);
+  card = String(card || '').trim(); text = String(text || '').trim();
+  if (!BOARD_CARD_RE.test(card)) throw new Error('카드 키가 이상합니다 (예: spider#358)');
+  if (!text) throw new Error('질문이 비었습니다'); if (text.length > ASK_MAX) throw new Error(`질문은 ${ASK_MAX}자까지`);
+  const c = boardCard(root, card); if (!c) throw new Error(`진행판에 카드 ${card} 없음`);
+  const owner = (c.owner || [])[0] || '', title = String(c.title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const a = appendBoardAsks(root, card, { from: 'hero', q: 'board', card, owner, title, text });
+  const fallback = code => {
+    try { const ch = boardAskToChat(root, a); appendBoardAsks(root, card, { deliv: a.id, via: 'chat', ch, ...(code !== undefined ? { code } : {}) }); return ch; }
+    catch (e) { console.error('board ask:', e.message || e); return null; }
+  };
+  return runAskHook(a.id, ['--board', card, owner, a.id], text,
+    { REVIEW_SHEET_ASK_TEXT: text, REVIEW_SHEET_ASK_LABEL: title, REVIEW_SHEET_INBOX: root, REVIEW_SHEET_ASK_FILE: boardAsksFile(root, card) },
+    () => appendBoardAsks(root, card, { deliv: a.id, via: 'hook' }), fallback);
+}
+/** 한 카드의 질문과 답 — 채널로 넘어간 질문은 그 채널(기록된 ch)만 읽어 ↩ 답장을 붙인다. logs = 같은 요청 안 채널 로그 캐시 */
+export function boardAsksFor(root, card, logs = new Map()) {
+  root = path.resolve(root);
+  if (!BOARD_CARD_RE.test(card)) return [];
+  const recs = readBoardAsks(root, card);
+  const out = recs.filter(m => m.from === 'hero' && m.q === 'board' && !m.re).map(m => ({ id: m.id, ts: m.ts, owner: m.owner || '', title: m.title || '', text: m.text,
+    replies: recs.filter(r => r.re === m.id && r.from !== 'hero').map(r => ({ from: r.from, ts: r.ts, text: r.text })) }));
+  for (const ch of new Set(recs.filter(r => r.deliv && r.via === 'chat' && r.ch).map(r => r.ch))) {
+    if (!logs.has(ch)) logs.set(ch, readChatLog(root, ch));
+    const log = logs.get(ch);
+    for (const m of log) {
+      if (m.from !== 'hero' || !m.askRef || m.askRef.board !== card) continue;
+      const a = out.find(x => x.id === m.askRef.id); if (!a) continue;
+      for (const r of log) if (r.re === m.id && r.from !== 'hero' && !r.askStale) a.replies.push({ from: r.from, ts: r.ts, text: r.text });
+      a.replies.sort((x, y) => x.ts < y.ts ? -1 : 1);
+    }
+  }
+  return out.sort((a, b) => a.ts < b.ts ? -1 : 1);
+}
+/** 진행판 페이지용: 지금 판에 있는 카드 중 질문이 있는 것만 { <카드>: [질문…] } — 판 파일 하나 + 질문 파일 있는 카드만 읽는다 */
+export function boardAsksAll(root) {
+  root = path.resolve(root);
+  let files; try { files = new Set(fs.readdirSync(boardAsksDir(root)).filter(f => f.endsWith('.jsonl'))); } catch { return {}; }
+  const out = {}, logs = new Map();
+  for (const c of (readBoard(root) || {}).cards || []) {
+    if (!c.id || !BOARD_CARD_RE.test(c.id) || !files.has(c.id.replace('#', '~') + '.jsonl')) continue;
+    const list = boardAsksFor(root, c.id, logs); if (list.length) out[c.id] = list;
+  }
+  return out;
+}
+/** 세션이 답할 때: re 가 있으면 그 질문, 없으면 그 카드의 가장 최근 답 없는 질문(없으면 마지막 질문)에 ↩ */
+export function boardReply(root, card, text, from, re) {
+  root = path.resolve(root);
+  card = String(card || '').trim(); text = String(text || '').trim();
+  if (!BOARD_CARD_RE.test(card)) throw new Error('카드 키가 이상합니다 (예: spider#358)');
+  if (!text) throw new Error('답이 비었습니다'); if (text.length > CHAT_REPLY_MAX) throw new Error(`답은 ${CHAT_REPLY_MAX}자까지 — 둘로 나눠 보낼 것`);
+  const all = boardAsksFor(root, card); if (!all.length) throw new Error(`카드 ${card} 에 온 질문 없음`);
+  const a = re ? all.find(x => x.id === String(re).replace(/^#/, '')) : [...all].reverse().find(x => !x.replies.length) || all.at(-1);
+  if (!a) throw new Error(`카드 ${card} 에 질문 #${re} 없음 — board-asks ${card} 로 확인`);
+  return { ch: `asks/board/${card}`, re: a.id, msg: appendBoardAsks(root, card, { from: from || a.owner || 'session', re: a.id, text }) };
+}
+function boardAskStale(root, now, old) {
+  let files = []; try { files = fs.readdirSync(boardAsksDir(root)).filter(f => f.endsWith('.jsonl')).map(f => f.slice(0, -6).replace('~', '#')); } catch { return; }
+  for (const card of files) {
+    if (!BOARD_CARD_RE.test(card)) continue;
+    const recs = readBoardAsks(root, card);
+    const open = recs.filter(m => m.from === 'hero' && m.q === 'board' && !m.re && !old(m.ts) && !recs.some(r => r.staleSent === m.id));
+    if (!open.length) continue;
+    const answered = new Set(boardAsksFor(root, card).filter(a => a.replies.length).map(a => a.id));
+    for (const m of open) {
+      if (answered.has(m.id)) continue;
+      const c = boardChans(root, m.owner)[0]; if (!c) continue;
+      appendChat(root, c.name, 'hero', `진행판 질문 답 없음 ${Math.round((now - Date.parse(m.ts)) / 60000)}분 (카드 ${card} · ${m.title}${m.owner ? ` · 담당 ${m.owner}` : ''}) — review-sheet board-reply ${card} "…" 로 답하거나 담당 창 확인`, null, null, { auto: true, wake: true, askStale: m.id });
+      appendBoardAsks(root, card, { staleSent: m.id, ch: c.name });
+    }
+  }
 }
 
 export function setUrgent(dir, name, on) {
@@ -1677,6 +1788,24 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
       });
       return;
     }
+    if (url.pathname === '/api/board-asks' && req.method === 'GET') {   // ?card=<id> → 그 카드, 없으면 판에 있는 카드 중 질문 있는 것 전부 (진행판 5초 폴링)
+      const card = url.searchParams.get('card');
+      if (card != null && !BOARD_CARD_RE.test(card)) return send(res, 400, 'text/plain', 'card=<session#n>');
+      return send(res, 200, TYPES['.json'], JSON.stringify(card != null ? { [card]: boardAsksFor(root, card) } : boardAsksAll(root)));
+    }
+    if (url.pathname === '/__board-ask') {   // POST {card,text} — 진행판(hero) 전용, CORS 없음. 문항 질문(/__ask)과 같은 검사 + 다른 사이트에서 온 요청 거절
+      if (req.method !== 'POST') return send(res, 405, 'text/plain', 'POST');
+      const site = String(req.headers['sec-fetch-site'] || '');
+      if (site && site !== 'same-origin' && site !== 'none') return send(res, 403, 'text/plain', 'same-origin only');
+      if (!/^application\/json/.test(String(req.headers['content-type'] || ''))) return send(res, 415, 'text/plain', 'application/json');
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 2e4) req.destroy(); });
+      req.on('end', () => {
+        try { const j = JSON.parse(body || '{}'); send(res, 200, TYPES['.json'], JSON.stringify({ ok: true, ...boardAsk(root, j.card, j.text) })); }
+        catch (e) { send(res, 400, 'text/plain; charset=utf-8', String(e.message || e)); }
+      });
+      return;
+    }
     if (url.pathname === '/api/push' && req.method === 'GET') return send(res, 200, TYPES['.json'], JSON.stringify({ publicKey: vapidKeys(root).publicKey, subs: readSubs(root).length }));
     if (/^\/__push\/(sub|unsub|test)$/.test(url.pathname)) {   // 폰 알림 구독 — 페이지(hero) 전용, CORS 없음
       if (req.method !== 'POST') return send(res, 405, 'text/plain', 'POST');
@@ -1820,7 +1949,7 @@ async function main() {
   if (cmd === 'stage' && rest[2] && STAGES[rest[2]]) dirArg = undefined;   // stage <id> <stage> [note] → inbox
   let askArgs = rest.slice(2);   // asks / ask-reply / items / record: [dir] 은 진짜 폴더일 때만
   if ((cmd === 'board' || cmd === 'dash' || cmd === 'batch' || cmd === 'links') && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
-  if (['asks', 'ask-reply', 'items', 'record', 'migrate-assign'].includes(cmd) && !(rest[1] && fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) { dirArg = undefined; askArgs = rest.slice(1); }
+  if (['asks', 'ask-reply', 'board-reply', 'board-asks', 'items', 'record', 'migrate-assign'].includes(cmd) && !(rest[1] && fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) { dirArg = undefined; askArgs = rest.slice(1); }
   const dir = path.resolve(dirArg || INBOX);
   const isInbox = !dirArg;
   if (isInbox && cmd !== 'serve') fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
@@ -1995,6 +2124,22 @@ async function main() {
     if (!name || !q || !text) { console.error('ask-reply <시트> <문항> "답"'); process.exit(2); }
     const gate = !flags.notice && chatGate(text, { heroReply: true }); if (gate) { console.error(gate + " — 꼭 필요하면 --notice"); process.exit(2); }
     try { const r = askReply(dir, name, q, text); console.log(`#${r.msg.id} → ${r.ch} ↩#${r.re}`); } catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'board-reply') {   // board-reply <카드> "답" [--re <질문 id>] — 진행판 질문에 ↩ 답장. 진행판 그 카드 밑에 바로 뜬다 (spider-universe#358)
+    const [card, ...t] = askArgs; const text = t.join(' ').trim();
+    if (!card || !text) { console.error('board-reply <카드 예: spider#358> "답" [--re <질문 id>]'); process.exit(2); }
+    const gate = !flags.notice && chatGate(text, { heroReply: true }); if (gate) { console.error(gate + " — 꼭 필요하면 --notice"); process.exit(2); }
+    const who = process.env.REVIEW_SHEET_FROM || process.env.FLEET_SENDER || '';
+    try { const r = boardReply(dir, card, text, who, flags.re); console.log(`#${r.msg.id} → ${r.ch} ↩#${r.re}`); } catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (cmd === 'board-asks') {   // board-asks [<카드>] [--open] — 진행판 질문과 답 수
+    const all = askArgs[0] ? { [askArgs[0]]: boardAsksFor(dir, askArgs[0]) } : boardAsksAll(dir);
+    for (const [card, list] of Object.entries(all)) for (const a of list) {
+      if (flags.open && a.replies.length) continue;
+      console.log(`${card}\t#${a.id}\t${a.replies.length ? '답 ' + a.replies.length : '답 없음'}\t${a.text.replace(/\s+/g, ' ')}`);
+    }
     return;
   }
   if (cmd === 'checks') {   // 보고 시트 확인 현황 — hero 가 ✓ 한 것(기본) / --open 아직 안 한 것. 세션이 나중에 한 번에 본다

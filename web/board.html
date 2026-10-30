@@ -9,7 +9,8 @@
 .bd-col{background:#F4F2EE;border-radius:12px;padding:10px}
 .bd-col h2{display:flex;justify-content:space-between;font-size:15px;margin:2px 4px 8px}
 .bd-col h2 small{color:#777;font-weight:700}
-.bd-card{display:block;background:#fff;border-radius:10px;padding:10px 12px;margin:0 0 8px;box-shadow:0 1px 2px rgba(0,0,0,.08);color:#222;text-decoration:none;border-left:4px solid #CFCBC2}
+.bd-cw{margin:0 0 8px;min-width:0}
+.bd-card{display:block;background:#fff;border-radius:10px;padding:10px 12px;margin:0;box-shadow:0 1px 2px rgba(0,0,0,.08);color:#222;text-decoration:none;border-left:4px solid #CFCBC2}
 .bd-card.p0{border-left-color:#B2472F}.bd-card.p1{border-left-color:#D08A2E}.bd-card.p2{border-left-color:#8A6D2E}
 .bd-card b{display:block;font-size:14.5px;line-height:1.4;overflow-wrap:anywhere}
 .bd-meta{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;font-size:12.5px;color:#555;align-items:center}
@@ -27,7 +28,20 @@
 .bd-std{font:800 11.5px/1.6 system-ui,sans-serif;padding:0 7px;border-radius:4px;background:#E4DCF2;color:#4A3878}
 .bd-standing{grid-column:1/-1;margin-top:4px}
 .bd-standing .bd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
-.bd-standing .bd-card{margin:0}
+.bd-standing .bd-cw{margin:0}
+/* 진행판 질문 '＋ 더 묻기' (spider-universe#358) — 카드(<a>) 밖, 카드 바로 밑. 글·답 칸은 sheet.css 의 문항 질문(v-askq-*) 모양을 그대로 쓴다 */
+.bd-ask{padding:4px 2px 0}
+.bd-ask-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.bd-ask-b{min-height:36px;padding:0 12px;border:1px dashed #CFCBC2;border-radius:8px;background:transparent;font:600 13px system-ui,sans-serif;color:#6B675E;cursor:pointer}
+.bd-ask-b[aria-expanded="true"]{border-style:solid;border-color:#C96442;color:#C96442}
+.bd-ask-wait{font:700 12px/1.6 system-ui,sans-serif;padding:0 8px;border-radius:10px;background:#FBE3D6;color:#8E3320}
+.bd-ask-msg{font-size:12.5px;color:#6B675E}
+.bd-ask-ed{margin-top:6px}
+.bd-ask-ed .v-att{display:flex;gap:8px;align-items:center;margin-top:6px}
+.bd-ask-go{min-height:40px;padding:0 16px;border:0;border-radius:8px;background:#1F6B3A;color:#fff;font:700 14px system-ui,sans-serif;cursor:pointer}.bd-ask-go:disabled{opacity:.6}
+.bd-cw.asking .bd-card{box-shadow:0 0 0 2px #E7A98F}
+.rs-page .bd-ask .v-askq-log{margin-top:6px}
+.rs-page .bd-ask .v-askq-item{font-size:13.5px;overflow-wrap:anywhere}
 .bd-more{width:100%;min-height:36px;border:1px dashed #CFCBC2;border-radius:8px;background:transparent;font:700 13px system-ui,sans-serif;color:#555;cursor:pointer}
 @media (max-width:1100px){.bd-cols{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:760px){.bd-cols{grid-template-columns:1fr}.bd-col.doing{order:-1}}
@@ -48,16 +62,16 @@ const MODE = { claude: '클로드 직접 작업', system: '시스템 대기', id
 const RANK = { p0: 0, p1: 1, p2: 2, p3: 3, '긴급': 0, '높음': 1, '중간': 2, '낮음': 3 };
 const rank = p => { const k = String(p || '').toLowerCase(); return k in RANK ? RANK[k] : 9; };
 const pcls = p => { const r = rank(p); return r <= 2 ? ' p' + r : ''; };
-const ui = { group: '', mode: '', more: {} };
-try { Object.assign(ui, JSON.parse(localStorage.getItem('bd-ui') || '{}'), { more: {} }); } catch {}
+const ui = { group: '', mode: '', more: {}, ask: {} };   // ask: { <카드>: { open, draft, msg, msgAt } } — 5초 다시 그림에도 쓰던 글이 남게
+try { Object.assign(ui, JSON.parse(localStorage.getItem('bd-ui') || '{}'), { more: {}, ask: {} }); } catch {}
 const save = () => { try { localStorage.setItem('bd-ui', JSON.stringify({ group: ui.group, mode: ui.mode })); } catch {} };
-let last = null;
+let last = null, asks = {};
 
 // 상시(늘 도는 것, spider #247) — 진행판이 standing 을 달거나 노트 머리 「상시 · 」. 기다림 칸·셈에서 빼고 맨 아래 묶음으로
 const STD = '상시 · ';
 const standing = c => c.standing === true || String(c.note || '').startsWith(STD);
 const parked = c => standing(c) && c.status === 'wait';
-const card = c => '<a class="bd-card' + pcls(c.priority) + '"' + (c.url ? ' href="' + esc(c.url) + '" target="_blank" rel="noopener"' : '') + '>' +
+const cardA = c => '<a class="bd-card' + pcls(c.priority) + '"' + (c.url ? ' href="' + esc(c.url) + '" target="_blank" rel="noopener"' : '') + '>' +
   '<b>' + esc(c.title) + '</b><div class="bd-meta">' +
   (standing(c) ? '<span class="bd-std">상시</span>' : '') +
   (c.priority ? '<span class="bd-pri">' + esc(c.priority) + '</span>' : '') +
@@ -67,6 +81,24 @@ const card = c => '<a class="bd-card' + pcls(c.priority) + '"' + (c.url ? ' href
   (c.owner && c.owner.length ? '<span class="bd-own">' + c.owner.map(esc).join(', ') + '</span>' : (c.status === 'todo' ? '' : '<span>담당 없음</span>')) +
   (c.id ? '<span>' + esc(c.id) + '</span>' : '') + (c.at ? '<span>' + when(c.at) + '</span>' : '') +
   '</div>' + (c.note ? '<div class="bd-note">' + esc(String(c.note).startsWith(STD) ? c.note.slice(STD.length) : c.note) + '</div>' : '') + '</a>';
+// 카드 = <a> + 그 밖의 '＋ 더 묻기' 칸 (버튼·글칸이 링크 안에 있으면 누를 때 이슈가 열린다)
+const CARD_RE = /^[a-z0-9-]{1,60}#\d{1,9}$/;
+const card = c => {
+  if (!c.id || !CARD_RE.test(c.id)) return '<div class="bd-cw">' + cardA(c) + '</div>';
+  const st = ui.ask[c.id] || {}, list = asks[c.id] || [], waiting = list.some(a => !a.replies.length);
+  return '<div class="bd-cw' + (waiting ? ' asking' : '') + '" data-card="' + esc(c.id) + '">' + cardA(c) + '<div class="bd-ask">' +
+    '<div class="bd-thread">' + thread(list) + '</div>' +
+    '<div class="bd-ask-row"><button type="button" class="bd-ask-b" aria-expanded="' + !!st.open + '">＋ 더 묻기</button>' +
+    '<span class="bd-ask-mark">' + mark(list) + '</span><span class="bd-ask-msg">' + esc(st.msg && Date.now() - st.msgAt < 15000 ? st.msg : '') + '</span></div>' +
+    '<div class="bd-ask-ed"' + (st.open ? '' : ' hidden') + '><textarea class="v-askq-t" rows="2" maxlength="2000" placeholder="이 카드 일에 대해 담당 창에 묻기">' + esc(st.draft || '') + '</textarea>' +
+    '<div class="v-att"><button type="button" class="bd-ask-go">보내기</button></div></div></div></div>';
+};
+const asksEsc = t => esc(t).replace(/\n/g, '<br>');
+const mark = list => list.some(a => !a.replies.length) ? '<span class="bd-ask-wait">❓ 답 기다림</span>' : '';
+const thread = list => !list.length ? '' : '<div class="v-askq-log">' + (list.length > 3 ? '<div class="bd-note">이전 질문 ' + (list.length - 3) + '개</div>' : '') +
+  list.slice(-3).map(a => '<div class="v-askq-item"><div class="me"><b>❓ 질문</b> <span class="t">' + when(a.ts) + '</span><div>' + asksEsc(a.text) + '</div></div>' +
+    (a.replies.length ? a.replies.map(r => '<div class="re"><b>💬 ' + esc(r.from) + '</b> <span class="t">' + when(r.ts) + '</span><div>' + asksEsc(r.text) + '</div></div>').join('')
+      : '<div class="re wait">답 기다리는 중 — 담당 창에 전달됨</div>') + '</div>').join('') + '</div>';
 
 const chips = (el, key, items, all) => {
   el.innerHTML = items.length < 2 ? '' : [['', all]].concat(items).map(([v, label]) =>
@@ -108,10 +140,49 @@ document.addEventListener('click', e => {
   if (t.dataset.st) ui.more[t.dataset.st] = true; else { ui[t.dataset.k] = t.dataset.v; save(); }
   render(last);
 });
+// 글칸이 열려 있으면 판을 다시 그리지 않는다(쓰던 글·커서·한글 조합이 날아감) — 답 줄·표시만 그 자리에서 바꾼다
+const editing = () => Object.entries(ui.ask).some(([id, x]) => x.open && document.querySelector('.bd-cw[data-card="' + CSS.escape(id) + '"]'));
+function paintAsks() {
+  for (const w of document.querySelectorAll('.bd-cw[data-card]')) {
+    const list = asks[w.dataset.card] || [], th = thread(list), mk = mark(list);
+    const t = w.querySelector('.bd-thread'); if (t.innerHTML !== th) t.innerHTML = th;
+    const m = w.querySelector('.bd-ask-mark'); if (m.innerHTML !== mk) m.innerHTML = mk;
+    w.classList.toggle('asking', list.some(a => !a.replies.length));
+  }
+}
 async function load() {
-  try { const r = await fetch('/api/board', { cache: 'no-store' }); last = (await r.json()).board; render(last); }
+  try {
+    const [rb, ra] = await Promise.all([fetch('/api/board', { cache: 'no-store' }), fetch('/api/board-asks', { cache: 'no-store' }).catch(() => null)]);
+    last = (await rb.json()).board;
+    if (ra && ra.ok) asks = await ra.json();
+    if (editing()) paintAsks(); else render(last);
+  }
   catch { document.getElementById('bd-upd').textContent = '서버 연결 안 됨 — 다시 시도 중'; }
 }
+const askState = id => ui.ask[id] || (ui.ask[id] = { open: false, draft: '', msg: '', msgAt: 0 });
+document.addEventListener('click', async e => {
+  const b = e.target.closest('.bd-ask-b, .bd-ask-go'); if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const w = b.closest('.bd-cw'), id = w.dataset.card, st = askState(id), ed = w.querySelector('.bd-ask-ed'), ta = ed.querySelector('textarea'), btn = w.querySelector('.bd-ask-b'), msg = w.querySelector('.bd-ask-msg');
+  if (b === btn) {
+    st.open = ed.hidden; ed.hidden = !st.open; btn.setAttribute('aria-expanded', String(st.open));
+    if (st.open) { ta.value = st.draft; ta.focus(); } else render(last);
+    return;
+  }
+  const text = ta.value.trim(); if (!text) { ta.focus(); return; }
+  b.disabled = true; msg.textContent = '보내는 중…';
+  try {
+    const r = await fetch('/__board-ask', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ card: id, text }) });
+    if (!r.ok) throw new Error(await r.text());
+    const j = await r.json();
+    Object.assign(st, { open: false, draft: '', msg: j.via === 'chat' && j.ch ? '보냄 — 담당 채널 ' + j.ch + ' 에 전달' : '보냄 — 담당 창에 전달', msgAt: Date.now() });
+    load();
+  } catch (err) { b.disabled = false; msg.textContent = '못 보냄: ' + String(err.message || err).slice(0, 120); }
+});
+document.addEventListener('input', e => {
+  const ta = e.target.closest && e.target.closest('.bd-ask-ed textarea'); if (!ta) return;
+  askState(ta.closest('.bd-cw').dataset.card).draft = ta.value;
+});
 load(); setInterval(() => { if (!document.hidden) load(); }, 5000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 </script>

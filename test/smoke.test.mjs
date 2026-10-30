@@ -1533,3 +1533,112 @@ test('inbox: 각 칸 안에서 최근순 — +09:00 과 Z 섞여도 실제 시�
     assert.ok(inbox.sheets.every(s => s.activeAt));
   } finally { close(); }
 });
+
+test('진행판 질문: ＋ 더 묻기 → asks/board/<카드>.jsonl, 훅 --board 로 담당 창에, board-reply 가 카드 밑에, 답 없으면 한 줄 한 번 (spider-universe#358)', async () => {
+  const dir = tmpDir();
+  const { newChat, readChatLog, askWatch, writeBoard } = await import('../bin/review-sheet.mjs');
+  writeBoard(dir, { cards: [
+    { id: 'pkch#3474', title: '디자인 시안', status: 'doing', owner: ['pkch:디자인'] },
+    { id: 'spider#358', title: '더 묻기', status: 'todo', owner: ['spider:ws1'] },
+  ] });
+  newChat(dir, 'root', 'root', 'root:hub', true); newChat(dir, 'pkch', 'pkch', 'pkch:main');
+  const hookOut = path.join(dir, 'hook.out'), hook = path.join(dir, 'hook.sh');
+  fs.writeFileSync(hook, `#!/bin/sh\nprintf '%s|' "$@" "$REVIEW_SHEET_ASK_LABEL" "$REVIEW_SHEET_ASK_FILE" "$REVIEW_SHEET_ASK_TEXT" >> "${hookOut}"\ncat >> "${hookOut}"\necho >> "${hookOut}"\nexit 0\n`, { mode: 0o755 });
+  const prevHook = process.env.REVIEW_SHEET_ASK_HOOK; process.env.REVIEW_SHEET_ASK_HOOK = hook;
+  const { base, close } = await startServer(dir, 0);
+  const until = async f => { for (let i = 0; i < 100 && !f(); i++) await new Promise(r => setTimeout(r, 30)); };
+  const file = path.join(dir, 'asks', 'board', 'pkch~3474.jsonl');
+  const recs = (f = file) => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const hookLines = () => { try { return fs.readFileSync(hookOut, 'utf8').split('\n').filter(Boolean); } catch { return []; } };
+  try {
+    const ask = (body, headers = {}) => fetch(base + '/__board-ask', { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+    assert.equal((await fetch(base + '/__board-ask')).status, 405);
+    assert.equal((await ask({ card: 'pkch#3474', text: 'x' }, { 'content-type': 'text/plain' })).status, 415);
+    assert.equal((await ask({ card: 'pkch#3474', text: 'x' }, { 'sec-fetch-site': 'cross-site', origin: 'https://evil.example' })).status, 403);
+    assert.equal((await ask({ card: 'pkch#3474', text: 'x' }, { 'sec-fetch-site': 'same-site' })).status, 403);
+    for (const card of ['Pkch#3474', 'pkch', 'pkch#', '../x#1', 'pkch#12a', 'pkch#1/../../x']) assert.equal((await ask({ card, text: 'x' })).status, 400, card);
+    assert.equal((await ask({ card: 'pkch#3474', text: '   ' })).status, 400);
+    assert.equal((await ask({ card: 'pkch#3474', text: 'a'.repeat(2001) })).status, 400);
+    assert.match(await (await ask({ card: 'nope#1', text: 'x' })).text(), /카드 nope#1 없음/);   // 판에 없는 카드
+    assert.equal(fs.existsSync(path.join(dir, 'asks', 'board')), false);   // 거절된 건 아무것도 안 씀
+    const j = await (await ask({ card: 'pkch#3474', text: '시안 언제\n나와요?' }, { 'sec-fetch-site': 'same-origin' })).json();
+    assert.deepEqual([j.ok, j.via, j.ch], [true, 'hook', null]);
+    const q0 = recs()[0];
+    assert.deepEqual({ id: q0.id, from: q0.from, q: q0.q, card: q0.card, owner: q0.owner, title: q0.title, text: q0.text },
+      { id: j.id, from: 'hero', q: 'board', card: 'pkch#3474', owner: 'pkch:디자인', title: '디자인 시안', text: '시안 언제\n나와요?' });
+    await until(() => recs().some(r => r.deliv === j.id));
+    assert.equal(recs().find(r => r.deliv === j.id).via, 'hook');
+    assert.deepEqual(hookLines(), [`--board|pkch#3474|pkch:디자인|${j.id}|디자인 시안|${file}|시안 언제`, '나와요?|시안 언제', '나와요?']);   // 인자 4개 + LABEL·FILE·TEXT env + stdin
+    assert.equal(readChatLog(dir, 'pkch').length + readChatLog(dir, 'root').length, 0);   // 채널엔 안 감
+    assert.equal(fs.existsSync(path.join(dir, 'asks', 'pkch#3474.jsonl')), false);
+    assert.equal((await fetch(base + '/api/board-asks?card=bad')).status, 400);
+    let all = await (await fetch(base + '/api/board-asks')).json();
+    assert.deepEqual(Object.keys(all), ['pkch#3474']);
+    assert.deepEqual(all['pkch#3474'].map(a => [a.id, a.text, a.replies.length]), [[j.id, '시안 언제\n나와요?', 0]]);
+    // board-reply — 그 카드의 답 없는 질문에 붙고 진행판 GET 에 뜬다
+    const env = { ...process.env, REVIEW_SHEET_FROM: 'pkch:디자인' }; delete env.REVIEW_SHEET_ASK_HOOK;
+    const cli = (...a) => { try { return { out: execFileSync('node', [BIN, ...a], { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }; } catch (e) { return { out: e.stdout + e.stderr, code: e.status }; } };
+    assert.equal(cli('board-reply', dir, 'pkch#3474').code, 2);
+    assert.equal(cli('board-reply', dir, 'pkch#3474', 'b'.repeat(2001)).code, 2);             // 길이 막기(2000) — ask-reply 와 같은 문
+    assert.equal(cli('board-reply', dir, 'pkch#3474', 'b'.repeat(2001), '--notice').code, 1);   // --notice 여도 2000 넘으면 거절
+    assert.equal(cli('board-reply', dir, 'spider#358', '질문 없음').code, 1);
+    const r = cli('board-reply', dir, 'pkch#3474', '오늘 저녁 6시요');
+    assert.equal(r.code, 0, r.out); assert.match(r.out, new RegExp(`→ asks/board/pkch#3474 ↩#${j.id}`));
+    all = await (await fetch(base + '/api/board-asks?card=pkch%233474')).json();
+    assert.deepEqual(all['pkch#3474'][0].replies.map(x => [x.from, x.text]), [['pkch:디자인', '오늘 저녁 6시요']]);
+    assert.match(cli('board-asks', dir).out, new RegExp(`^pkch#3474\\t#${j.id}\\t답 1\\t시안 언제 나와요\\?$`, 'm'));
+    assert.match(cli('board-reply', dir, 'pkch#3474', '덧붙임', '--re', 'zzzz').out, /질문 #zzzz 없음/);
+    // 답 없는 질문(spider#358, spider 채널 없음) → stale 지나면 허브(root)에 한 줄, 한 번만. 답한 pkch#3474 는 조용
+    const j2 = await (await ask({ card: 'spider#358', text: '이건 언제?' })).json();
+    await until(() => hookLines().length > 3);
+    assert.equal(cli('board-asks', dir, '--open').out.trim().split('\n').length, 1);
+    let stop = askWatch(dir, 30, 0); await new Promise(res => setTimeout(res, 150)); stop();
+    stop = askWatch(dir, 30, 0); await new Promise(res => setTimeout(res, 100)); stop();
+    const st = readChatLog(dir, 'root').filter(x => x.askStale);
+    assert.equal(st.length, 1); assert.equal(st[0].askStale, j2.id);
+    assert.match(st[0].text, /^진행판 질문 답 없음 \d+분 \(카드 spider#358 · 더 묻기 · 담당 spider:ws1\) — review-sheet board-reply spider#358 "…" 로 답하거나 담당 창 확인$/);
+    assert.equal(readChatLog(dir, 'pkch').length, 0);
+    assert.equal(recs(path.join(dir, 'asks', 'board', 'spider~358.jsonl')).filter(x => x.staleSent === j2.id).length, 1);
+    // 진행판 페이지 — 카드마다 ＋ 더 묻기, 버튼은 <a> 밖
+    const page = await (await fetch(base + '/board')).text();
+    assert.match(page, /＋ 더 묻기/); assert.match(page, /\/__board-ask/); assert.match(page, /\/api\/board-asks/);
+    assert.match(page, /cardA\(c\) \+ '<div class="bd-ask">/);
+    assert.match(cli('nope').out, /board-reply \[dir\] <카드> "답"/);
+  } finally { await close(); if (prevHook === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = prevHook; }
+});
+
+test('진행판 질문: 훅 없음·실패 → 담당 채널, 없으면 허브 — 그 ↩ 답장(chat say --re)도 카드 밑에 뜸 (spider-universe#358)', async () => {
+  const dir = tmpDir();
+  const { newChat, readChatLog, appendChat, writeBoard, boardAsk, boardAsksFor } = await import('../bin/review-sheet.mjs');
+  writeBoard(dir, { cards: [
+    { id: 'pkch#1', title: '카드 하나', status: 'doing', owner: ['pkch:디자인'] },
+    { id: 'zz#2', title: '채널 없는 담당', status: 'doing', owner: ['zz:w'] },
+    { id: 'pkch#3', title: '훅 실패', status: 'wait', owner: ['pkch:서버'] },
+  ] });
+  newChat(dir, 'root', 'root', 'root:hub', true); newChat(dir, 'pkch', 'pkch', 'pkch:main');
+  const prevHook = process.env.REVIEW_SHEET_ASK_HOOK;
+  const until = async f => { for (let i = 0; i < 100 && !f(); i++) await new Promise(r => setTimeout(r, 30)); };
+  try {
+    delete process.env.REVIEW_SHEET_ASK_HOOK;
+    const a = boardAsk(dir, 'pkch#1', '훅 없음');
+    assert.deepEqual([a.via, a.ch], ['chat', 'pkch']);   // pkch:디자인 → 도메인 매니저 채널
+    const m = readChatLog(dir, 'pkch').at(-1);
+    assert.deepEqual(m.askRef, { board: 'pkch#1', id: a.id }); assert.equal(m.wake, true);
+    assert.match(m.text, /^진행판 질문 \(카드 pkch#1 · 카드 하나 · 담당 pkch:디자인\): 훅 없음\n— .*review-sheet board-reply pkch#1 "…" \(또는 chat say pkch --re 이 메시지\)/);
+    appendChat(dir, 'pkch', 'pkch:main', '채널 답', null, m.id);   // chat say pkch --re <msg>
+    assert.deepEqual(boardAsksFor(dir, 'pkch#1')[0].replies.map(r => [r.from, r.text]), [['pkch:main', '채널 답']]);
+    const b = boardAsk(dir, 'zz#2', '허브로');
+    assert.deepEqual([b.via, b.ch], ['chat', 'root']);
+    assert.deepEqual(readChatLog(dir, 'root').at(-1).askRef, { board: 'zz#2', id: b.id });
+    const hook = path.join(dir, 'fail.sh'); fs.writeFileSync(hook, '#!/bin/sh\ncat >/dev/null\nexit 3\n', { mode: 0o755 });
+    process.env.REVIEW_SHEET_ASK_HOOK = hook;
+    const c = boardAsk(dir, 'pkch#3', '훅 실패');
+    assert.equal(c.via, 'hook');
+    const f = path.join(dir, 'asks', 'board', 'pkch~3.jsonl');
+    const recs = () => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+    await until(() => recs().some(r => r.deliv === c.id));
+    assert.deepEqual((({ via, ch, code }) => ({ via, ch, code }))(recs().find(r => r.deliv === c.id)), { via: 'chat', ch: 'pkch', code: 3 });
+    assert.deepEqual(readChatLog(dir, 'pkch').at(-1).askRef, { board: 'pkch#3', id: c.id });
+    assert.throws(() => boardAsk(dir, 'pkch#1/../x', 'x'), /카드 키/);
+  } finally { if (prevHook === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = prevHook; }
+});
