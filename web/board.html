@@ -9,6 +9,7 @@
 .bd-col{background:#F4F2EE;border-radius:12px;padding:10px}
 .bd-col h2{display:flex;justify-content:space-between;font-size:15px;margin:2px 4px 8px}
 .bd-col h2 small{color:#777;font-weight:700}
+.bd-split{font-weight:400;font-size:12px}
 .bd-cw{margin:0 0 8px;min-width:0}
 .bd-card{display:block;background:#fff;border-radius:10px;padding:10px 12px;margin:0;box-shadow:0 1px 2px rgba(0,0,0,.08);color:#222;text-decoration:none;border-left:4px solid #CFCBC2}
 .bd-card.p0{border-left-color:#B2472F}.bd-card.p1{border-left-color:#D08A2E}.bd-card.p2{border-left-color:#8A6D2E}
@@ -125,11 +126,19 @@ function render(b) {
     .sort((x, y) => st === 'done' ? String(y.at || '').localeCompare(String(x.at || '')) : rank(x.priority) - rank(y.priority) || String(y.at || '').localeCompare(String(x.at || '')));
   cols.innerHTML = COLS.map(([st, label]) => {
     const list = pick(st), shown = st !== 'doing' && !ui.more[st] ? list.slice(0, 12) : list;
-    return '<section class="bd-col ' + st + '"><h2>' + label + '<small>' + list.length + '</small></h2>' +
+    const sp = st === 'wait' && !ui.group ? split(list) : '';
+    return '<section class="bd-col ' + st + '"><h2>' + label + '<small>' + list.length + (sp ? ' <span class="bd-split">(' + esc(sp) + ')</span>' : '') + '</small></h2>' +
       (shown.length ? shown.map(card).join('') : '<p class="bd-empty">없음</p>') +
       (shown.length < list.length ? '<button type="button" class="bd-more" data-st="' + st + '">' + label + ' ' + (list.length - shown.length) + '개 더 보기</button>' : '') + '</section>';
   }).join('') + standingGroup(b);
 }
+// 기다림 칸 머리 수를 레포별로 — 「전체」 에서 pkch·spider 기다림이 한 수로 섞여 보이던 것 (spider-universe#359, pkch#3619)
+const split = list => {
+  const n = {};
+  for (const c of list) n[c.group || '기타'] = (n[c.group || '기타'] || 0) + 1;
+  const gs = Object.keys(n).sort();
+  return gs.length < 2 ? '' : gs.map(g => g + ' ' + n[g]).join(' · ');
+};
 const standingGroup = b => {
   const list = b.cards.filter(c => parked(c) && (!ui.group || c.group === ui.group)).sort((x, y) => rank(x.priority) - rank(y.priority));
   return list.length ? '<section class="bd-col bd-standing"><h2>상시(늘 도는 것)<small>' + list.length + '</small></h2><div class="bd-list">' + list.map(card).join('') + '</div></section>' : '';

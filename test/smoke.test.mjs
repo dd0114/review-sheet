@@ -1642,3 +1642,13 @@ test('진행판 질문: 훅 없음·실패 → 담당 채널, 없으면 허브 �
     assert.throws(() => boardAsk(dir, 'pkch#1/../x', 'x'), /카드 키/);
   } finally { if (prevHook === undefined) delete process.env.REVIEW_SHEET_ASK_HOOK; else process.env.REVIEW_SHEET_ASK_HOOK = prevHook; }
 });
+
+test('진행판 기다림 칸 머리: 「전체」 에서 레포별 수를 따로 (spider-universe#359, pkch#3619)', () => {
+  const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'board.html'), 'utf8');
+  const src = html.match(/const split = list => \{[\s\S]*?\n\};/);
+  assert.ok(src, 'board.html 에 split 이 있다');
+  const split = new Function(src[0] + '\nreturn split;')();
+  assert.equal(split([{ group: 'pkch' }, { group: 'spider' }, { group: 'pkch' }]), 'pkch 2 · spider 1');
+  assert.equal(split([{ group: 'pkch' }, { group: 'pkch' }]), '');   // 한 레포뿐이면 따로 안 적음
+  assert.match(html, /st === 'wait' && !ui\.group \? split\(list\)/);   // 기다림 칸·전체 보기에서만
+});
