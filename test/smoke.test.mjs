@@ -1097,7 +1097,7 @@ test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it
     { id: 'x#1', title: '빠른 일', status: 'doing', priority: 'P1', owner: 'a:main', mode: 'claude' },
     { id: 'x#2', title: 'CI 기다림', status: 'doing', owner: ['a:w1'], mode: 'system', modeNote: 'CI', url: 'javascript:alert(1)' },
     { title: '할 일', status: 'weird', mode: 'nope' }, { status: 'done' },
-    { id: 'x#3', title: '시트 답 기다림', status: 'wait', note: '기다림: 시트 x-1', flag: '시트 없음' }, { id: 'x#4', title: '머지됨', status: 'ship', modeNote: 'PR #9 머지 · 오베 배포 대기' },
+    { id: 'x#3', title: '시트 답 기다림', status: 'wait', note: '기다림: 시트 x-1', flag: '시트 없음', waitfor: '시트 x-1' }, { id: 'x#4', title: '머지됨', status: 'ship', modeNote: 'PR #9 머지 · 오베 배포 대기' },
     { id: 'x#5', title: '패치노트', status: 'wait', standing: true, note: '상시 · 기다림: 상시 — 매일 23시' }, { id: 'x#6', title: '가짜 상시', status: 'wait', standing: 'yes' },
   ], links: [{ label: '칸반', url: 'https://example.com/k' }, { label: 'bad', url: 'javascript:alert(1)' }] }));
   const out = execFileSync('node', [BIN, 'board', dir, src], { encoding: 'utf8' });
@@ -1108,6 +1108,7 @@ test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it
   assert.deepEqual(b.cards[0].owner, ['a:main']);
   assert.equal(b.cards[1].url, undefined);   // http(s) 만
   assert.equal(b.cards[2].mode, undefined);
+  assert.equal(b.cards[3].waitfor, '시트 x-1');   // 무엇을 기다리나 꼬리표 (spider #329)
   assert.equal(b.cards[3].flag, '시트 없음');   // 빨간 표시 — 시트 없는 사람 기다림 (spider #226)
   assert.deepEqual(b.links, [{ label: '칸반', url: 'https://example.com/k' }]);   // 판 위 링크도 http(s) 만
   assert.match(execFileSync('node', [BIN, 'board', dir], { encoding: 'utf8' }), /doing\t2/);
@@ -1118,6 +1119,7 @@ test('board: 진행판 — CLI writes board.json (cleaned), /api/board serves it
     assert.match(await (await fetch(srv.base + '/board')).text(), /상시\(늘 도는 것\)/);
     assert.match(await (await fetch(srv.base + '/board')).text(), /<title>진행판<\/title>/);
     assert.match(await (await fetch(srv.base + '/board')).text(), /bd-flag/);
+    assert.match(await (await fetch(srv.base + '/board')).text(), /bd-wait/);
     assert.match(await (await fetch(srv.base + '/')).text(), /href="\/board"/);
   } finally { await srv.close(); }
 });
