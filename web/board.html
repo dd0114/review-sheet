@@ -26,6 +26,10 @@
 .bd-note{font-size:12.5px;color:#666;margin-top:4px;overflow-wrap:anywhere}
 .bd-empty{color:#888;font-size:13px;padding:6px 4px}
 .bd-wait{font:700 12px/1.6 system-ui,sans-serif;padding:0 8px;border-radius:10px;background:#F6E7B8;color:#6B4E00}
+/* 기다림 종류 태그 — 무엇을 기다리는지 색으로 한눈에 (spider-universe#368) */
+.bd-kinds{margin:0 0 8px}
+.bd-wait.k-review{background:#DCE8FA;color:#1D4C8F}.bd-wait.k-pr{background:#E6DDF7;color:#4B2C8A}.bd-wait.k-issue{background:#FBE0D3;color:#8E3320}
+.bd-wait.k-date{background:#E2F0E3;color:#22603A}.bd-wait.k-system{background:#E7E5E0;color:#4A4741}.bd-wait.k-unknown{background:#C0392B;color:#fff}
 .bd-std{font:800 11.5px/1.6 system-ui,sans-serif;padding:0 7px;border-radius:4px;background:#E4DCF2;color:#4A3878}
 .bd-standing{grid-column:1/-1;margin-top:4px}
 .bd-standing .bd-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
@@ -41,6 +45,8 @@
 .bd-ask-ed .v-att{display:flex;gap:8px;align-items:center;margin-top:6px}
 .bd-ask-go{min-height:40px;padding:0 16px;border:0;border-radius:8px;background:#1F6B3A;color:#fff;font:700 14px system-ui,sans-serif;cursor:pointer}.bd-ask-go:disabled{opacity:.6}
 .bd-cw.asking .bd-card{box-shadow:0 0 0 2px #E7A98F}
+/* 「더 묻기」 끔(기본) — 폰에서 카드마다 버튼 줄이 붙어 정신없던 것 (spider-universe#358 hero 10-30). 끄면 질문 있는 카드만 대화·표시가 남는다 */
+.bd-ask.off .bd-ask-b,.bd-ask.off .bd-ask-ed{display:none}.bd-ask.off:not(.has){display:none}
 .rs-page .bd-ask .v-askq-log{margin-top:6px}
 .rs-page .bd-ask .v-askq-item{font-size:13.5px;overflow-wrap:anywhere}
 .bd-more{width:100%;min-height:36px;border:1px dashed #CFCBC2;border-radius:8px;background:transparent;font:700 13px system-ui,sans-serif;color:#555;cursor:pointer}
@@ -53,6 +59,7 @@
 <div id="bd-stale" class="bd-stale" hidden></div>
 <div class="bd-top" id="bd-groups"></div>
 <div class="bd-top" id="bd-modes"></div>
+<div class="bd-top" id="bd-opts"></div>
 <div class="bd-cols" id="bd-cols"></div>
 </main>
 <script>
@@ -63,31 +70,41 @@ const MODE = { claude: '클로드 직접 작업', system: '시스템 대기', id
 const RANK = { p0: 0, p1: 1, p2: 2, p3: 3, '긴급': 0, '높음': 1, '중간': 2, '낮음': 3 };
 const rank = p => { const k = String(p || '').toLowerCase(); return k in RANK ? RANK[k] : 9; };
 const pcls = p => { const r = rank(p); return r <= 2 ? ' p' + r : ''; };
-const ui = { group: '', mode: '', more: {}, ask: {} };   // ask: { <카드>: { open, draft, msg, msgAt } } — 5초 다시 그림에도 쓰던 글이 남게
+const ui = { group: '', mode: '', askOn: false, more: {}, ask: {} };   // ask: { <카드>: { open, draft, msg, msgAt } } — 5초 다시 그림에도 쓰던 글이 남게
 try { Object.assign(ui, JSON.parse(localStorage.getItem('bd-ui') || '{}'), { more: {}, ask: {} }); } catch {}
-const save = () => { try { localStorage.setItem('bd-ui', JSON.stringify({ group: ui.group, mode: ui.mode })); } catch {} };
+const save = () => { try { localStorage.setItem('bd-ui', JSON.stringify({ group: ui.group, mode: ui.mode, askOn: ui.askOn })); } catch {} };
 let last = null, asks = {};
 
 // 상시(늘 도는 것, spider #247) — 진행판이 standing 을 달거나 노트 머리 「상시 · 」. 기다림 칸·셈에서 빼고 맨 아래 묶음으로
 const STD = '상시 · ';
 const standing = c => c.standing === true || String(c.note || '').startsWith(STD);
 const parked = c => standing(c) && c.status === 'wait';
+// 기다림 종류 (spider-universe#368) — 생산자가 waitKind 를 주면 색·앞말을 바꾼다. 없으면 옛 모양 그대로
+const WK = { review: '리뷰', pr: 'PR 검사', issue: '다른 이슈', date: '날짜', system: '시스템', unknown: '미분류' };
+const waitTag = c => {
+  const k = WK[c.waitKind] ? c.waitKind : '';
+  if (!k) return c.waitfor ? '<span class="bd-wait">기다림 · ' + esc(c.waitfor) + '</span>' : '';
+  const d = c.waitfor || c.waitRef || '';
+  return '<span class="bd-wait k-' + k + '">' + WK[k] + (d ? ' · ' + esc(d.replace(/^(시트|이슈|날짜)\s+/, '')) : '') + '</span>';
+};
+// 기다림 노트의 기계 줄(wait: x=… owner=… until=…)은 태그가 대신한다 — 「 — 」 뒤 사람 말만
+const noteText = c => { const n = String(c.note || ''); if (!c.waitKind || !/wait\s*:/.test(n)) return n; const i = n.indexOf(' — '); return i < 0 ? '' : n.slice(i + 3); };
 const cardA = c => '<a class="bd-card' + pcls(c.priority) + '"' + (c.url ? ' href="' + esc(c.url) + '" target="_blank" rel="noopener"' : '') + '>' +
   '<b>' + esc(c.title) + '</b><div class="bd-meta">' +
   (standing(c) ? '<span class="bd-std">상시</span>' : '') +
   (c.priority ? '<span class="bd-pri">' + esc(c.priority) + '</span>' : '') +
   (c.flag ? '<span class="bd-flag">' + esc(c.flag) + '</span>' : '') +
-  (c.waitfor ? '<span class="bd-wait">기다림 · ' + esc(c.waitfor) + '</span>' : '') +
+  waitTag(c) +
   (c.mode ? '<span class="bd-mode ' + c.mode + '">' + MODE[c.mode] + (c.modeNote ? ' · ' + esc(c.modeNote) : '') + '</span>' : '') +
   (c.owner && c.owner.length ? '<span class="bd-own">' + c.owner.map(esc).join(', ') + '</span>' : (c.status === 'todo' ? '' : '<span>담당 없음</span>')) +
   (c.id ? '<span>' + esc(c.id) + '</span>' : '') + (c.at ? '<span>' + when(c.at) + '</span>' : '') +
-  '</div>' + (c.note ? '<div class="bd-note">' + esc(String(c.note).startsWith(STD) ? c.note.slice(STD.length) : c.note) + '</div>' : '') + '</a>';
+  '</div>' + (noteText(c) ? '<div class="bd-note">' + esc(noteText(c).startsWith(STD) ? noteText(c).slice(STD.length) : noteText(c)) + '</div>' : '') + '</a>';
 // 카드 = <a> + 그 밖의 '＋ 더 묻기' 칸 (버튼·글칸이 링크 안에 있으면 누를 때 이슈가 열린다)
 const CARD_RE = /^[a-z0-9-]{1,60}#\d{1,9}$/;
 const card = c => {
   if (!c.id || !CARD_RE.test(c.id)) return '<div class="bd-cw">' + cardA(c) + '</div>';
   const st = ui.ask[c.id] || {}, list = asks[c.id] || [], waiting = list.some(a => !a.replies.length);
-  return '<div class="bd-cw' + (waiting ? ' asking' : '') + '" data-card="' + esc(c.id) + '">' + cardA(c) + '<div class="bd-ask">' +
+  return '<div class="bd-cw' + (waiting ? ' asking' : '') + '" data-card="' + esc(c.id) + '">' + cardA(c) + '<div class="bd-ask' + (ui.askOn || st.open ? '' : ' off') + (list.length ? ' has' : '') + '">' +
     '<div class="bd-thread">' + thread(list) + '</div>' +
     '<div class="bd-ask-row"><button type="button" class="bd-ask-b" aria-expanded="' + !!st.open + '">＋ 더 묻기</button>' +
     '<span class="bd-ask-mark">' + mark(list) + '</span><span class="bd-ask-msg">' + esc(st.msg && Date.now() - st.msgAt < 15000 ? st.msg : '') + '</span></div>' +
@@ -121,6 +138,7 @@ function render(b) {
   const doing = b.cards.filter(c => c.status === 'doing' && (!ui.group || c.group === ui.group));
   const modes = Object.keys(MODE).filter(m => doing.some(c => c.mode === m));
   if (ui.mode && !modes.includes(ui.mode)) ui.mode = '';
+  document.getElementById('bd-opts').innerHTML = '<button type="button" class="bd-chip bd-asktog' + (ui.askOn ? ' on' : '') + '" aria-pressed="' + ui.askOn + '">＋ 더 묻기 ' + (ui.askOn ? '켜짐' : '꺼짐') + '</button>';
   chips(document.getElementById('bd-modes'), 'mode', modes.map(m => [m, MODE[m] + ' ' + doing.filter(c => c.mode === m).length]), '하는 중 전부 ' + doing.length);
   const pick = st => b.cards.filter(c => c.status === st && !parked(c) && (!ui.group || c.group === ui.group) && (st !== 'doing' || !ui.mode || c.mode === ui.mode))
     .sort((x, y) => st === 'done' ? String(y.at || '').localeCompare(String(x.at || '')) : rank(x.priority) - rank(y.priority) || String(y.at || '').localeCompare(String(x.at || '')));
@@ -128,10 +146,17 @@ function render(b) {
     const list = pick(st), shown = st !== 'doing' && !ui.more[st] ? list.slice(0, 12) : list;
     const sp = st === 'wait' && !ui.group ? split(list) : '';
     return '<section class="bd-col ' + st + '"><h2>' + label + '<small>' + list.length + (sp ? ' <span class="bd-split">(' + esc(sp) + ')</span>' : '') + '</small></h2>' +
+      (st === 'wait' ? kinds(list) : '') +
       (shown.length ? shown.map(card).join('') : '<p class="bd-empty">없음</p>') +
       (shown.length < list.length ? '<button type="button" class="bd-more" data-st="' + st + '">' + label + ' ' + (list.length - shown.length) + '개 더 보기</button>' : '') + '</section>';
   }).join('') + standingGroup(b);
 }
+// 기다림 칸 머리 밑에 종류별 수 — 리뷰 3 · PR 검사 1 · 날짜 5 (spider-universe#368)
+const kinds = list => {
+  const n = {}; for (const c of list) if (WK[c.waitKind]) n[c.waitKind] = (n[c.waitKind] || 0) + 1;
+  const ks = Object.keys(WK).filter(k => n[k]);
+  return ks.length ? '<div class="bd-meta bd-kinds">' + ks.map(k => '<span class="bd-wait k-' + k + '">' + WK[k] + ' ' + n[k] + '</span>').join('') + '</div>' : '';
+};
 // 기다림 칸 머리 수를 레포별로 — 「전체」 에서 pkch·spider 기다림이 한 수로 섞여 보이던 것 (spider-universe#359, pkch#3619)
 const split = list => {
   const n = {};
@@ -146,6 +171,7 @@ const standingGroup = b => {
 
 document.addEventListener('click', e => {
   const t = e.target.closest('.bd-chip, .bd-more'); if (!t) return;
+  if (t.classList.contains('bd-asktog')) { ui.askOn = !ui.askOn; save(); render(last); return; }
   if (t.dataset.st) ui.more[t.dataset.st] = true; else { ui[t.dataset.k] = t.dataset.v; save(); }
   render(last);
 });
@@ -157,6 +183,7 @@ function paintAsks() {
     const t = w.querySelector('.bd-thread'); if (t.innerHTML !== th) t.innerHTML = th;
     const m = w.querySelector('.bd-ask-mark'); if (m.innerHTML !== mk) m.innerHTML = mk;
     w.classList.toggle('asking', list.some(a => !a.replies.length));
+    const a = w.querySelector('.bd-ask'); if (a) a.classList.toggle('has', list.length > 0);
   }
 }
 async function load() {
