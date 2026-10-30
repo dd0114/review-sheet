@@ -1016,8 +1016,9 @@ export function boardReply(root, card, text, from, re) {
 }
 function boardAskStale(root, now, old) {
   let files = []; try { files = fs.readdirSync(boardAsksDir(root)).filter(f => f.endsWith('.jsonl')).map(f => f.slice(0, -6).replace('~', '#')); } catch { return; }
+  const onBoard = new Set(((readBoard(root) || {}).cards || []).map(c => c.id));   // 판에서 빠진 카드(닫힘)는 알리지 않는다
   for (const card of files) {
-    if (!BOARD_CARD_RE.test(card)) continue;
+    if (!BOARD_CARD_RE.test(card) || !onBoard.has(card)) continue;
     const recs = readBoardAsks(root, card);
     const open = recs.filter(m => m.from === 'hero' && m.q === 'board' && !m.re && !old(m.ts) && !recs.some(r => r.staleSent === m.id));
     if (!open.length) continue;
