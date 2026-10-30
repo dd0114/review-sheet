@@ -793,7 +793,8 @@ function answerHook(root, id) {
    답: review-sheet ask-reply <시트> <문항> "…" → asks 파일에. 답 없이 ASK_STALE_MS 지나면 담당 채널(없으면 허브)에 한 줄, 한 번만(askWatch).
    예전 시트의 문항 질문(채널 로그의 ask:{d,q,text}) 은 그대로 읽고, chat say --re 답장도 그대로 붙는다. */
 const ASK_MAX = 2000;
-const sheetByName = (root, name) => listSheets(root).find(x => !x.error && x.name === name) || null;
+// list = 이미 읽은 listSheets 결과 — 시트 2500장에서 한 번 부를 때마다 수백 ms 라, 반복문 안에서는 한 번 읽어 넘긴다 (askWatch 가 1분마다 10~20초 서버를 멈춤, 2026-10-28)
+const sheetByName = (root, name, list) => (list || listSheets(root)).find(x => !x.error && x.name === name) || null;
 const askChans = (root, s) => [chatFor(root, s.from, s.name), hubChat(root)].filter((c, i, a) => c && a.findIndex(x => x && x.name === c.name) === i);
 const asksDir = root => path.join(root, 'asks');
 const asksFile = (root, name) => path.join(asksDir(root), name + '.jsonl');
@@ -848,9 +849,9 @@ export function askItem(root, name, q, label, text) {
   child.unref();
   return { id: a.id, via: 'hook', ch: null };
 }
-export function asksFor(root, name) {
+export function asksFor(root, name, list) {
   root = path.resolve(root);
-  const s = sheetByName(root, name); if (!s) return [];
+  const s = sheetByName(root, name, list); if (!s) return [];
   const out = [], byChatMsg = new Map();
   const recs = readAsksFile(root, name);
   for (const m of recs) if (m.from === 'hero' && m.q && !m.re)
@@ -888,12 +889,13 @@ export function askWatch(root, ms = Number(process.env.REVIEW_SHEET_ASK_MS) || 6
       root = path.resolve(root);
       const now = Date.now(), old = ts => now - Date.parse(ts) < stale || now - Date.parse(ts) > 864e5;
       let files = []; try { files = fs.readdirSync(asksDir(root)).filter(f => f.endsWith('.jsonl')).map(f => f.slice(0, -6)); } catch { /* none */ }
+      let list; const sheets = () => list || (list = listSheets(root));
       for (const name of files) {
         const recs = readAsksFile(root, name);
         const open = recs.filter(m => m.from === 'hero' && m.q && !m.re && !old(m.ts) && !recs.some(r => r.staleSent === m.id));
         if (!open.length) continue;
-        const s = sheetByName(root, name); if (!s) continue;
-        const answered = new Set(asksFor(root, name).filter(a => a.replies.length).map(a => a.id));
+        const s = sheetByName(root, name, sheets()); if (!s) continue;
+        const answered = new Set(asksFor(root, name, sheets()).filter(a => a.replies.length).map(a => a.id));
         for (const m of open) {
           if (answered.has(m.id)) continue;
           const c = askChans(root, s)[0]; if (!c) continue;
@@ -996,8 +998,10 @@ export const activityMs = s => Math.max(tsMs(s.createdAt), tsMs(s.dataAt), tsMs(
 function sortQueue(list) {
   // queue order: errors first (they need fixing), then pending, then submitted — 각 묶음 안에서 🔥 긴급 먼저, 그다음 마지막 움직임 최신순
   const g = x => x.error ? 0 : x.submitted ? 2 : 1;
-  return list.map(s => s.error ? s : { ...s, activeAt: new Date(activityMs(s) || 0).toISOString() })
-    .sort((a, b) => (g(a) - g(b)) || (!!b.urgent - !!a.urgent) || (activityMs(b) - activityMs(a)) || String(a.name).localeCompare(String(b.name)));
+  // 마지막 움직임은 한 번만 잰다 — 비교마다 Date.parse 5번이면 시트 2500장에서 정렬만 수백 ms
+  const ms = new Map(list.map(s => [s, activityMs(s)]));
+  return [...list].sort((a, b) => (g(a) - g(b)) || (!!b.urgent - !!a.urgent) || (ms.get(b) - ms.get(a)) || String(a.name).localeCompare(String(b.name)))
+    .map(s => s.error ? s : { ...s, activeAt: new Date(ms.get(s) || 0).toISOString() });
 }
 
 function listSheets(dir) {   // 배정·단계는 자주 바뀌고 파일이 몇 개 안 되니 캐시 밖에서 붙인다
@@ -1978,8 +1982,9 @@ async function main() {
     return;
   }
   if (cmd === 'asks') {   // asks [<시트>] [--open] — 문항 질문과 답. 시트 없으면 전체(--prefix 로 좁힘)
-    const names = askArgs[0] ? [askArgs[0]] : listSheets(dir).filter(s => !s.error && (!flags.prefix || String(s.name).startsWith(flags.prefix))).map(s => s.name);
-    for (const n of names) for (const a of asksFor(dir, n)) {
+    const list = listSheets(dir);
+    const names = askArgs[0] ? [askArgs[0]] : list.filter(s => !s.error && (!flags.prefix || String(s.name).startsWith(flags.prefix))).map(s => s.name);
+    for (const n of names) for (const a of asksFor(dir, n, list)) {
       if (flags.open && a.replies.length) continue;
       console.log(`${n}\t${a.q}\t#${a.id}\t${a.replies.length ? '답 ' + a.replies.length : '답 없음'}\t${a.text.replace(/\s+/g, ' ')}`);
     }
