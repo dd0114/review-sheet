@@ -84,6 +84,7 @@ function usage(code = 2) {
   review-sheet batch [dir] [<file|->] [--domain D]   # 배치판(보기 전용, /batch) — pkch-batch-view/1 {rules:[{job,…,runs:[{id,status,verdict,line,startedAt,…,log,taken}]}]} 를 도메인별로 더함(실행 id 로 합침, 규칙마다 최근 ${BATCH_KEEP}개), 인자 없으면 요약
   review-sheet links [dir] [<file|->]   # 받은편지함 위 줄 외부 링크 — {links:[{label,url}]} url=http(s) 또는 /경로, 같은 label 덮어씀, url 비우면 지움, 8개까지 (#47)
   review-sheet board [dir] [<file|->]   # 진행판(보기 전용) — board.json {cards:[{title,status:todo|doing|wait|ship|done,priority,owner,mode:claude|system|idle,modeNote,flag,url}],links?:[{label,url}]} 쓰기, 인자 없으면 요약
+  review-sheet gate [dir] [<id>]   # 관문 — <inbox>/gate.json {cmd:[…],prefix:[…]}: 접두사 맞는 시트마다 cmd + [data.js 경로] 실행(exit 0=통과). 실패는 시트 맨 위 붉은 배너·목록 '관문'·ls '관문✗'. 이 명령은 한 시트/전부 돌려 줄로 찍고 실패 있으면 exit 5
   review-sheet tab [dir] [--prefix X] [--icon Y] [--clear]   # 탭 이름표 — <inbox>/tab.json {prefix,icon}: 모든 탭 제목 앞 'X · ' + 이모지 탭 아이콘. 서버 재시작 없이 반영, env REVIEW_SHEET_TAB_PREFIX/ICON 이 이김. 빈 값 = 그 칸 지움
   review-sheet install-inbox [--port N]      # launchd: serve the inbox on boot (macOS)
   review-sheet chat new  <ch> [--title T] [--owner <session>] [--hub]   # 상시 채널 (inbox/chat/<ch>.jsonl) — hero ↔ 세션 메신저. 첫 채널 = 자동 허브
@@ -1116,10 +1117,44 @@ function sortQueue(list) {
     .map(s => s.error ? s : { ...s, activeAt: new Date(ms.get(s) || 0).toISOString() });
 }
 
+/* 시트 관문 (gate) — <inbox>/gate.json = { "cmd": ["/abs/prog", "arg"…], "prefix": ["root-"] } (선택; 없으면 기능 꺼짐, 동작 변화 0).
+   이름이 prefix 로 시작하는 시트마다 cmd + [data.js 절대경로] 를 셸 없이(execFile) 10초 제한으로 돌린다. exit 0 = 통과, 아니면 stderr(없으면 stdout) 첫 줄 300자가 이유.
+   실행 못 함(spawn 오류·시간 초과) = 'error' — 경고만 띄우고 표시는 막지 않는다. 결과는 data.js 의 mtime+size 로 캐시(오류는 60초만). */
+const GATE_TIMEOUT_MS = 10000, GATE_ERR_TTL_MS = 60000;
+const gateCache = new Map();   // data.js 절대경로 + cmd → { key, at, res }
+export function readGateConfig(dir) {
+  let j; try { j = JSON.parse(fs.readFileSync(path.join(path.resolve(dir), 'gate.json'), 'utf8')); } catch { return null; }
+  const cmd = j && Array.isArray(j.cmd) && j.cmd.length && j.cmd.every(x => typeof x === 'string' && x) ? j.cmd : null;
+  const prefix = j && Array.isArray(j.prefix) ? j.prefix.filter(x => typeof x === 'string' && x) : [];
+  return cmd && prefix.length ? { cmd, prefix } : null;
+}
+const firstLine = t => String(t || '').split('\n').map(x => x.trim()).find(Boolean) || '';
+/** → null (관문 대상 아님) | { state: 'pass' } | { state: 'fail', reason } | { state: 'error', reason } */
+export function gateCheck(dir, name, cfg = readGateConfig(dir)) {
+  if (!cfg || !cfg.prefix.some(p => name.startsWith(p))) return null;
+  const file = path.join(path.resolve(dir), name + '-data.js');
+  let st; try { st = fs.statSync(file); } catch { return null; }
+  const key = st.mtimeMs + ':' + st.size, ck = file + '\0' + JSON.stringify(cfg.cmd), hit = gateCache.get(ck);
+  if (hit && hit.key === key && (hit.res.state !== 'error' || Date.now() - hit.at < GATE_ERR_TTL_MS)) return hit.res;
+  let res;
+  try { execFileSync(cfg.cmd[0], [...cfg.cmd.slice(1), file], { timeout: GATE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 1 << 20 }); res = { state: 'pass' }; }
+  catch (e) {
+    if (typeof e.status === 'number' && e.status !== 0) res = { state: 'fail', reason: (firstLine(e.stderr) || firstLine(e.stdout) || `종료 코드 ${e.status}`).slice(0, 300) };
+    else res = { state: 'error', reason: String(e.code === 'ETIMEDOUT' ? `시간 초과 (${GATE_TIMEOUT_MS / 1000}초)` : e.message || e).split('\n')[0].slice(0, 300) };
+  }
+  gateCache.set(ck, { key, at: Date.now(), res });
+  return res;
+}
+
 function listSheets(dir) {   // 배정·단계는 자주 바뀌고 파일이 몇 개 안 되니 캐시 밖에서 붙인다
   let names = []; try { names = fs.readdirSync(assignDir(dir)).filter(f => f.endsWith('.json')); } catch { /* 게이트 안 씀 */ }
   const by = new Map(names.map(f => [f.slice(0, -5), f]));
-  return sortQueue(listSheetsRaw(dir).map(s => s.error || !by.has(s.id) ? s : { ...s, assign: assignInfo(readAssign(dir, s.id)) }));
+  const gate = readGateConfig(dir);   // 관문 — 요약 캐시 밖에서 붙인다 (결과 캐시는 gateCheck 안)
+  return sortQueue(listSheetsRaw(dir).map(s => {
+    if (s.error) return s;
+    const g = gate && gateCheck(dir, s.name, gate), x = g ? { ...s, gate: g } : s;
+    return by.has(s.id) ? { ...x, assign: assignInfo(readAssign(dir, s.id)) } : x;
+  }));
 }
 
 /* 받은편지함 첫 화면: 답 기다리는 시트는 전부, 제출된 시트는 최근 RECENT_DONE 개만. 나머지는 '지난 시트 더 보기'(all=1) 때. */
@@ -1573,7 +1608,7 @@ const check = s => s.report ? '<button type="button" class="rs-check' + (s.check
 const row = s => s.error
   ? '<li class="bad"><b>' + esc(s.name) + '</b> — ' + esc(s.error) + '</li>'
   : '<li class="' + (handled(s) ? 'done' : 'wait') + (s.report ? ' rep' : '') + (s.urgent ? ' urgent' : '') + '">' + check(s) + '<a href="/sheet.html?d=' + encodeURIComponent(s.name) + '">' +
-    '<span class="rs-badge' + (s.assign ? ' rs-tag ' + tagKind(s.assign) : s.report ? ' rs-rep' : '') + '">' + (s.urgent ? '🔥 긴급 · ' : '') + (s.assign ? esc(s.assign.tag) : s.report ? esc(s.report) : s.partial ? '◐ 부분 제출 · 미선택 ' + s.partial : s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
+    (s.gate && s.gate.state === 'fail' ? '<span class="rs-gate-tag" title="' + esc(s.gate.reason) + '">관문</span>' : '') + '<span class="rs-badge' + (s.assign ? ' rs-tag ' + tagKind(s.assign) : s.report ? ' rs-rep' : '') + '">' + (s.urgent ? '🔥 긴급 · ' : '') + (s.assign ? esc(s.assign.tag) : s.report ? esc(s.report) : s.partial ? '◐ 부분 제출 · 미선택 ' + s.partial : s.submitted ? '✓ 제출됨' : '답 기다림') + '</span><b>' + esc(s.title) + '</b>' +
     '<small>' + (s.from ? esc(s.from) + ' · ' : '') + (s.report ? '' : s.picked + '/' + s.total + ' 답함 · ') +
     (s.checkedAt ? '확인 ' + when(s.checkedAt) : s.submitted ? '제출 ' + when(s.savedAt) : (s.createdAt ? '보냄 ' + when(s.createdAt) : '')) +
     (s.assign ? ' · <span class="rs-stage">' + esc(s.assign.issue) + (s.assign.note && s.assign.stage !== '배정' ? ' — ' + esc(s.assign.note) : '') + ' · ' + when(s.assign.stageAt) + '</span>' : '') + '</small></a>' +
@@ -1903,6 +1938,11 @@ export function startServer(dir, port = 0, host = '127.0.0.1') {
     }
     let rel = decodeURIComponent(url.pathname);
     if (rel === '/' || rel === '/index.html') return send(res, 200, TYPES['.html'], indexHtml(root));
+    if (rel === '/sheet.html') {   // 관문 배너 — 서버가 <main> 앞에 넣는다 (시트 본문은 #app 안에서만 다시 그려짐)
+      const nm = (url.searchParams.get('d') || '').replace(/[^a-z0-9-]/g, ''), g = nm && gateCheck(root, nm);
+      if (g && g.state !== 'pass') return fs.readFile(path.join(WEB, 'sheet.html'), 'utf8', (err, html) => err ? send(res, 404, 'text/plain; charset=utf-8', '404 sheet.html')
+        : send(res, 200, TYPES['.html'], html.replace('<main id="app">', `<div class="rs-gate-banner${g.state === 'fail' ? '' : ' warn'}" role="alert">${g.state === 'fail' ? '관문 통과 못 함 — ' : '관문 검사 실패: '}${esc(g.reason || '')}</div><main id="app">`)));
+    }
     if (['/sheet.html', '/sheet.css', '/chat.html', '/memo.html', '/board.html', '/dash.html', '/batch.html', '/mic.js', '/compose.js', '/push.js', '/keys.js', '/sw.js', '/manifest.webmanifest', '/icon-180.png', '/icon-512.png'].includes(rel)) return serveFile(res, path.join(WEB, rel.slice(1)));
     const file = path.join(root, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(root)) return send(res, 403, 'text/plain', 'forbidden');
@@ -1951,6 +1991,7 @@ async function main() {
   let askArgs = rest.slice(2);   // asks / ask-reply / items / record: [dir] 은 진짜 폴더일 때만
   if ((cmd === 'board' || cmd === 'dash' || cmd === 'batch' || cmd === 'links') && rest.length === 2 && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // board <file|-> → inbox, board <dir> → 요약
   if (['asks', 'ask-reply', 'board-reply', 'board-asks', 'items', 'record', 'migrate-assign'].includes(cmd) && !(rest[1] && fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) { dirArg = undefined; askArgs = rest.slice(1); }
+  if (cmd === 'gate' && rest[1] && !(fs.existsSync(rest[1]) && fs.statSync(rest[1]).isDirectory())) dirArg = undefined;   // gate <id> → inbox
   const dir = path.resolve(dirArg || INBOX);
   const isInbox = !dirArg;
   if (isInbox && cmd !== 'serve') fs.mkdirSync(path.join(dir, 'answers'), { recursive: true });
@@ -2043,7 +2084,25 @@ async function main() {
     const since = fs.existsSync(path.join(assignDir(dir), '.since')) ? assignSince(dir) : '9';   // 게이트 안 쓰는 폴더는 표시 안 함
     const iSince = fs.existsSync(path.join(assignDir(dir), '.items-since')) ? itemsSince(dir) : '9';
     const tag = (s, st) => st && STATE_LABEL[st] ? '\t' + STATE_LABEL[st] : s.assign ? `\t${s.assign.stage}${st === 'closed' ? '(이슈닫힘)' : ''} ${s.assign.issue}` : '';
-    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}${tag(s, assignState(dir, s, since, iSince))}`);
+    for (const s of listSheets(dir)) console.log(s.error ? `${s.name}\tERROR ${s.error}` : `${s.urgent ? '🔥' : ''}${s.gate && s.gate.state === 'fail' ? '관문✗ ' : ''}${s.name}\t${s.id}\t${s.submitted ? '제출됨' : '대기'}\t${s.picked}/${s.total}\t${s.savedAt || '-'}\t${s.title}${tag(s, assignState(dir, s, since, iSince))}`);
+    return;
+  }
+  if (cmd === 'gate') {   // gate [dir] [<id>] — 관문을 한 시트 또는 접두사 맞는 전부에 돌려 통과/실패 줄을 찍는다. 하나라도 실패면 exit 5
+    const cfg = readGateConfig(dir);
+    if (!cfg) { console.error(`관문 설정 없음 — ${path.join(dir, 'gate.json')} 에 {"cmd":["/abs/prog"],"prefix":["x-"]} 를 두면 켜진다`); process.exitCode = 2; return; }
+    const want = ((isInbox ? rest[1] : rest[2]) || '').replace(/-data\.js$/, '');
+    const names = fs.readdirSync(dir).filter(f => f.endsWith('-data.js')).map(f => f.slice(0, -'-data.js'.length)).filter(n => !want || n === want).sort();
+    if (want && !names.length) { console.error(`시트 ${want} 없음`); process.exitCode = 2; return; }
+    let failed = 0, n = 0;
+    for (const name of names) {
+      const g = gateCheck(dir, name, cfg); if (!g) { if (want) console.log(`${name}\t대상 아님 (접두사 불일치)`); continue; }
+      n++;
+      if (g.state === 'pass') console.log(`${name}\t통과`);
+      else if (g.state === 'fail') { failed++; console.log(`${name}\t관문✗ ${g.reason}`); }
+      else console.log(`${name}\t관문 검사 실패: ${g.reason}`);
+    }
+    if (!n && !want) console.log('접두사 맞는 시트 없음');
+    if (failed) process.exitCode = 5;
     return;
   }
   if (cmd === 'assign') {
