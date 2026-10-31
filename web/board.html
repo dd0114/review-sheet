@@ -21,6 +21,7 @@
 .bd-mode.claude{background:#DDF0E2;color:#1F6B3A}
 .bd-mode.system{background:#DCE7F5;color:#244E86}
 .bd-mode.idle{background:#ECEAE5;color:#666}
+.bd-stall{font:700 12px/1.6 system-ui,sans-serif;padding:0 8px;border-radius:10px;background:#FBE3E0;color:#A12A1E}
 .bd-own{font-weight:700;color:#333}
 .bd-flag{font:800 12px/1.6 system-ui,sans-serif;padding:0 8px;border-radius:10px;background:#B2472F;color:#fff}
 .bd-note{font-size:12.5px;color:#666;margin-top:4px;overflow-wrap:anywhere}
@@ -66,7 +67,7 @@
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const when = iso => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}); };
 const COLS = [['todo', '할 일'], ['doing', '하는 중'], ['wait', '기다림'], ['ship', '배포 대기'], ['done', '끝']];
-const MODE = { claude: '클로드 직접 작업', system: '시스템 대기', idle: '맡은 일 · 대기' };
+const MODE = { claude: '클로드 직접 작업', system: '시스템 대기', idle: '창 입력 대기 · 외부 기다림 없음' };
 const RANK = { p0: 0, p1: 1, p2: 2, p3: 3, '긴급': 0, '높음': 1, '중간': 2, '낮음': 3 };
 const rank = p => { const k = String(p || '').toLowerCase(); return k in RANK ? RANK[k] : 9; };
 const pcls = p => { const r = rank(p); return r <= 2 ? ' p' + r : ''; };
@@ -95,6 +96,7 @@ const cardA = c => '<a class="bd-card' + pcls(c.priority) + '"' + (c.url ? ' hre
   (c.priority ? '<span class="bd-pri">' + esc(c.priority) + '</span>' : '') +
   (c.flag ? '<span class="bd-flag">' + esc(c.flag) + '</span>' : '') +
   waitTag(c) +
+  (c.stall && c.status === 'doing' ? '<span class="bd-stall">' + esc(c.stall) + '</span>' : '') +
   (c.mode ? '<span class="bd-mode ' + c.mode + '">' + MODE[c.mode] + (c.modeNote ? ' · ' + esc(c.modeNote) : '') + '</span>' : '') +
   (c.owner && c.owner.length ? '<span class="bd-own">' + c.owner.map(esc).join(', ') + '</span>' : (c.status === 'todo' ? '' : '<span>담당 없음</span>')) +
   (c.id ? '<span>' + esc(c.id) + '</span>' : '') + (c.at ? '<span>' + when(c.at) + '</span>' : '') +
